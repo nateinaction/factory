@@ -1,0 +1,12 @@
+---
+# Raises the PoE HAT fan trip points so it stays off in normal use and only
+# starts as a safety net just before the CPU throttles at 80C. Takes effect at
+# the next reboot; this role never reboots a host.
+- name: Set the PoE HAT fan trip points
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/config.txt
+    regexp: '^dtparam=poe_fan_temp{{ idx }}='
+    line: "dtparam=poe_fan_temp{{ idx }}={{ poe_fan_trip_points_mc[idx] }}"
+  loop: "{{ range(poe_fan_trip_points_mc | length) | list }}"
+  loop_control:
+    loop_var: idx

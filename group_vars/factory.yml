@@ -17,3 +17,8 @@ factory_user: factory
 # Set false to skip the GitHub App credential entirely.
 factory_github_app: true
 github_app_dir: /etc/github-app
+
+# PoE HAT fan trip points in millidegrees C (stock is 40000-55000). High values
+# keep the fan off in normal use; the CPU throttles at 80000.
+factory_poe_fan: true
+poe_fan_trip_points_mc: [75000, 77000, 78000, 79000]

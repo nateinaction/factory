@@ -11,6 +11,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`, bound to `127.0.0.1:8080` |
+| `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
 ## Use
