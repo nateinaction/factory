@@ -13,7 +13,7 @@ Environment=HOME={{ dagu_home }}
 Environment=PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
 {% if dagu_mode == 'server' %}
 # Bound to localhost; tailscale serve exposes the UI and the coordinator. Change the host deliberately.
-ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }} --coordinator.host 127.0.0.1 --coordinator.port {{ dagu_coordinator_port }}
+ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }} --coordinator.host 127.0.0.1 --coordinator.advertise {{ hostvars[groups["dagu_server"][0]].ansible_host }} --coordinator.port {{ dagu_coordinator_port }}
 {% else %}
 # Worker only: no UI. Polls the coordinator for runs matching its labels.
 ExecStart=/usr/local/bin/dagu worker --worker.coordinators {{ dagu_coordinator_address }} --worker.labels {{ dagu_worker_labels }} --worker.max-active-runs 1 --worker.health-port 0
