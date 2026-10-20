@@ -2,6 +2,8 @@
 # One agent run at a time on the 8GB host.
 type: graph
 max_active_runs: 1
+worker_selector:
+  {{ dagu_worker_labels.split('=')[0] }}: {{ dagu_worker_labels.split('=')[1] }}
 params:
   - name: ISSUE
     type: string
@@ -10,5 +12,3 @@ params:
 steps:
   - name: work
     run: /usr/local/bin/finances-agent work ${params.ISSUE}
-    worker_selector:
-      {{ dagu_worker_labels.split('=')[0] }}: {{ dagu_worker_labels.split('=')[1] }}
