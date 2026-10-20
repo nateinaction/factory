@@ -49,7 +49,11 @@ before expiry). git picks it up through the credential helper in
 with no further setup. For the API: `GH_TOKEN=$(github-app-token token)`.
 
 The unit binds the UI to localhost because dagu has no authentication here.
-Reach it with `ssh -L 8080:127.0.0.1:8080 <host>`.
+With `dagu_tailscale_serve` (default on), `tailscale serve` proxies it to the
+tailnet at `https://<host>.<tailnet>.ts.net/` (needs HTTPS enabled on the tailnet) (needs tailscale already installed and up on the
+host). dagu has no auth, so anyone on the tailnet can run workflows with the
+GitHub credential: restrict access with tailscale ACLs. Set it false to fall
+back to `ssh -L 8080:127.0.0.1:8080 <host>`.
 
 ## Not covered
 

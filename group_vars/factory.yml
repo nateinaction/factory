@@ -11,6 +11,9 @@ dagu_user: dagu
 dagu_home: /var/lib/dagu
 dagu_host: 127.0.0.1 # the UI has no auth configured; do not widen this casually
 dagu_port: 8080
+# Proxy the UI to the tailnet over HTTPS via `tailscale serve`. dagu itself
+# stays on localhost. Anyone on the tailnet can then run workflows: restrict with ACLs.
+dagu_tailscale_serve: true
 
 factory_user: factory
 

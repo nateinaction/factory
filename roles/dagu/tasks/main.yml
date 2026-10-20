@@ -67,3 +67,32 @@
     enabled: true
     state: started
     daemon_reload: true
+
+# dagu stays on localhost; tailscaled terminates HTTPS (tailnet certs) and proxies
+# to it.
+- name: Read the current tailscale serve config
+  ansible.builtin.command: tailscale serve status
+  register: dagu_serve_status
+  changed_when: false
+  failed_when: false # tailscale not up yet is reported by the assert below
+  check_mode: false
+  when: dagu_tailscale_serve | bool
+
+- name: Fail if tailscale is not available
+  ansible.builtin.assert:
+    that: dagu_serve_status.rc == 0
+    fail_msg: "tailscale serve status failed: {{ dagu_serve_status.stderr | default('') }}"
+  when: dagu_tailscale_serve | bool
+
+- name: Serve the dagu UI to the tailnet over HTTPS
+  ansible.builtin.command: "tailscale serve --bg --https=443 http://{{ dagu_host }}:{{ dagu_port }}"
+  when:
+    - dagu_tailscale_serve | bool
+    - "('http://' ~ dagu_host ~ ':' ~ dagu_port) not in dagu_serve_status.stdout or not (dagu_serve_status.stdout is search('(?m)^https://'))"
+
+# Drop the earlier plain-HTTP listener so the UI is only reachable over HTTPS.
+- name: Stop serving the dagu UI over plain HTTP
+  ansible.builtin.command: tailscale serve --http=80 off
+  when:
+    - dagu_tailscale_serve | bool
+    - dagu_serve_status.stdout is search('(?m)^http://')
