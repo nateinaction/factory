@@ -1,5 +1,6 @@
-# Queued by finances-agent-poll with the claimed issue number; executed on a worker.
-# One agent run at a time on the 8GB host.
+# Queued by finances-agent-poll with the claimed issue number and a MODE (work to
+# implement, review to review its PR); executed on a worker. Both modes share this
+# DAG so max_active_runs keeps it to one agent run at a time on the 8GB host.
 type: graph
 max_active_runs: 1
 worker_selector:
@@ -9,6 +10,10 @@ params:
     type: string
     required: true
     description: Number of the claimed GitHub issue
+  - name: MODE
+    type: string
+    required: true
+    description: work or review; the script rejects anything else
 steps:
   - name: work
-    run: /usr/local/bin/finances-agent work ${params.ISSUE}
+    run: /usr/local/bin/finances-agent ${params.MODE} ${params.ISSUE}

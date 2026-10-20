@@ -65,20 +65,34 @@ reach the UI and the coordinator port, so restrict both with tailscale ACLs. Set
 
 ## Issue agent
 
-Labelling an issue `ready-for-agent` on `factory_agent_repo` opens a PR for it.
+Labelling an issue `ready-for-agent` opens a PR for it, and the agent then
+reviews that PR.
 
 1. `finances-agent-poll` runs on the server every 5 minutes. It uses no model.
-   It takes the oldest open `ready-for-agent` issue, swaps the label to
-   `agent-working` and queues `finances-agent-work`. No issue means it exits.
+   It takes the oldest open `ready-for-agent-review` issue, or failing that the
+   oldest `ready-for-agent` one, swaps the label to `agent-reviewing` or
+   `agent-working`, and queues `finances-agent-work` with `MODE=review` or
+   `MODE=work`. Nothing ready means it exits.
 2. `finances-agent-work` runs on a worker labelled `runner=agent`, one at a
    time. It mints a one-hour token scoped to the repo
    (`github-app-token token --repo`), writes it to `/run/factory/gh-token`, and
-   runs `finances-agent run N` as `factory` through a single-command sudoers
-   rule.
-3. As `factory`, it clones the repo onto `agent/issue-N`, runs
-   `opencode run` with the `implement` skill, pushes, and opens a PR.
-4. The issue ends up `agent-done`, or `agent-failed` with a comment. Re-apply
-   `ready-for-agent` to retry.
+   runs `finances-agent run N` (or `review-run N`) as `factory` through a
+   single-purpose sudoers rule.
+3. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
+   with the `implement` skill, pushes, and opens a PR. If the PR already exists
+   (a rework), it continues from that branch with the latest review in the
+   prompt. Then it continues the same opencode session with the `retro` skill
+   and posts the result as a comment on the open issue labelled `retro` (it
+   creates "Agent retros" the first time). The retro is best effort: a failure
+   is logged and does not fail the run. The issue becomes
+   `ready-for-agent-review`.
+4. Review (`review-run`): checks out the PR branch, runs the `code-review` skill
+   against the issue as spec, and posts the findings on the PR as a review. With
+   no high or medium findings it approves and the issue becomes `agent-done`.
+   Otherwise the issue goes back to `ready-for-agent` for another implement
+   pass, up to 3 reviews, after which it is `agent-failed`.
+5. Any failure leaves the issue `agent-failed` with a comment. Re-apply
+   `ready-for-agent` (or `ready-for-agent-review`) to retry.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
 OpenRouter key. The GitHub App needs Contents, Issues and Pull requests set to
@@ -89,6 +103,9 @@ Things to know:
 
 - The worker's dagu unit sets `NoNewPrivileges=false` so `sudo` can run.
 - A run past an hour loses its token, and the agent has a one-hour cap.
+- GitHub does not let a PR's author approve it, and the App opens the PRs, so the
+  review agent's approval is rejected. It then posts a comment review saying so;
+  `agent-done` is the real signal. Approving needs a second identity.
 - opencode runs with all permissions allowed. The `ready-for-agent` label is
   the gate, so only people you trust should be able to apply it.
 - After a failed play, handlers (service restarts) did not run. Rerun the play

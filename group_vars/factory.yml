@@ -40,9 +40,12 @@ opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
   amd64: "sha256:13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b"
-# https://github.com/mattpocock/skills, pinned. implement calls tdd and code-review.
+# https://github.com/mattpocock/skills, pinned. implement calls tdd and code-review; the
+# agent runs retro after each implementation, which calls writing-for-agents.
 mattpocock_skills_ref: 49dd158d1076134a641b33efb035946536778336
 mattpocock_skills:
   - { name: implement, path: skills/engineering/implement }
   - { name: tdd, path: skills/engineering/tdd }
   - { name: code-review, path: skills/engineering/code-review }
+  - { name: retro, path: skills/engineering/retro }
+  - { name: writing-for-agents, path: skills/productivity/writing-for-agents }

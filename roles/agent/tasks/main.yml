@@ -58,13 +58,13 @@
       ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
       when: agent_tmpfiles is changed
 
-    # One command, as one user. The wildcard is the issue number; the script rejects anything else.
-    - name: Allow dagu to run the agent as factory, and nothing else
+    # Two commands, as one user. The wildcard is the issue number; the script rejects anything else.
+    - name: Allow dagu to run the agent and the reviewer as factory, and nothing else
       ansible.builtin.copy:
         # secure_path: sudo resets PATH, which would hide git and the other nix-profile tools from the agent.
         content: |
           Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
-          {{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/finances-agent run *
+          {{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/finances-agent run *, /usr/local/bin/finances-agent review-run *
         dest: /etc/sudoers.d/dagu-agent
         owner: root
         group: root
