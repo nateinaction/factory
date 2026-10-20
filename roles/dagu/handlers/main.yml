@@ -1,0 +1,6 @@
+---
+- name: Restart dagu
+  ansible.builtin.systemd_service:
+    name: dagu
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,37 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Map the hostname to 127.0.1.1
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: "127.0.1.1 {{ inventory_hostname }}"
+
+- name: Enable the locale in locale.gen
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: '^#?\s*{{ factory_locale | regex_escape }}\s'
+    line: "{{ factory_locale }} UTF-8"
+  notify: Generate locales
+
+- name: Install the login status banner
+  ansible.builtin.copy:
+    src: 20-status
+    dest: /etc/update-motd.d/20-status
+    mode: "0755"
+
+- name: Keep the original motd, then empty it (drops the Debian licence text)
+  ansible.builtin.copy:
+    src: /etc/motd
+    dest: /etc/motd.orig
+    remote_src: true
+    force: false
+    mode: "0644"
+
+- name: Empty /etc/motd
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/motd
+    mode: "0644"

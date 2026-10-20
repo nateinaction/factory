@@ -1,0 +1,27 @@
+[Unit]
+Description=Dagu workflow engine (web UI + scheduler)
+Documentation=https://github.com/dagucloud/dagu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ dagu_user }}
+Group={{ dagu_user }}
+WorkingDirectory={{ dagu_home }}
+Environment=HOME={{ dagu_home }}
+Environment=PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+# Bound to localhost: the UI has no auth configured. Change the host deliberately.
+ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }}
+Restart=on-failure
+RestartSec=5
+# Back off instead of looping forever on a persistent crash.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+---
+# Locale generated so SSH clients that forward LANG/LC_ALL do not warn.
+factory_locale: en_US.UTF-8
+
+# dagu release, pinned and checksum-verified. Add an arch here to support it.
+dagu_version: "2.21.0"
+dagu_checksums:
+  arm64: "sha256:a03d1ab129d25323002e32b161870081b9db6e09d4bc455705725ccf9d846e74"
+  amd64: "sha256:4004de798006e4b70d8002f287f0389f34a8271baec380bccf60b710f0ae0f75"
+dagu_user: dagu
+dagu_home: /var/lib/dagu
+dagu_host: 127.0.0.1 # the UI has no auth configured; do not widen this casually
+dagu_port: 8080
+
+factory_user: factory
+
+# Set false to skip the GitHub App credential entirely.
+factory_github_app: true
+github_app_dir: /etc/github-app

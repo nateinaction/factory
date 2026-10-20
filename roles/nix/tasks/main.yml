@@ -1,0 +1,45 @@
+---
+- name: Check for Nix
+  ansible.builtin.stat:
+    path: /nix/var/nix/profiles/default/bin/nix
+  register: nix_bin
+
+# The Determinate installer enables flakes and the nix-command by default.
+# Downloaded to a file first so the script is on disk, not piped into a shell.
+- name: Download the Determinate Nix installer
+  ansible.builtin.get_url:
+    url: https://install.determinate.systems/nix
+    dest: /root/install-nix.sh
+    mode: "0700"
+  when: not nix_bin.stat.exists
+
+- name: Install Nix
+  ansible.builtin.command: /root/install-nix.sh install --no-confirm
+  args:
+    creates: /nix/var/nix/profiles/default/bin/nix
+  when: not nix_bin.stat.exists
+
+- name: Remove the installer
+  ansible.builtin.file:
+    path: /root/install-nix.sh
+    state: absent
+
+# System-wide git so service users without a nix profile (dagu) can use it.
+- name: Install git into the default (system-wide) nix profile
+  ansible.builtin.command: >-
+    /nix/var/nix/profiles/default/bin/nix profile add
+    --profile /nix/var/nix/profiles/default nixpkgs#git
+  args:
+    creates: /nix/var/nix/profiles/default/bin/git
+  environment:
+    PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+
+- name: Install direnv and nix-direnv for the admin user
+  ansible.builtin.command: >-
+    /nix/var/nix/profiles/default/bin/nix profile add
+    nixpkgs#direnv nixpkgs#nix-direnv
+  args:
+    creates: "/home/{{ ansible_user }}/.nix-profile/bin/direnv"
+  become: false
+  environment:
+    PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin

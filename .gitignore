@@ -1,0 +1,6 @@
+.direnv/
+# Credentials never go in this repo. Only the *.example.yml template is tracked.
+secrets/*
+!secrets/*.example.yml
+!secrets/.gitkeep
+*.pem

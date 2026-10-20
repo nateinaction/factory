@@ -1,0 +1,19 @@
+---
+# Service account: no login shell, owns dagu state. Not in sudo or any other group.
+- name: Create the dagu service user
+  ansible.builtin.user:
+    name: "{{ dagu_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ dagu_home }}"
+    create_home: true
+    comment: dagu service
+
+# Regular account with no password, no ssh keys, no sudo.
+# Reach it from the admin user with: sudo -iu factory
+- name: Create the factory user
+  ansible.builtin.user:
+    name: "{{ factory_user }}"
+    shell: /bin/bash
+    password_lock: true
+    comment: factory

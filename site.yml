@@ -1,0 +1,11 @@
+---
+- name: Provision factory hosts
+  hosts: factory
+  become: true
+  roles:
+    - base
+    - nix
+    - users
+    - dagu
+    - role: github_app
+      when: factory_github_app | bool

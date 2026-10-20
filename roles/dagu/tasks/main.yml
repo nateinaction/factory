@@ -1,0 +1,69 @@
+---
+- name: Map the CPU architecture to dagu's release naming
+  ansible.builtin.set_fact:
+    dagu_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+- name: Fail on an architecture without a pinned checksum
+  ansible.builtin.assert:
+    that: dagu_arch in dagu_checksums
+    fail_msg: "no dagu checksum pinned for {{ dagu_arch }}; add it to group_vars/factory.yml"
+
+- name: Read the installed dagu version
+  ansible.builtin.command: /usr/local/bin/dagu version
+  register: dagu_installed
+  changed_when: false
+  failed_when: false # not installed yet is a valid state, handled by the next block
+  check_mode: false
+
+# Only runs when the installed version differs, so a converged host reports no change.
+- name: Install dagu
+  when: dagu_installed.stdout | default('') | trim != dagu_version
+  block:
+    - name: Download and verify the dagu release
+      ansible.builtin.get_url:
+        url: "https://github.com/dagucloud/dagu/releases/download/v{{ dagu_version }}/dagu_{{ dagu_version }}_linux_{{ dagu_arch }}.tar.gz"
+        dest: "/tmp/dagu-{{ dagu_version }}-{{ dagu_arch }}.tar.gz"
+        checksum: "{{ dagu_checksums[dagu_arch] }}"
+        mode: "0600"
+
+    - name: Unpack dagu
+      ansible.builtin.unarchive:
+        src: "/tmp/dagu-{{ dagu_version }}-{{ dagu_arch }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+        include: [dagu]
+      when: not ansible_check_mode # nothing was downloaded to unpack
+
+    - name: Install the dagu binary
+      ansible.builtin.copy:
+        src: /tmp/dagu
+        dest: /usr/local/bin/dagu
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: not ansible_check_mode
+      notify: Restart dagu
+
+    - name: Remove download artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/dagu
+        - "/tmp/dagu-{{ dagu_version }}-{{ dagu_arch }}.tar.gz"
+      when: not ansible_check_mode
+
+- name: Install the dagu systemd unit
+  ansible.builtin.template:
+    src: dagu.service.j2
+    dest: /etc/systemd/system/dagu.service
+    mode: "0644"
+  notify: Restart dagu
+
+- name: Enable and start dagu
+  ansible.builtin.systemd_service:
+    name: dagu
+    enabled: true
+    state: started
+    daemon_reload: true
