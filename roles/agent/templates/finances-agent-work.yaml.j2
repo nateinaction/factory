@@ -1,0 +1,14 @@
+# Queued by finances-agent-poll with the claimed issue number; executed on a worker.
+# One agent run at a time on the 8GB host.
+type: graph
+max_active_runs: 1
+params:
+  - name: ISSUE
+    type: string
+    required: true
+    description: Number of the claimed GitHub issue
+steps:
+  - name: work
+    run: /usr/local/bin/finances-agent work ${params.ISSUE}
+    worker_selector:
+      {{ dagu_worker_labels.split('=')[0] }}: {{ dagu_worker_labels.split('=')[1] }}

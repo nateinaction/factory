@@ -69,7 +69,8 @@
     daemon_reload: true
 
 # dagu stays on localhost; tailscaled terminates HTTPS (tailnet certs) and proxies
-# to it.
+# to it. Only the server exposes anything: the UI over HTTPS, and the coordinator's
+# gRPC port as raw TCP for the workers (tailnet traffic is already encrypted).
 - name: Read the current tailscale serve config
   ansible.builtin.command: tailscale serve status
   register: dagu_serve_status
@@ -88,7 +89,15 @@
   ansible.builtin.command: "tailscale serve --bg --https=443 http://{{ dagu_host }}:{{ dagu_port }}"
   when:
     - dagu_tailscale_serve | bool
+    - dagu_mode == 'server'
     - "('http://' ~ dagu_host ~ ':' ~ dagu_port) not in dagu_serve_status.stdout or not (dagu_serve_status.stdout is search('(?m)^https://'))"
+
+- name: Serve the dagu coordinator to the tailnet workers
+  ansible.builtin.command: "tailscale serve --bg --tcp={{ dagu_coordinator_port }} tcp://127.0.0.1:{{ dagu_coordinator_port }}"
+  when:
+    - dagu_tailscale_serve | bool
+    - dagu_mode == 'server'
+    - (dagu_coordinator_port | string) not in dagu_serve_status.stdout
 
 # Drop the earlier plain-HTTP listener so the UI is only reachable over HTTPS.
 - name: Stop serving the dagu UI over plain HTTP
@@ -96,3 +105,11 @@
   when:
     - dagu_tailscale_serve | bool
     - dagu_serve_status.stdout is search('(?m)^http://')
+
+# A worker has no UI; remove the proxy left from when every host ran start-all.
+- name: Stop serving a UI that no longer exists on the worker
+  ansible.builtin.command: tailscale serve --https=443 off
+  when:
+    - dagu_tailscale_serve | bool
+    - dagu_mode == 'worker'
+    - dagu_serve_status.stdout is search('(?m)^https://')

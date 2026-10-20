@@ -1,0 +1,173 @@
+---
+# Every host: the script (poll runs on the server, work on the worker) and its config.
+- name: Install the agent script
+  ansible.builtin.copy:
+    src: finances-agent
+    dest: /usr/local/bin/finances-agent
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the agent config directory
+  ansible.builtin.file:
+    path: /etc/factory-agent
+    state: directory
+    mode: "0755"
+
+- name: Write the agent config
+  ansible.builtin.copy:
+    content: "{{ {'repo': factory_agent_repo, 'model': factory_agent_model} | to_nice_json }}\n"
+    dest: /etc/factory-agent/config.json
+    mode: "0644"
+
+# Server: poll on a schedule (no model), and the run it queues for a worker.
+- name: Deploy the agent DAGs to the dagu server
+  ansible.builtin.template:
+    src: "{{ item }}.yaml.j2"
+    dest: "{{ dagu_home }}/.config/dagu/dags/{{ item }}.yaml"
+    owner: "{{ dagu_user }}"
+    group: "{{ dagu_user }}"
+    mode: "0644"
+  loop: [finances-agent-poll, finances-agent-work]
+  when: dagu_mode == 'server'
+
+- name: Set up the agent runner
+  when: dagu_mode == 'worker'
+  block:
+    - name: Load the opencode secrets
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/secrets/opencode.yml"
+      no_log: true
+      # Fail closed: a missing file stops the play rather than skipping silently.
+
+    - name: Let dagu hand the factory user a token file
+      ansible.builtin.user:
+        name: "{{ dagu_user }}"
+        groups: "{{ factory_user }}"
+        append: true
+      notify: Restart dagu
+
+    - name: Create the token directory at boot (setgid, so tokens land group-readable by factory)
+      ansible.builtin.copy:
+        content: "d /run/factory 2750 {{ dagu_user }} {{ factory_user }} -\n"
+        dest: /etc/tmpfiles.d/factory-agent.conf
+        mode: "0644"
+      register: agent_tmpfiles
+
+    - name: Create the token directory now
+      ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
+      when: agent_tmpfiles is changed
+
+    # One command, as one user. The wildcard is the issue number; the script rejects anything else.
+    - name: Allow dagu to run the agent as factory, and nothing else
+      ansible.builtin.copy:
+        content: "{{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/finances-agent run *\n"
+        dest: /etc/sudoers.d/dagu-agent
+        owner: root
+        group: root
+        mode: "0440"
+        validate: visudo -cf %s
+
+    - name: Map the CPU architecture to opencode's release naming
+      ansible.builtin.set_fact:
+        opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+    - name: Fail on an architecture without a pinned checksum
+      ansible.builtin.assert:
+        that: opencode_arch in opencode_checksums
+        fail_msg: "no opencode checksum pinned for {{ opencode_arch }}; add it to group_vars/factory.yml"
+
+    - name: Read the installed opencode version
+      ansible.builtin.command: /usr/local/bin/opencode --version
+      register: opencode_installed
+      changed_when: false
+      failed_when: false # not installed yet is a valid state, handled by the next block
+      check_mode: false
+
+    - name: Install opencode
+      when: opencode_installed.stdout | default('') | trim != opencode_version
+      block:
+        - name: Download and verify the opencode release
+          ansible.builtin.get_url:
+            url: "https://github.com/sst/opencode/releases/download/v{{ opencode_version }}/opencode-linux-{{ {'arm64': 'arm64', 'amd64': 'x64'}[opencode_arch] }}.tar.gz"
+            dest: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            checksum: "{{ opencode_checksums[opencode_arch] }}"
+            mode: "0600"
+
+        - name: Unpack opencode
+          ansible.builtin.unarchive:
+            src: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            dest: /tmp
+            remote_src: true
+            include: [opencode]
+          when: not ansible_check_mode # nothing was downloaded to unpack
+
+        - name: Install the opencode binary
+          ansible.builtin.copy:
+            src: /tmp/opencode
+            dest: /usr/local/bin/opencode
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+          when: not ansible_check_mode
+
+        - name: Remove download artifacts
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/opencode
+            - "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+          when: not ansible_check_mode
+
+    - name: Create the factory user's agent directories
+      ansible.builtin.file:
+        path: "/home/{{ factory_user }}/{{ item.path }}"
+        state: directory
+        owner: "{{ factory_user }}"
+        group: "{{ factory_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: .config, mode: "0755" }
+        - { path: .config/factory-agent, mode: "0700" }
+        - { path: .config/opencode, mode: "0755" }
+        - { path: .config/opencode/skills, mode: "0755" }
+        - { path: work, mode: "0755" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Install the OpenRouter key (factory only)
+      ansible.builtin.copy:
+        content: "{{ openrouter_api_key }}\n"
+        dest: "/home/{{ factory_user }}/.config/factory-agent/openrouter-key"
+        owner: "{{ factory_user }}"
+        group: "{{ factory_user }}"
+        mode: "0400"
+      no_log: true
+
+    - name: Configure opencode for unattended runs
+      ansible.builtin.template:
+        src: opencode.json.j2
+        dest: "/home/{{ factory_user }}/.config/opencode/opencode.json"
+        owner: "{{ factory_user }}"
+        group: "{{ factory_user }}"
+        mode: "0644"
+
+    - name: Fetch the pinned mattpocock skills
+      ansible.builtin.git:
+        repo: https://github.com/mattpocock/skills.git
+        dest: /opt/mattpocock-skills
+        version: "{{ mattpocock_skills_ref }}"
+        executable: /nix/var/nix/profiles/default/bin/git # the nix role's system-wide git is not on root's PATH
+
+    - name: Link the skills opencode needs into the factory user's skills directory
+      ansible.builtin.file:
+        src: "/opt/mattpocock-skills/{{ item.path }}"
+        dest: "/home/{{ factory_user }}/.config/opencode/skills/{{ item.name }}"
+        state: link
+        owner: "{{ factory_user }}"
+        group: "{{ factory_user }}"
+      loop: "{{ mattpocock_skills }}"
+      loop_control:
+        label: "{{ item.name }}"

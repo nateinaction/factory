@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Turn a `ready-for-agent` GitHub issue into a pull request.
+
+  finances-agent poll         (dagu server, every few minutes) claim one ready issue, queue its run
+  finances-agent work ISSUE   (dagu worker) give factory a token, run the agent, record the outcome
+  finances-agent run ISSUE    (factory, via sudo) clone, run opencode, push, open the PR
+
+`poll` and `work` run as the dagu user, which owns the GitHub App key. Polling
+involves no model and no worker. `work` mints a repo-scoped token, writes it
+where the factory user can read it, and starts `run` as factory. Re-running either command is safe: claiming is a label swap
+that fails closed when someone else got there first, and `run` rebuilds its
+workspace and branch from scratch.
+
+Config: /etc/factory-agent/config.json (or $FACTORY_AGENT_CONFIG), written by the
+role, as {"repo": "owner/name", "model": "provider/model"}. A file rather than the
+environment because sudo resets the environment between `work` and `run`.
+"""
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+API = "https://api.github.com"
+TOKEN_FILE = "/run/factory/gh-token"
+KEY_FILE = os.path.expanduser("~/.config/factory-agent/openrouter-key")
+WORK_ROOT = os.path.expanduser("~/work")
+SELF = "/usr/local/bin/finances-agent"
+WORK_DAG = "finances-agent-work"
+CONFIG_FILE = os.environ.get("FACTORY_AGENT_CONFIG", "/etc/factory-agent/config.json")
+
+READY, WORKING, DONE, FAILED = "ready-for-agent", "agent-working", "agent-done", "agent-failed"
+
+ISSUES_PER_PAGE = 20
+BODY_LIMIT_CHARS = 20_000
+HTTP_TIMEOUT_S = 20
+GIT_TIMEOUT_S = 300
+AGENT_TIMEOUT_S = 3600
+
+
+# --- pure core ---------------------------------------------------------------
+
+def parse_issue_number(text):
+    """An issue number is digits only: it ends up in a path and a branch name."""
+    if not re.fullmatch(r"[0-9]{1,9}", text):
+        raise ValueError(f"not an issue number: {text!r}")
+    return int(text)
+
+
+def pick_issue(issues):
+    """Oldest first, as the API returns them. The issues endpoint also lists PRs."""
+    return next((i for i in issues if "pull_request" not in i), None)
+
+
+def branch_name(number):
+    return f"agent/issue-{number}"
+
+
+def agent_prompt(repo, issue):
+    body = (issue.get("body") or "")[:BODY_LIMIT_CHARS]
+    return (
+        f"Use the `implement` skill to implement GitHub issue #{issue['number']} "
+        f"of {repo}. The repository is the current directory, already on its own "
+        f"branch. Commit your work to this branch; do not push.\n\n"
+        f"Title: {issue['title']}\n\n{body}"
+    )
+
+
+def git_auth_env(token):
+    """Credentials for git over the environment, so they never appear in argv."""
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+# --- GitHub (edge) -----------------------------------------------------------
+
+def api(method, path, token, body=None):
+    req = urllib.request.Request(
+        API + path, method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "finances-agent",
+                 "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as r:
+        raw = r.read()
+    return json.loads(raw) if raw else None
+
+
+def list_ready(repo, token):
+    q = f"state=open&labels={READY}&sort=created&direction=asc&per_page={ISSUES_PER_PAGE}"
+    return api("GET", f"/repos/{repo}/issues?{q}", token)
+
+
+def comment(repo, number, token, text):
+    api("POST", f"/repos/{repo}/issues/{number}/comments", token, {"body": text})
+
+
+def claim(repo, number, token):
+    """Swap ready -> working. False when the label is already gone: someone else claimed it."""
+    try:
+        api("DELETE", f"/repos/{repo}/issues/{number}/labels/{READY}", token)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+    api("POST", f"/repos/{repo}/issues/{number}/labels", token, {"labels": [WORKING]})
+    return True
+
+
+def finish(repo, number, token, label, text):
+    try:
+        api("DELETE", f"/repos/{repo}/issues/{number}/labels/{WORKING}", token)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:  # already removed by a person: fine, still record the outcome
+            raise
+    api("POST", f"/repos/{repo}/issues/{number}/labels", token, {"labels": [label]})
+    comment(repo, number, token, text)
+
+
+def existing_pr(repo, branch, token):
+    owner = repo.split("/")[0]
+    pulls = api("GET", f"/repos/{repo}/pulls?state=open&head={owner}:{branch}", token)
+    return pulls[0] if pulls else None
+
+
+# --- commands (shell) --------------------------------------------------------
+
+def mint_token(repo_name):
+    # stderr is inherited so the helper's error reaches the dagu log; it never prints the token there.
+    out = subprocess.run(["/usr/local/bin/github-app-token", "token", "--repo", repo_name],
+                         stdout=subprocess.PIPE, text=True, check=True, timeout=30)
+    return out.stdout.strip()
+
+
+def write_token_file(token):
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    os.chmod(TOKEN_FILE, 0o640)  # group factory, set by the directory's setgid bit
+
+
+def cmd_poll(repo):
+    """Deterministic and cheap: no model involved. Claim at most one issue and queue its run."""
+    token = mint_token(repo.split("/")[1])
+    issue = pick_issue(list_ready(repo, token))
+    if issue is None:
+        print("no ready issues")
+        return 0
+    number = issue["number"]
+    if not claim(repo, number, token):
+        print(f"issue {number} was claimed by someone else")
+        return 0
+    comment(repo, number, token, "Picked up by the factory agent.")
+    try:
+        subprocess.run(["/usr/local/bin/dagu", "enqueue", WORK_DAG, "--", f"ISSUE={number}"],
+                       check=True, timeout=GIT_TIMEOUT_S)
+    except Exception as e:  # the issue must not stay "working" with nothing running
+        print(f"finances-agent: {type(e).__name__}: {e}", file=sys.stderr)
+        finish(repo, number, token, FAILED, "Could not queue the agent run; see the dagu log.")
+        return 1
+    return 0
+
+
+def cmd_work(repo, number):
+    """On the worker: hand the factory user a token, run the agent, record the outcome."""
+    try:
+        ok = run_agent(number, mint_token(repo.split("/")[1]))
+    except Exception as e:  # recorded in the dagu log; the issue must not stay "working"
+        print(f"finances-agent: {type(e).__name__}: {e}", file=sys.stderr)
+        ok = False
+    token = mint_token(repo.split("/")[1])  # fresh: the run may have outlived the first one
+    if ok:
+        finish(repo, number, token, DONE, "The agent finished; see the linked pull request.")
+        return 0
+    finish(repo, number, token, FAILED,
+           "The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry.")
+    return 1
+
+
+def run_agent(number, token):
+    write_token_file(token)
+    try:
+        r = subprocess.run(["sudo", "-n", "-u", "factory", SELF, "run", str(number)],
+                           timeout=AGENT_TIMEOUT_S + GIT_TIMEOUT_S * 2)
+        return r.returncode == 0
+    finally:
+        os.remove(TOKEN_FILE)  # the token also dies within the hour; don't leave it lying around
+
+
+def run(argv, **kw):
+    """Run a command, never through a shell, always with a ceiling."""
+    return subprocess.run(argv, check=True, timeout=kw.pop("timeout", GIT_TIMEOUT_S), **kw)
+
+
+def cmd_run(repo, model, number):
+    with open(TOKEN_FILE) as f:
+        token = f.read().strip()
+    with open(KEY_FILE) as f:
+        openrouter_key = f.read().strip()
+    issue = api("GET", f"/repos/{repo}/issues/{number}", token)
+    branch = branch_name(number)
+    workdir = os.path.join(WORK_ROOT, f"issue-{number}")
+    shutil.rmtree(workdir, ignore_errors=True)  # a clean slate makes a re-run equal to a first run
+    os.makedirs(WORK_ROOT, exist_ok=True)
+
+    git_env = {**os.environ, **git_auth_env(token)}
+    run(["git", "clone", f"https://github.com/{repo}.git", workdir], env=git_env)
+    git = ["git", "-C", workdir, "-c", "user.name=factory-agent",
+           "-c", "user.email=factory-agent@users.noreply.github.com"]
+    run([*git, "checkout", "-B", branch])
+
+    agent_env = {**os.environ, "OPENROUTER_API_KEY": openrouter_key}
+    run(["opencode", "run", "--model", model, agent_prompt(repo, issue)],
+        cwd=workdir, env=agent_env, timeout=AGENT_TIMEOUT_S)
+
+    # Never discard the agent's work silently: no commits means no PR, and that is a failure.
+    ahead = run([*git, "rev-list", "--count", f"origin/HEAD..{branch}"],
+                capture_output=True, text=True).stdout.strip()
+    if ahead == "0":
+        raise RuntimeError("the agent made no commits")
+    run([*git, "push", "--force", "origin", branch], env=git_env)  # agent/* branches are ours alone
+
+    pr = existing_pr(repo, branch, token) or api("POST", f"/repos/{repo}/pulls", token, {
+        "title": issue["title"], "head": branch, "base": default_branch(repo, token),
+        "body": f"Closes #{number}\n\nOpened by the factory agent.",
+    })
+    comment(repo, number, token, f"Pull request: {pr['html_url']}")
+    print(pr["html_url"])
+    return 0
+
+
+def default_branch(repo, token):
+    return api("GET", f"/repos/{repo}", token)["default_branch"]
+
+
+def load_config():
+    with open(CONFIG_FILE) as f:
+        c = json.load(f)
+    return c["repo"], c["model"]
+
+
+def main(argv):
+    repo, model = load_config()
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise ValueError(f"config repo must be owner/name, got {repo!r}")
+    if argv[1:2] == ["poll"] and len(argv) == 2:
+        return cmd_poll(repo)
+    if argv[1:2] == ["work"] and len(argv) == 3:
+        return cmd_work(repo, parse_issue_number(argv[2]))
+    if argv[1:2] == ["run"] and len(argv) == 3:
+        return cmd_run(repo, model, parse_issue_number(argv[2]))
+    sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except Exception as e:  # fail closed: a nonzero exit, never a half-claimed success. No tokens in messages.
+        sys.exit(f"finances-agent: {type(e).__name__}: {e}")

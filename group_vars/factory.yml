@@ -9,8 +9,13 @@ dagu_checksums:
   amd64: "sha256:4004de798006e4b70d8002f287f0389f34a8271baec380bccf60b710f0ae0f75"
 dagu_user: dagu
 dagu_home: /var/lib/dagu
-dagu_host: 127.0.0.1 # the UI has no auth configured; do not widen this casually
+dagu_host: 127.0.0.1 # bind the UI to localhost; tailscale serve exposes it. Do not widen casually
 dagu_port: 8080
+# "server" runs the UI + scheduler + coordinator; "worker" only executes dispatched runs.
+dagu_mode: "{{ 'worker' if inventory_hostname in groups['dagu_worker'] else 'server' }}"
+dagu_coordinator_port: 50055
+dagu_coordinator_address: "{{ groups['dagu_server'][0] }}:{{ dagu_coordinator_port }}"
+dagu_worker_labels: runner=agent
 # Proxy the UI to the tailnet over HTTPS via `tailscale serve`. dagu itself
 # stays on localhost. Anyone on the tailnet can then run workflows: restrict with ACLs.
 dagu_tailscale_serve: true
@@ -25,3 +30,19 @@ github_app_dir: /etc/github-app
 # keep the fan off in normal use; the CPU throttles at 80000.
 factory_poe_fan: true
 poe_fan_trip_points_mc: [75000, 77000, 78000, 79000]
+
+# Issue-driven agent (runs on the dagu worker). Picks up open issues labelled
+# ready-for-agent on factory_agent_repo and runs opencode's implement skill.
+factory_agent: true
+factory_agent_repo: nateinaction/finances
+factory_agent_model: openrouter/deepseek/deepseek-v4.1-flash
+opencode_version: "1.19.3"
+opencode_checksums:
+  arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
+  amd64: "sha256:13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b"
+# https://github.com/mattpocock/skills, pinned. implement calls tdd and code-review.
+mattpocock_skills_ref: 49dd158d1076134a641b33efb035946536778336
+mattpocock_skills:
+  - { name: implement, path: skills/engineering/implement }
+  - { name: tdd, path: skills/engineering/tdd }
+  - { name: code-review, path: skills/engineering/code-review }

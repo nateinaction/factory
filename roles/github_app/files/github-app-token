@@ -2,6 +2,8 @@
 """Mint GitHub App installation tokens; doubles as a git credential helper.
 
   github-app-token token          print a valid installation token
+  github-app-token token --repo R print a fresh, uncached token limited to repo R
+                                  (contents, issues, pull_requests: write)
   github-app-token installation   print the installation id (lookup, not cached)
   github-app-token get            git credential helper (use via credential.helper)
 
@@ -18,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 CONF = os.environ.get("GITHUB_APP_DIR", "/etc/github-app")
@@ -27,6 +30,7 @@ CACHE = os.path.join(
 )
 API = "https://api.github.com"
 REFRESH_MARGIN_S = 300
+SCOPED_PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write"}
 
 
 def b64(b):
@@ -50,11 +54,13 @@ def jwt():
     return f"{head}.{body}.{b64(sig)}"
 
 
-def call(method, path, bearer):
+def call(method, path, bearer, body=None):
     req = urllib.request.Request(
         API + path, method=method,
+        data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {bearer}", "Accept": "application/vnd.github+json",
-                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "github-app-token"},
+                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "github-app-token",
+                 **({} if body is None else {"Content-Type": "application/json"})},
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
@@ -85,9 +91,23 @@ def token():
     return r["token"]
 
 
+def scoped_token(repo):
+    """A one-hour token for a single repo with only the permissions an agent needs.
+
+    Never cached: the caller wants the full hour, and a cache file would outlive it.
+    """
+    if "/" in repo or not repo:
+        raise ValueError(f"--repo takes a bare repo name, got {repo!r}")
+    body = {"repositories": [repo], "permissions": SCOPED_PERMISSIONS}
+    r = call("POST", f"/app/installations/{read('installation-id')}/access_tokens", jwt(), body)
+    return r["token"]
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "token":
+    if cmd == "token" and sys.argv[2:3] == ["--repo"] and len(sys.argv) == 4:
+        print(scoped_token(sys.argv[3]))
+    elif cmd == "token" and len(sys.argv) == 2:
         print(token())
     elif cmd == "installation":
         for i in call("GET", "/app/installations", jwt()):
@@ -104,5 +124,7 @@ def main():
 
 try:
     main()
+except urllib.error.HTTPError as e:  # fail closed; GitHub's error body says why and holds no secret
+    sys.exit(f"github-app-token: HTTPError {e.code}: {e.read().decode(errors='replace')[:500]}")
 except Exception as e:  # fail closed: no credential rather than a wrong one
     sys.exit(f"github-app-token: {type(e).__name__}: {e}")

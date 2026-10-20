@@ -10,7 +10,8 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `base` | hostname, `en_US.UTF-8` locale, a login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
-| `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`, bound to `127.0.0.1:8080` |
+| `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
+| `agent` | the issue-to-PR agent: `finances-agent`, pinned opencode, the pinned mattpocock skills, and the two DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
@@ -48,12 +49,50 @@ before expiry). git picks it up through the credential helper in
 `/var/lib/dagu/.gitconfig`, so DAG steps can `git clone https://github.com/...`
 with no further setup. For the API: `GH_TOKEN=$(github-app-token token)`.
 
-The unit binds the UI to localhost because dagu has no authentication here.
-With `dagu_tailscale_serve` (default on), `tailscale serve` proxies it to the
-tailnet at `https://<host>.<tailnet>.ts.net/` (needs HTTPS enabled on the tailnet) (needs tailscale already installed and up on the
-host). dagu has no auth, so anyone on the tailnet can run workflows with the
-GitHub credential: restrict access with tailscale ACLs. Set it false to fall
-back to `ssh -L 8080:127.0.0.1:8080 <host>`.
+## Dagu UI and coordinator
+
+Both stay on localhost; `tailscale serve` (`dagu_tailscale_serve`, default on)
+exposes them to the tailnet. It needs tailscale already installed and up, and
+HTTPS enabled on the tailnet.
+
+- UI: `https://<server>.<tailnet>.ts.net/` (server only).
+- Coordinator: raw TCP on port 50055, for the workers.
+
+dagu's own login is `builtin`: the first visitor to `/setup` creates the admin
+account, so do that straight after provisioning. Anyone on the tailnet can still
+reach the UI and the coordinator port, so restrict both with tailscale ACLs. Set
+`dagu_tailscale_serve: false` to fall back to `ssh -L 8080:127.0.0.1:8080 <host>`.
+
+## Issue agent
+
+Labelling an issue `ready-for-agent` on `factory_agent_repo` opens a PR for it.
+
+1. `finances-agent-poll` runs on the server every 5 minutes. It uses no model.
+   It takes the oldest open `ready-for-agent` issue, swaps the label to
+   `agent-working` and queues `finances-agent-work`. No issue means it exits.
+2. `finances-agent-work` runs on a worker labelled `runner=agent`, one at a
+   time. It mints a one-hour token scoped to the repo
+   (`github-app-token token --repo`), writes it to `/run/factory/gh-token`, and
+   runs `finances-agent run N` as `factory` through a single-command sudoers
+   rule.
+3. As `factory`, it clones the repo onto `agent/issue-N`, runs
+   `opencode run` with the `implement` skill, pushes, and opens a PR.
+4. The issue ends up `agent-done`, or `agent-failed` with a comment. Re-apply
+   `ready-for-agent` to retry.
+
+Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
+OpenRouter key. The GitHub App needs Contents, Issues and Pull requests set to
+write, and the installation must accept them. Pick the model with
+`factory_agent_model` (a `provider/model` id for opencode).
+
+Things to know:
+
+- The worker's dagu unit sets `NoNewPrivileges=false` so `sudo` can run.
+- A run past an hour loses its token, and the agent has a one-hour cap.
+- opencode runs with all permissions allowed. The `ready-for-agent` label is
+  the gate, so only people you trust should be able to apply it.
+- After a failed play, handlers (service restarts) did not run. Rerun the play
+  or restart `dagu` on the hosts.
 
 ## Not covered
 

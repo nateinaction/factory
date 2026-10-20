@@ -11,15 +11,26 @@ Group={{ dagu_user }}
 WorkingDirectory={{ dagu_home }}
 Environment=HOME={{ dagu_home }}
 Environment=PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
-# Bound to localhost: the UI has no auth configured. Change the host deliberately.
-ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }}
+{% if dagu_mode == 'server' %}
+# Bound to localhost; tailscale serve exposes the UI and the coordinator. Change the host deliberately.
+ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }} --coordinator.host 127.0.0.1 --coordinator.port {{ dagu_coordinator_port }}
+{% else %}
+# Worker only: no UI. Polls the coordinator for runs matching its labels.
+ExecStart=/usr/local/bin/dagu worker --worker.coordinators {{ dagu_coordinator_address }} --worker.labels {{ dagu_worker_labels }} --worker.max-active-runs 1 --worker.health-port 0
+{% endif %}
 Restart=on-failure
 RestartSec=5
 # Back off instead of looping forever on a persistent crash.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
+{% if factory_agent | bool and dagu_mode == 'worker' %}
+# sudo (to run the agent as the factory user) is a setuid transition, which
+# NoNewPrivileges forbids. The sudoers rule allows exactly one command.
+NoNewPrivileges=false
+{% else %}
 NoNewPrivileges=true
+{% endif %}
 ProtectSystem=full
 PrivateTmp=true
 

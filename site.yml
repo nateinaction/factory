@@ -9,5 +9,7 @@
     - dagu
     - role: github_app
       when: factory_github_app | bool
+    - role: agent
+      when: factory_agent | bool
     - role: poe_fan
       when: factory_poe_fan | bool
