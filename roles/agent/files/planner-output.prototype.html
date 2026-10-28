@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planner Output Prototype</title>
+<style>
+  :root { --fg:#1d1d1f; --muted:#6e6e73; --bg:#fbfbfd; --card:#fff; --line:#e3e3e8; --accent:#2f6fde; --bad:#c62828; --good:#2e7d32; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececf0; --muted:#9a9aa3; --bg:#141416; --card:#1d1d20; --line:#333338; --accent:#6c9cff; --bad:#ff6b6b; --good:#6fcf73; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system, system-ui, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .note { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--card); margin: 12px 0 20px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; min-width:0; }
+  button { font:inherit; padding:6px 10px; margin:3px 4px 3px 0; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); cursor:pointer; }
+  button:hover { border-color: var(--accent); }
+  button.next { border-color: var(--accent); color: var(--accent); font-weight:600; }
+  button:disabled { opacity:.4; cursor:default; }
+  .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  pre { white-space: pre-wrap; word-break: break-word; font: 12.5px/1.45 ui-monospace, Menlo, monospace; margin:0; }
+  .issue { border-top:1px solid var(--line); padding:8px 0; }
+  .issue:first-child { border-top:0; }
+  .lbl { display:inline-block; font-size:12px; padding:0 7px; border-radius:10px; border:1px solid var(--line); margin-right:4px; }
+  .lbl.f { border-color: var(--accent); color: var(--accent); }
+  .changed { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .log li { margin-bottom: 3px; } .err { color: var(--bad); } .ok { color: var(--good); }
+  .comment { font-size: 13px; border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Planner output: prototype</h1>
+<p class="muted">Throwaway. Answers <a href="https://github.com/nateinaction/factory/issues/17">Format of the Planner's output for the factory script</a>.</p>
+<div class="note">
+  <b>The question:</b> what file should the Planner write so the factory script can apply it to GitHub, given that the model holds no token and every effect must be safe to apply twice?<br>
+  <b>The idea on trial:</b> the Planner writes only two kinds of output, a <i>round of questions</i> or a <i>final round</i>. A final round carries the full proposal (spec, slices, map, or a resolution) inside the factory's own comment. When a writer answers "yes", the script applies <i>that stored proposal</i> with no model run, so what gets created is exactly what the writer approved. Every created thing carries a hidden key, so re-applying after a crash creates nothing twice.
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Scenarios</h2>
+    <div class="tabs" id="tabs"></div>
+    <p id="scDesc"></p>
+    <div id="scSteps"></div>
+    <h2 style="margin-top:18px">Free play</h2>
+    <div id="free"></div>
+    <h2 style="margin-top:18px">Planner output file for the last run</h2>
+    <pre id="out" class="muted">(none yet)</pre>
+  </div>
+  <div class="card">
+    <h2>What the script did</h2>
+    <ul class="log" id="log"></ul>
+    <h2 style="margin-top:18px">The tracker now</h2>
+    <div id="world"></div>
+  </div>
+</div>
+</main>
+
+<script>
+// ===== Portable module: validate a Planner output, and plan / apply it. Pure; no DOM. =====
+const Planner = (() => {
+  const SHAPES = ["single", "slices", "map", "resolution"];
+  const TICKET_TYPES = ["research", "prototype", "grilling", "task"];
+  const KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
+  const MARK = "<!-- factory:";
+
+  // Fail closed: any unknown field, label, shape or dangling key rejects the whole output.
+  function validate(o) {
+    const errs = [];
+    const only = (obj, keys, where) => Object.keys(obj || {}).forEach(k => { if (!keys.includes(k)) errs.push(`${where}: unknown field "${k}"`); });
+    const text = (v, where) => { if (typeof v !== "string" || !v.trim()) errs.push(`${where}: must be non-empty text`); else if (v.includes(MARK)) errs.push(`${where}: may not contain a factory marker`); };
+    if (!o || typeof o !== "object") return ["output is not an object"];
+    only(o, ["version", "kind", "comment", "proposal"], "output");
+    if (o.version !== 1) errs.push("version must be 1");
+    text(o.comment, "comment");
+    if (o.kind === "questions") { if (o.proposal !== undefined) errs.push("a round of questions carries no proposal"); }
+    else if (o.kind === "final_round") {
+      const p = o.proposal || {};
+      only(p, ["shape", "spec", "issues", "map", "resolution"], "proposal");
+      if (!SHAPES.includes(p.shape)) errs.push(`proposal.shape must be one of ${SHAPES.join(", ")}`);
+      if (p.shape !== "resolution") text(p.spec, "proposal.spec");
+      const issues = p.issues || [];
+      if (p.shape === "single" && issues.length) errs.push("a single-issue proposal creates no issues");
+      if ((p.shape === "slices" || p.shape === "map") && !issues.length) errs.push(`a ${p.shape} proposal needs issues`);
+      const keys = new Set();
+      issues.forEach((it, i) => {
+        const w = `issues[${i}]`;
+        only(it, ["key", "title", "body", "type", "blocked_by"], w);
+        if (!KEY.test(it.key || "")) errs.push(`${w}.key must be a short lowercase slug`);
+        if (keys.has(it.key)) errs.push(`${w}.key "${it.key}" repeats`);
+        keys.add(it.key); text(it.title, `${w}.title`); text(it.body, `${w}.body`);
+        const wantsType = p.shape === "map" || p.shape === "resolution";
+        if (wantsType && !TICKET_TYPES.includes(it.type)) errs.push(`${w}.type must be one of ${TICKET_TYPES.join(", ")}`);
+        if (!wantsType && it.type !== undefined) errs.push(`${w}.type is only for map tickets`);
+      });
+      issues.forEach((it, i) => (it.blocked_by || []).forEach(b => { if (!keys.has(b) && !/^#\d+$/.test(b)) errs.push(`issues[${i}].blocked_by "${b}" names no issue`); }));
+      if (p.shape === "map") { only(p.map, ["destination", "notes", "not_yet_specified", "out_of_scope"], "proposal.map"); text((p.map || {}).destination, "proposal.map.destination"); }
+      if (p.shape === "resolution") { only(p.resolution, ["answer", "decision_line"], "proposal.resolution"); text((p.resolution || {}).answer, "proposal.resolution.answer"); text((p.resolution || {}).decision_line, "proposal.resolution.decision_line"); }
+    } else errs.push('kind must be "questions" or "final_round"');
+    return errs;
+  }
+
+  const marker = (fields) => `${MARK}${Object.entries(fields).map(([k, v]) => `${k}=${v}`).join(" ")} -->`;
+  const findMarked = (world, needle) => Object.values(world.issues).find(i => i.body.includes(needle));
+  const QUEUE_FOR_TYPE = { research: "factory:research", prototype: "factory:plan", grilling: "factory:plan", task: "factory:plan" };
+
+  // A Planner run finished: what should the script do with its output?
+  function planRun(world, n, output) {
+    const errs = validate(output);
+    if (errs.length) return { errs, actions: [
+      { do: "comment", n, body: `${marker({ role: "planner", from: "factory:planning", to: "factory:failed" })}\nThe Planner's output was rejected: ${errs.join("; ")}` },
+      { do: "swap", n, from: "factory:planning", to: "factory:failed" }] };
+    let body = `${marker({ role: "planner", kind: output.kind, from: "factory:planning", to: "factory:waiting" })}\n${output.comment}`;
+    if (output.kind === "final_round") body += `\n\n${MARK}proposal\n${JSON.stringify(output.proposal)}\n-->`;
+    return { errs, actions: [{ do: "comment", n, body }, { do: "swap", n, from: "factory:planning", to: "factory:waiting" }] };
+  }
+
+  // The latest final round, if it was the factory's last word and was posted by the Planner App.
+  function storedProposal(issue) {
+    const i = issue.comments.map(c => c.author === "planner-app" && c.body.includes("kind=final_round")).lastIndexOf(true);
+    if (i < 0) return null;
+    const m = issue.comments[i].body.match(/<!-- factory:proposal\n([\s\S]*)\n-->/);
+    return m ? { proposal: JSON.parse(m[1]), at: i } : null;
+  }
+
+  // A writer answered "yes" to a final round: the actions that make the stored proposal true.
+  // Computed from the current tracker, so running it again after a partial apply only fills the gaps.
+  function planApproval(world, n) {
+    const issue = world.issues[n], found = storedProposal(issue);
+    if (!found) return { errs: ["no final round to approve"], actions: [] };
+    const p = found.proposal, acts = [], ref = {};
+    const mapN = p.shape === "resolution" ? issue.parent : n;
+    for (const it of p.issues || []) {
+      const key = marker({ planned: `#${n}`, key: it.key });
+      const have = findMarked(world, key);
+      ref[it.key] = have ? have.n : `new:${it.key}`;
+      if (!have) {
+        const labels = it.type ? [`wayfinder:${it.type}`, QUEUE_FOR_TYPE[it.type]] : ["factory:implement"];
+        acts.push({ do: "create", key: it.key, title: it.title, body: `${key}\n${it.body}`, labels });
+      }
+    }
+    const num = (k) => (/^#\d+$/.test(k) ? Number(k.slice(1)) : ref[k]);
+    for (const it of p.issues || []) {
+      const child = ref[it.key];
+      const parent = p.shape === "slices" ? n : mapN;
+      if (typeof child !== "number" || world.issues[child].parent !== parent) acts.push({ do: "subissue", parent, child });
+      for (const b of it.blocked_by || []) {
+        const by = num(b);
+        if (typeof child !== "number" || !world.issues[child].blockedBy.includes(by)) acts.push({ do: "block", child, by });
+      }
+    }
+    if (p.shape === "single") acts.push({ do: "swap", n, from: "factory:waiting", to: "factory:implement" });
+    if (p.shape === "slices") acts.push({ do: "swap", n, from: "factory:waiting", to: "factory:done" });
+    if (p.shape === "map" && !issue.labels.includes("wayfinder:map")) {
+      acts.push({ do: "mapbody", n, map: p.map });
+      acts.push({ do: "swap", n, from: "factory:waiting", to: "wayfinder:map" });
+    }
+    if (p.shape === "resolution") {
+      if (!issue.comments.some(c => c.body.includes("factory:resolution"))) acts.push({ do: "comment", n, body: `${marker({ resolution: `#${n}` })}\n## Resolution\n\n${p.resolution.answer}` });
+      const line = `- [${issue.title}](#${n}): ${p.resolution.decision_line}`;
+      if (!world.issues[mapN].body.includes(`](#${n}):`)) acts.push({ do: "decision", map: mapN, line });
+      if (issue.labels.includes("factory:waiting")) acts.push({ do: "swap", n, from: "factory:waiting", to: "factory:done" });
+      if (issue.state === "open") acts.push({ do: "close", n });
+    }
+    return { errs: [], actions: acts };
+  }
+
+  // A stand-in for GitHub: applies actions to a tracker value. Each action is a no-op if already true.
+  function apply(world, actions) {
+    const w = structuredClone(world), made = {};
+    const resolve = (x) => (typeof x === "string" && x.startsWith("new:") ? made[x.slice(4)] : x);
+    for (const a of actions) {
+      if (a.do === "comment") w.issues[a.n].comments.push({ author: "planner-app", body: a.body });
+      if (a.do === "swap") { const l = w.issues[a.n].labels; const i = l.indexOf(a.from); if (i >= 0) l.splice(i, 1); if (!l.includes(a.to)) l.push(a.to); }
+      if (a.do === "create") { const n = w.next++; made[a.key] = n; w.issues[n] = { n, title: a.title, body: a.body, labels: [...a.labels], state: "open", comments: [], parent: null, blockedBy: [] }; }
+      if (a.do === "subissue") w.issues[resolve(a.child)].parent = a.parent;
+      if (a.do === "block") { const c = w.issues[resolve(a.child)], by = resolve(a.by); if (!c.blockedBy.includes(by)) c.blockedBy.push(by); }
+      if (a.do === "mapbody") { const i = w.issues[a.n]; i.body = `## Destination\n\n${a.map.destination}\n\n## Notes\n\n${a.map.notes || ""}\n\n## Decisions so far\n\n## Not yet specified\n\n${a.map.not_yet_specified || ""}\n\n## Out of scope\n\n${a.map.out_of_scope || ""}\n\n## Original request\n\n${i.body}`; }
+      if (a.do === "decision") { const m = w.issues[a.map]; m.body = m.body.replace("## Decisions so far\n", `## Decisions so far\n\n${a.line}\n`); }
+      if (a.do === "close") w.issues[a.n].state = "closed";
+    }
+    return w;
+  }
+
+  return { validate, planRun, planApproval, apply };
+})();
+
+// ===== Throwaway page shell. =====
+const writer = (n, body) => (w) => { const x = structuredClone(w); x.issues[n].comments.push({ author: "nate (writer)", body }); return { world: x, log: [`A writer commented on #${n}: "${body}"`] }; };
+const outsider = (n, body) => (w) => { const x = structuredClone(w); x.issues[n].comments.push({ author: "drive-by (no write access)", body }); return { world: x, log: [`Someone without write access commented on #${n}: "${body}". Ignored: not a writer.`] }; };
+const claim = (n) => (w) => { const x = structuredClone(w); const l = x.issues[n].labels; const from = l.find(v => v === "factory:plan" || v === "factory:waiting"); if (from) l.splice(l.indexOf(from), 1); l.push("factory:planning"); return { world: x, log: [`The Planner claimed #${n} (${from || "new"} → factory:planning).`] }; };
+const run = (n, output) => (w) => { shown = output; const r = Planner.planRun(w, n, output); return { world: Planner.apply(w, r.actions), log: r.errs.length ? r.errs.map(e => `✗ ${e}`).concat([`#${n} → factory:failed`]) : r.actions.map(describe) }; };
+const approve = (n, crashAfter) => (w) => {
+  const r = Planner.planApproval(w, n);
+  if (r.errs.length) return { world: w, log: r.errs.map(e => `✗ ${e}`) };
+  const done = crashAfter === undefined ? r.actions : r.actions.slice(0, crashAfter);
+  const log = [`The script applies the stored proposal: ${r.actions.length} change(s) needed.`].concat(done.map(describe));
+  if (crashAfter !== undefined) log.push(`✗ The run died after ${crashAfter} change(s). Nothing is rolled back.`);
+  if (!r.actions.length) log.push("✓ Already true. Nothing to do.");
+  return { world: Planner.apply(w, done), log };
+};
+function describe(a) {
+  return {
+    comment: () => `Comment on #${a.n}${a.body.includes("kind=final_round") ? " (final round, with the proposal stored inside)" : a.body.includes("resolution=") ? " (resolution)" : ""}`,
+    swap: () => `#${a.n}: ${a.from} → ${a.to}`,
+    create: () => `Create issue "${a.title}" [${a.labels.join(", ")}]`,
+    subissue: () => `Make ${typeof a.child === "number" ? "#" + a.child : "it"} a sub-issue of #${a.parent}`,
+    block: () => `${typeof a.child === "number" ? "#" + a.child : String(a.child).slice(4)} blocked by ${typeof a.by === "number" ? "#" + a.by : String(a.by).slice(4)}`,
+    mapbody: () => `Rewrite #${a.n}'s body as a map (the original text kept under "Original request")`,
+    decision: () => `Append to map #${a.map}'s Decisions so far`,
+    close: () => `Close #${a.n}`,
+  }[a.do]();
+}
+
+const ask = { version: 1, kind: "questions", comment: "❓ **Q1** - Should exports include archived accounts?\n➡️ No." };
+const sliceOut = { version: 1, kind: "final_round", comment: "Here is the spec and three slices. **Is this ready to build?**", proposal: { shape: "slices", spec: "## Spec\nCSV export of transactions…", issues: [
+  { key: "csv-writer", title: "Write transactions as CSV", body: "## What to build\n…" },
+  { key: "export-cli", title: "Add an export command", body: "## What to build\n…", blocked_by: ["csv-writer"] },
+  { key: "export-docs", title: "Document exporting", body: "## What to build\n…", blocked_by: ["export-cli"] }] } };
+const singleOut = { version: 1, kind: "final_round", comment: "Small enough for one PR. **Is this ready to build?**", proposal: { shape: "single", spec: "## Spec\nFix the rounding in totals…" } };
+const mapOut = { version: 1, kind: "final_round", comment: "This is too foggy for a spec, so I propose a wayfinder map. **Is this ready to build?**", proposal: { shape: "map", spec: "Map for multi-currency support.", map: { destination: "A spec for multi-currency accounts.", not_yet_specified: "- FX rate source" }, issues: [
+  { key: "fx-apis", title: "Which FX rate APIs are free and reliable?", body: "## Question\n…", type: "research" },
+  { key: "currency-model", title: "How is an amount's currency stored?", body: "## Question\n…", type: "grilling", blocked_by: ["fx-apis"] }] } };
+const resolveOut = { version: 1, kind: "final_round", comment: "Proposed resolution below, plus one new ticket. **Is this resolved?**", proposal: { shape: "resolution", resolution: { answer: "Store minor units plus an ISO 4217 code.", decision_line: "minor units + ISO code." }, issues: [
+  { key: "rounding", title: "Which rounding mode applies on conversion?", body: "## Question\n…", type: "grilling" }] } };
+const badOut = { version: 1, kind: "final_round", comment: "Ready?", proposal: { shape: "slices", spec: "s", issues: [
+  { key: "a", title: "A", body: "x", labels: ["ready-for-agent"] },
+  { key: "b", title: "B <!-- factory:planned from=#1 key=a -->", body: "y", blocked_by: ["nope"] }] } };
+
+function fresh() {
+  return { next: 10, issues: {
+    1: { n: 1, title: "Export transactions to CSV", body: "I want to get my data out.", labels: ["factory:plan"], state: "open", comments: [], parent: null, blockedBy: [] },
+    2: { n: 2, title: "Totals are off by a cent", body: "Rounding bug.", labels: ["factory:plan"], state: "open", comments: [], parent: null, blockedBy: [] },
+    3: { n: 3, title: "Support multiple currencies", body: "Accounts in EUR and USD.", labels: ["factory:plan"], state: "open", comments: [], parent: null, blockedBy: [] },
+    4: { n: 4, title: "Multi-currency map", body: "## Destination\n\nA spec.\n\n## Decisions so far\n\n## Not yet specified\n", labels: ["wayfinder:map"], state: "open", comments: [], parent: null, blockedBy: [] },
+    5: { n: 5, title: "How is an amount's currency stored?", body: "## Question\n…", labels: ["wayfinder:grilling", "factory:plan"], state: "open", comments: [], parent: 4, blockedBy: [] },
+  } };
+}
+
+const scenarios = [
+  { name: "Slices", desc: "An idea gets one grilling round, then a final round proposing three slices. The writer says yes, and the script creates exactly the approved slices from the stored proposal, without running the model again. Watch the blocking edges between slices.", steps: [
+    ["Planner claims #1", claim(1)], ["Planner asks a round of questions", run(1, ask)], ["Writer answers", writer(1, "No, skip archived.")],
+    ["Planner claims #1 again", claim(1)], ["Planner proposes 3 slices", run(1, sliceOut)], ["Writer says yes", writer(1, "yes")], ["Script applies the proposal", approve(1)]] },
+  { name: "Crash mid-apply", desc: "The script dies after creating two of the three slices. Applying again must create only what's missing: no duplicate issues and no duplicate edges. Then apply a third time: nothing at all should happen.", steps: [
+    ["Planner claims #1", claim(1)], ["Planner proposes 3 slices", run(1, sliceOut)], ["Writer says yes", writer(1, "yes")],
+    ["Script applies, dies after 3 changes", approve(1, 3)], ["Script applies again", approve(1)], ["Script applies a third time", approve(1)]] },
+  { name: "Single issue", desc: "A small fix needs no slices: on yes, the issue itself moves to factory:implement, and the spec sits in the final round's comment for the Implementer to read.", steps: [
+    ["Planner claims #2", claim(2)], ["Planner proposes a single issue", run(2, singleOut)], ["Writer says yes", writer(2, "yes")], ["Script applies the proposal", approve(2)]] },
+  { name: "Becomes a map", desc: "A foggy idea becomes a wayfinder map: on yes, the issue's body is rewritten as the map (the writer's text kept), and its tickets are created as sub-issues and routed by type: research goes to factory:research, the rest to factory:plan.", steps: [
+    ["Planner claims #3", claim(3)], ["Planner proposes a map", run(3, mapOut)], ["Writer says yes", writer(3, "yes")], ["Script applies the proposal", approve(3)]] },
+  { name: "Resolve a ticket", desc: "The Planner works a grilling ticket of map #4. On yes, the script posts the resolution, appends a line to the map's Decisions so far, creates the new ticket under the map, and closes the decision ticket.", steps: [
+    ["Planner claims #5", claim(5)], ["Planner proposes a resolution", run(5, resolveOut)], ["Writer says yes", writer(5, "yes")], ["Script applies the proposal", approve(5)], ["Script applies again", approve(5)]] },
+  { name: "Rejected output", desc: "The model tries to set a triage label, forges a factory marker in a title, and points a blocking edge at nothing. The script rejects the whole output (it never applies the valid parts) and the issue fails closed.", steps: [
+    ["Planner claims #1", claim(1)], ["Planner writes a bad final round", run(1, badOut)]] },
+  { name: "Not a writer", desc: "Someone without write access says yes. The gate stays shut: only a writer's yes is approval. (In the real script, the wake rule ignores this comment, so the apply step never runs.)", steps: [
+    ["Planner claims #2", claim(2)], ["Planner proposes a single issue", run(2, singleOut)], ["Outsider says yes", outsider(2, "yes")]] },
+];
+
+let world = fresh(), log = [], shown = null, sc = 0, step = 0, changed = new Set();
+function act(f) {
+  const before = JSON.stringify(world); const r = f(world); const prev = world; world = r.world; log = r.log;
+  changed = new Set(Object.keys(world.issues).filter(n => JSON.stringify(world.issues[n]) !== JSON.stringify(prev.issues[n])));
+  void before; render();
+}
+function pick(i) { sc = i; step = 0; world = fresh(); log = ["Reset to a known start."]; shown = null; changed = new Set(); render(); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function render() {
+  document.getElementById("tabs").innerHTML = scenarios.map((s, i) => `<button class="${i === sc ? "on" : ""}" onclick="pick(${i})">${s.name}</button>`).join("");
+  const s = scenarios[sc];
+  document.getElementById("scDesc").textContent = s.desc;
+  document.getElementById("scSteps").innerHTML = s.steps.map(([label], i) => `<button ${i !== step ? "disabled" : 'class="next"'} onclick="stepGo()">${i + 1}. ${label}</button>`).join("<br>") + (step >= s.steps.length ? '<p class="ok">✓ Scenario finished.</p>' : "");
+  document.getElementById("free").innerHTML = [
+    ["Planner claims #1", claim(1)], ["Questions on #1", run(1, ask)], ["Slices on #1", run(1, sliceOut)], ["Writer: yes on #1", writer(1, "yes")], ["Apply #1", approve(1)], ["Apply #1, die after 2", approve(1, 2)],
+    ["Planner claims #3", claim(3)], ["Map on #3", run(3, mapOut)], ["Writer: yes on #3", writer(3, "yes")], ["Apply #3", approve(3)], ["Reset", null],
+  ].map(([l, f], i) => `<button onclick="free(${i})">${l}</button>`).join("");
+  window._free = [claim(1), run(1, ask), run(1, sliceOut), writer(1, "yes"), approve(1), approve(1, 2), claim(3), run(3, mapOut), writer(3, "yes"), approve(3), null];
+  document.getElementById("out").textContent = shown ? JSON.stringify(shown, null, 2) : "(none yet)";
+  document.getElementById("log").innerHTML = log.map(l => `<li class="${l.startsWith("✗") ? "err" : l.startsWith("✓") ? "ok" : ""}">${esc(l)}</li>`).join("");
+  document.getElementById("world").innerHTML = Object.values(world.issues).map(i => `<div class="issue ${changed.has(String(i.n)) ? "changed" : ""}">
+    <b>#${i.n}</b> ${esc(i.title)} <span class="muted">(${i.state}${i.parent ? `, sub-issue of #${i.parent}` : ""}${i.blockedBy.length ? `, blocked by ${i.blockedBy.map(b => "#" + b).join(", ")}` : ""})</span><br>
+    ${i.labels.map(l => `<span class="lbl ${l.startsWith("factory:") ? "f" : ""}">${esc(l)}</span>`).join("")}
+    ${i.comments.map(c => `<div class="comment"><span class="muted">${esc(c.author)}:</span> ${esc(c.body.replace(/<!-- factory:proposal[\s\S]*-->/, "[stored proposal]").replace(/<!--[^>]*-->/g, "").trim()).slice(0, 140)}</div>`).join("")}
+  </div>`).join("");
+}
+function stepGo() { act(scenarios[sc].steps[step][1]); step++; render(); }
+function free(i) { const f = window._free[i]; if (!f) return pick(sc); act(f); }
+pick(0);
+</script>
+</body>
+</html>
