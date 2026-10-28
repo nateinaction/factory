@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - godoclint
+  settings:
+    godoclint:
+      default: none
+      enable:
+        - require-doc
+        - pkg-doc
+      options:
+        require-doc:
+          # Require a doc comment on unexported symbols too.
+          ignore-exported: false
+          ignore-unexported: false
