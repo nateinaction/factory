@@ -36,6 +36,26 @@ _Avoid_: worker, builder, coder
 The agent role that judges a pull request from a fresh context it shares with no author, and returns a verdict.
 _Avoid_: QA, tester, checker
 
+**Curator**:
+The agent role that looks after a repository's retro dashboard: it proposes merging groups, and writes the issue each promoted group becomes.
+_Avoid_: librarian, triager, gardener
+
+**Retro**:
+An agent role's look back at its own run, giving findings about a skill, a repository's agent docs or the factory.
+_Avoid_: postmortem, lessons learned
+
+**Retro dashboard**:
+The one issue per assigned repository that groups retro findings, counts repeat reports, and shows a writer which groups are ready to promote.
+_Avoid_: retro ticket, findings log
+
+**Foreman**:
+The factory's program: it claims issues, starts each agent role's run and makes every change on GitHub, while the model only writes files.
+_Avoid_: factory script, orchestrator, finances-agent
+
+**Worker host**:
+A host that runs agent role runs for the factory; it takes the agent roles it lists, or all of them.
+_Avoid_: runner, node, slot
+
 **Ansible role**:
 A unit of host provisioning under `roles/`.
 _Avoid_: role (bare)
