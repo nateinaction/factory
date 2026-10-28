@@ -17,8 +17,16 @@ The agent role that answers a research ticket from sources outside the repositor
 _Avoid_: investigator, scout
 
 **Human gate**:
-A step only a human may take; the one between planning and building is applying `ready-for-agent`.
+A step only a human may take; the one between planning and building is a writer confirming, in a comment, that the Planner's plan is ready to build.
 _Avoid_: approval, sign-off
+
+**Writer**:
+A user with write access to an assigned repository; only a writer's issues and comments move the factory.
+_Avoid_: maintainer, collaborator, trusted user
+
+**Paused**:
+An issue a human has taken out of the factory's hands; every other open issue in an assigned repository is the factory's.
+_Avoid_: not-ready, opted out, blocked
 
 **Implementer**:
 The agent role that turns an issue a human has made ready into a pull request that resolves it.
