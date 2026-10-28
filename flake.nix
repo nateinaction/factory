@@ -8,6 +8,20 @@
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
     in {
+      # foreman is a static Go binary, so hosts need no Go toolchain.
+      packages = forAll (pkgs: rec {
+        foreman = pkgs.buildGoModule {
+          pname = "foreman";
+          version = "0.1.0";
+          src = ./foreman;
+          vendorHash = null; # the module has no dependencies
+          env.CGO_ENABLED = "0";
+          subPackages = [ "cmd/foreman" ];
+          meta.mainProgram = "foreman";
+        };
+        default = foreman;
+      });
+
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = [
