@@ -10,7 +10,19 @@
     in {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.ansible pkgs.ansible-lint pkgs.yamllint ];
+          packages = [
+            pkgs.ansible
+            pkgs.ansible-lint
+            pkgs.yamllint
+            pkgs.go
+            pkgs.golangci-lint
+          ];
+          # Install the pre-commit hook by pointing git at the tracked hooks.
+          shellHook = ''
+            if git rev-parse --git-dir >/dev/null 2>&1; then
+              git config core.hooksPath scripts/hooks
+            fi
+          '';
         };
       });
     };
