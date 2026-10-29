@@ -423,7 +423,7 @@ func (r *commandRun) isPrivate(ctx context.Context) (bool, error) {
 func listedPromoted(
 	ctx context.Context, c github.Client, repo workflow.Repo, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
-	issues, err := c.ListIssues(ctx, repo, github.StateAll)
+	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
 		return workflow.Issue{}, false, fmt.Errorf("list the issues of %s: %w", repo, err)
 	}
@@ -437,7 +437,7 @@ func listedPromoted(
 func listedPublished(
 	ctx context.Context, c github.Client, repo workflow.Repo, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
-	issues, err := c.ListIssues(ctx, repo, github.StateAll)
+	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
 		return workflow.Issue{}, false, fmt.Errorf("list the issues of %s: %w", repo, err)
 	}
