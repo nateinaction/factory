@@ -43,7 +43,7 @@ opencode sends and the egress proxy's forward to the key proxy replaces. The acc
 ## How foreman enforces the step cap and the deadline
 
 The deadline is a `context.WithTimeout` around every attempt of the run, from
-`factory_agent_limits.<role>.deadline_minutes` (or `factory_retro_deadline_minutes` for the retro).
+`factory_agent_limits.<role>.deadline_minutes` (or `factory_agent_limits.<role>.retro.deadline_minutes` for the retro).
 A run that runs out of time fails.
 
 The step cap is counted twice. opencode stops the agent at `agent.<role>.steps`, and foreman counts
@@ -60,7 +60,7 @@ deadline is dropped, logged, and never fails the run.
 After foreman has applied the run's output, the same dagu run resumes the model's session by its
 explicit id (`--session <id>`, never `--continue`) with the `retro` skill. The retro is the run's
 last step, so the worker host's run slot stays taken until the retro ends. The retro has its own
-step cap and deadline (`factory_retro_steps`, `factory_retro_deadline_minutes`), and the same state
+step cap and deadline (`factory_agent_limits.<role>.retro`), and the same state
 database, so it sees the run as it happened.
 
 - The model writes `retro.json`; `workflow.ParseRetro` validates it strictly, all or nothing.

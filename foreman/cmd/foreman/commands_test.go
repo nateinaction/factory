@@ -111,12 +111,17 @@ func (h *cliHarness) writeConfig(text string) string {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
-	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
-	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
-	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
-	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10,` +
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30,` +
+	`"retro":{"steps":20,"deadline_minutes":15}}},` +
+	`"dead_run_margin_minutes":10,` +
 	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
 var _ = Describe("the foreman command", func() {

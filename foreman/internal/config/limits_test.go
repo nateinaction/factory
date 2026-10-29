@@ -17,6 +17,7 @@ import (
 var _ = Describe("the review and CI limits", func() {
 	agent := config.AgentConfig{
 		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
+		Retro: config.Budget{Steps: 20, DeadlineMinutes: 15},
 	}
 
 	// rawConfig renders a config with every agent role, overrides and any extra fields.
@@ -28,7 +29,6 @@ var _ = Describe("the review and CI limits", func() {
 
 		fields := map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": agents,
-			"retro":                       config.Budget{Steps: 20, DeadlineMinutes: 15},
 			"dead_run_margin_minutes":     10,
 			"review_round_limit":          3,
 			"ci_pending_deadline_minutes": 60,
@@ -51,32 +51,22 @@ var _ = Describe("the review and CI limits", func() {
 		return config.Load(path)
 	}
 
-	It("uses the shared retro budget unless an agent role has its own", func() {
-		cfg, err := load(rawConfig(map[string]any{
-			"retro_by_role": map[string]config.Budget{
-				"reviewer": {Steps: 12, DeadlineMinutes: 7},
-			},
-		}, nil))
+	It("gives each agent role its own retro budget", func() {
+		reviewer := agent
+		reviewer.Retro = config.Budget{Steps: 12, DeadlineMinutes: 7}
+
+		agents := map[string]config.AgentConfig{}
+		for _, r := range workflow.KnownRoles() {
+			agents[string(r)] = agent
+		}
+
+		agents["reviewer"] = reviewer
+
+		cfg, err := load(rawConfig(map[string]any{"agents": agents}, nil))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.RetroBudget(workflow.Reviewer)).To(Equal(config.Budget{Steps: 12, DeadlineMinutes: 7}))
 		Expect(cfg.RetroBudget(workflow.Planner)).To(Equal(config.Budget{Steps: 20, DeadlineMinutes: 15}))
 	})
-
-	DescribeTable("rejects a retro override that cannot bound anything",
-		func(overrides map[string]any, message string) {
-			_, err := load(rawConfig(overrides, nil))
-			Expect(err).To(MatchError(ContainSubstring(message)))
-		},
-		Entry("an unknown agent role", map[string]any{
-			"retro_by_role": map[string]config.Budget{"janitor": {Steps: 20, DeadlineMinutes: 15}},
-		}, "janitor"),
-		Entry("no step cap", map[string]any{
-			"retro_by_role": map[string]config.Budget{"planner": {DeadlineMinutes: 15}},
-		}, "retro_by_role planner"),
-		Entry("no deadline", map[string]any{
-			"retro_by_role": map[string]config.Budget{"planner": {Steps: 20}},
-		}, "retro_by_role planner"),
-	)
 
 	It("reads the review round limit and the CI pending deadline", func() {
 		cfg, err := load(rawConfig(nil, nil))

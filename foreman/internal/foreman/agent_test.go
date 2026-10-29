@@ -102,7 +102,7 @@ var _ = Describe("the opencode adapter", func() {
 
 		_, err := Run(
 			context.Background(), h.deps, workflow.Reviewer, testRef(5),
-			cfg.Agents[string(workflow.Reviewer)], cfg.Retro, cfg.ReviewRoundLimit,
+			cfg.Agents[string(workflow.Reviewer)], cfg.RetroBudget(workflow.Reviewer), cfg.ReviewRoundLimit,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(h.opencodeCalls()[0].Timeout).To(beNear(30 * time.Minute))

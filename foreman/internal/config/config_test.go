@@ -69,10 +69,10 @@ var _ = Describe("Settings.TokenPath", func() {
 })
 
 var _ = Describe("Load", func() {
-	agent := config.AgentConfig{
-		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
-	}
 	retro := config.Budget{Steps: 20, DeadlineMinutes: 15}
+	agent := config.AgentConfig{
+		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90, Retro: retro,
+	}
 
 	// every gives each of the five agent roles a model, a cap, a step cap and a deadline.
 	every := func() map[string]config.AgentConfig {
@@ -97,7 +97,7 @@ var _ = Describe("Load", func() {
 	// load writes a config with the given agents and loads it.
 	load := func(agents map[string]config.AgentConfig) error {
 		raw, err := json.Marshal(map[string]any{
-			"roles": []workflow.Role{workflow.Implementer}, "agents": agents, "retro": retro,
+			"roles": []workflow.Role{workflow.Implementer}, "agents": agents,
 			"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -131,23 +131,40 @@ var _ = Describe("Load", func() {
 		}),
 	)
 
-	It("requires a retro step cap and deadline", func() {
-		raw, err := json.Marshal(map[string]any{
-			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": config.Budget{Steps: 0, DeadlineMinutes: 0}, "dead_run_margin_minutes": 10,
-			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
-		})
-		Expect(err).NotTo(HaveOccurred())
+	DescribeTable("requires a retro step cap and deadline for every agent role",
+		func(mutate func(*config.AgentConfig)) {
+			m := every()
+			a := m["planner"]
+			mutate(&a)
+			m["planner"] = a
+			Expect(load(m)).To(MatchError(ContainSubstring("agent role planner needs a retro step cap and deadline")))
+		},
+		Entry("no retro", func(a *config.AgentConfig) { a.Retro = config.Budget{} }),
+		Entry("no retro steps", func(a *config.AgentConfig) { a.Retro.Steps = 0 }),
+		Entry("no retro deadline", func(a *config.AgentConfig) { a.Retro.DeadlineMinutes = 0 }),
+		Entry("a negative retro budget", func(a *config.AgentConfig) {
+			a.Retro = config.Budget{Steps: -1, DeadlineMinutes: -1}
+		}),
+	)
 
-		_, err = config.Load(writeConfig(raw))
-		Expect(err).To(MatchError(ContainSubstring("retro")))
+	It("rejects the retired shared retro budget and override map", func() {
+		for _, key := range []string{"retro", "retro_by_role"} {
+			raw, err := json.Marshal(map[string]any{
+				"roles": []workflow.Role{workflow.Implementer}, "agents": every(), key: retro,
+				"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = config.Load(writeConfig(raw))
+			Expect(err).To(HaveOccurred(), key)
+		}
 	})
 
 	It("requires a positive dead-run margin", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": retro, "dead_run_margin_minutes": 0,
-			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"dead_run_margin_minutes": 0,
+			"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -158,7 +175,7 @@ var _ = Describe("Load", func() {
 	It("reads the factory repo, and rejects one that is not owner/name", func() {
 		load := func(repo string) error {
 			raw, err := json.Marshal(map[string]any{
-				"roles": []workflow.Role{workflow.Implementer}, "agents": every(), "retro": retro,
+				"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
 				"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 				"factory_repo": repo,
 			})
@@ -177,8 +194,8 @@ var _ = Describe("Load", func() {
 	It("reads the dead-run margin as a duration", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": retro, "dead_run_margin_minutes": 10,
-			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"dead_run_margin_minutes": 10,
+			"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -190,8 +207,8 @@ var _ = Describe("Load", func() {
 	It("reads the agent roles no worker host takes", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": retro, "dead_run_margin_minutes": 10,
-			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"dead_run_margin_minutes": 10,
+			"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
 			"unhosted_roles": []workflow.Role{workflow.Curator},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -205,8 +222,8 @@ var _ = Describe("Load", func() {
 	It("rejects an unhosted agent role it does not know", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": retro, "dead_run_margin_minutes": 10,
-			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"dead_run_margin_minutes": 10,
+			"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
 			"unhosted_roles": []string{"janitor"},
 		})
 		Expect(err).NotTo(HaveOccurred())
