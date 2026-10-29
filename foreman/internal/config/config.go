@@ -19,7 +19,7 @@ import (
 type Settings struct {
 	// API is GitHub's REST API root.
 	API string `mapstructure:"api"`
-	// TokenDir is where `start` leaves the repo-scoped token for the factory user, one file per agent role.
+	// TokenDir is where `start` leaves the repo-scoped token for the factory user, one file per run.
 	TokenDir string `mapstructure:"token-dir"`
 	// KeyFile holds the OpenRouter key.
 	KeyFile string `mapstructure:"key-file"`
@@ -87,9 +87,11 @@ func SettingsFrom(v *viper.Viper) (Settings, error) {
 	return s, nil
 }
 
-// TokenPath is the token file of one agent role's run.
-func (s Settings) TokenPath(role workflow.Role) string {
-	return filepath.Join(s.TokenDir, "gh-token-"+string(role))
+// TokenPath is the token file of one agent role's run. The run id keeps concurrent runs of one agent
+// role from sharing, overwriting or deleting each other's file. Callers pass a vetted run id (see
+// the foreman package's tokenPath).
+func (s Settings) TokenPath(role workflow.Role, runID string) string {
+	return filepath.Join(s.TokenDir, "gh-token-"+string(role)+"-"+runID)
 }
 
 // Budget is a run's step cap and wall-clock deadline: one agent role's run, or a retro.
