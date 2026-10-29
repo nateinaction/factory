@@ -232,6 +232,48 @@ var _ = Describe("the sandbox", func() {
 		Expect(code).NotTo(BeZero())
 		Expect(h.opencodeCalls()).To(BeEmpty())
 	})
+
+	It("puts the Planner and its retro under srt with no clone in its spec", func() {
+		var settings []srtSettings
+
+		h.installed[workflow.Planner] = []string{"o/r"}
+		h.writeToken(workflow.Planner, "repo-token\n")
+		h.ensureIssue(5)
+		h.opencodeWrites("--agent planner ",
+			filepath.Join(h.deps.Settings.WorkRoot, "planner-5", workflow.PlannerOutputFile), plannerSingle)
+		h.opencodeWrites("--session", h.retroOut(workflow.Planner), validRetro)
+		settingsOn(&settings)
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Planner, "o/r", testAgent(), testRetro(), 5)).To(BeZero())
+
+		Expect(h.runner.find("srt --settings")).To(HaveLen(2), "want the run and its retro")
+		Expect(settings).To(HaveLen(2))
+		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
+			"the Planner has no clone")
+
+		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-planner-5")
+		out := filepath.Join(h.deps.Settings.WorkRoot, "planner-5", workflow.PlannerOutputFile)
+
+		for _, s := range settings {
+			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
+				out, runDir, retroPath(h.deps.Settings.WorkRoot, 5, workflow.Planner),
+			))
+			Expect(s.Filesystem.AllowRead).NotTo(ContainElement(""), "an empty path re-allowed the host")
+		}
+	})
+
+	It("puts the Researcher and its retro under srt", func() {
+		h.installed[workflow.Researcher] = []string{"o/r"}
+		h.writeToken(workflow.Researcher, "repo-token\n")
+		h.researchTicket()
+		h.researcherWrites(researcherRun)
+		h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Researcher, "o/r", testAgent(), testRetro(), 5)).To(BeZero())
+
+		Expect(h.runner.find("srt --settings")).To(HaveLen(2), "want the run and its retro")
+		Expect(h.opencodeCalls()).To(HaveLen(2))
+	})
 })
 
 // proxyPortOf is the egress proxy port an opencode command's base URL names.

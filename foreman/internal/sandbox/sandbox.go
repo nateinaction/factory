@@ -64,10 +64,13 @@ func Plan(role workflow.Role, layout Layout) Spec {
 	readOnly := append([]string{layout.Skills}, layout.Toolchain...)
 	denyWrite := []string{}
 
-	if writableClone {
-		denyWrite = append(denyWrite, filepath.Join(layout.Clone, ".git"))
-	} else {
-		readOnly = append(readOnly, layout.Clone)
+	// The Planner has no clone: an empty path here would otherwise become a stray root-level entry.
+	if layout.Clone != "" {
+		if writableClone {
+			denyWrite = append(denyWrite, filepath.Join(layout.Clone, ".git"))
+		} else {
+			readOnly = append(readOnly, layout.Clone)
+		}
 	}
 
 	return Spec{

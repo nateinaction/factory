@@ -763,43 +763,54 @@ func openPR(
 	return &pr, nil
 }
 
-// runResearcher researches the ticket in a fresh state directory and logs the run's one usage line,
+// runResearcher researches the ticket in a fresh sandbox directory and logs the run's one usage line,
 // even when the run failed.
 func runResearcher(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-) error {
-	var usage opencode.Usage
+) (err error) {
+	var (
+		usage   opencode.Usage
+		domains []string
+	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Researcher, number, func(db string) error {
-		var err error
-
-		usage, err = research(ctx, d, repo, agent, retro, number, db)
-
+	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Researcher, number)
+	if err != nil {
 		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Researcher, repo, number, d.Host, agent, usage))
+	}
+
+	defer func() { err = errors.Join(err, files.remove()) }()
+
+	usage, domains, err = research(ctx, d, repo, agent, retro, number, files.db(workflow.Researcher), files)
+	d.logUsage(opencode.NewUsageReport(workflow.Researcher, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	return err
 }
 
-// research clones, runs the model, applies its findings, and writes the retro.
+// research clones, runs the model under the sandbox, applies its findings, and writes the retro.
 func research(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
-) (opencode.Usage, error) {
-	sec, err := readSecrets(d.Settings, workflow.Researcher)
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	db string, files sandboxFiles,
+) (opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return researchRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Researcher)
+	if err != nil {
+		return opencode.Usage{}, nil, err
+	}
+
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+		return researchRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, db, files)
 	})
 }
 
-// researchRun is the Researcher's work, with its proxy already up.
+// researchRun is the Researcher's work, with its proxies already up.
 func researchRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, retro config.Budget, number int, db string, files sandboxFiles,
 ) (opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Researcher, agent, number, db)
 	if err != nil {
@@ -811,20 +822,7 @@ func researchRun(
 		return opencode.Usage{}, err
 	}
 
-	s := newSession(d, j, paths.workdir, []string{
-		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
-	})
-
-	if err := s.clone(ctx, repo); err != nil {
-		return opencode.Usage{}, err
-	}
-
-	docs, err := prompt.ReadRepoDocs(paths.workdir)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	thread, err := guidance(ctx, j.c, repo, number)
+	s, docs, thread, err := researchContext(ctx, d, j, sec, repo, number, paths, files, network, proxyAddr)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -854,6 +852,39 @@ func researchRun(
 	}
 	// The output is applied: the retro is the run's epilogue and never changes its outcome.
 	return s.researchOutcome(ctx, j, repo, number, res, sha, nil, retro)
+}
+
+// researchContext clones the repository, reads its docs and the ticket's guidance, and puts the
+// Researcher's session inside its sandbox. The clone and the reads are foreman's, outside the
+// sandbox; only the model and its retro run inside.
+func researchContext(
+	ctx context.Context, d Deps, j job, sec secrets, repo string, number int, paths researcherFiles,
+	files sandboxFiles, network sandbox.Network, proxyAddr string,
+) (session, []prompt.Doc, []workflow.Item, error) {
+	s := newSession(d, j, paths.workdir, []string{
+		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
+	})
+
+	if err := s.clone(ctx, repo); err != nil {
+		return session{}, nil, nil, err
+	}
+
+	docs, err := prompt.ReadRepoDocs(paths.workdir)
+	if err != nil {
+		return session{}, nil, nil, err
+	}
+
+	thread, err := guidance(ctx, j.c, repo, number)
+	if err != nil {
+		return session{}, nil, nil, err
+	}
+
+	s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, repo, "", files, workflow.Researcher, paths.workdir, paths.out,
+		[]string{retroPath(d.Settings.WorkRoot, number, workflow.Researcher)}, network, proxyAddr,
+	)
+
+	return s, docs, thread, err
 }
 
 // researchOutcome folds a research run's retro into its usage and returns the run's failure.

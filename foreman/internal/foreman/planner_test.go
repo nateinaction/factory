@@ -65,7 +65,8 @@ var _ = Describe("the Planner", func() {
 
 		Expect(h.opencodeCalls()).To(HaveLen(1), "the questions round has no retro")
 		Expect(h.runner.find("--session")).To(BeEmpty())
-		Expect(h.runner.find("git clone")).To(BeEmpty(), "the Planner never clones or commits")
+		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
+			"the Planner never clones the planned repository")
 		Expect(h.runner.find("commit -m")).To(BeEmpty())
 	})
 

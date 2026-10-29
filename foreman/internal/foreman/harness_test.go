@@ -702,7 +702,7 @@ func (h *harness) researcherWrites(text string) {
 	out := h.researchOut()
 
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent researcher ") &&
+		if isModel(c) && strings.Contains(joined(c), "--agent researcher ") &&
 			!strings.Contains(joined(c), "--session") {
 			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
 			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
