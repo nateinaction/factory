@@ -105,8 +105,10 @@
     fail_msg: "tailscale serve status failed: {{ dagu_serve_status.stderr | default('') }}"
   when: dagu_tailscale_serve | bool
 
+# The `when` below already asks whether the listener is missing, so a task that runs did change it.
 - name: Serve the dagu UI to the tailnet over HTTPS
   ansible.builtin.command: "tailscale serve --bg --https=443 http://{{ dagu_host }}:{{ dagu_port }}"
+  changed_when: true
   when:
     - dagu_tailscale_serve | bool
     - dagu_mode == 'server'
@@ -114,6 +116,7 @@
 
 - name: Serve the dagu coordinator to the tailnet workers
   ansible.builtin.command: "tailscale serve --bg --tcp={{ dagu_coordinator_port }} tcp://127.0.0.1:{{ dagu_coordinator_port }}"
+  changed_when: true
   when:
     - dagu_tailscale_serve | bool
     - dagu_mode == 'server'
@@ -122,6 +125,7 @@
 # Drop the earlier plain-HTTP listener so the UI is only reachable over HTTPS.
 - name: Stop serving the dagu UI over plain HTTP
   ansible.builtin.command: tailscale serve --http=80 off
+  changed_when: true
   when:
     - dagu_tailscale_serve | bool
     - dagu_serve_status.stdout is search('(?m)^http://')
@@ -129,6 +133,7 @@
 # A worker has no UI; remove the proxy left from when every host ran start-all.
 - name: Stop serving a UI that no longer exists on the worker
   ansible.builtin.command: tailscale serve --https=443 off
+  changed_when: true
   when:
     - dagu_tailscale_serve | bool
     - dagu_mode == 'worker'

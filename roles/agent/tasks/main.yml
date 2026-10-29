@@ -95,11 +95,7 @@
         content: "d /run/factory 2750 {{ dagu_user }} {{ factory_user }} -\n"
         dest: /etc/tmpfiles.d/factory-agent.conf
         mode: "0644"
-      register: agent_tmpfiles
-
-    - name: Create the token directory now
-      ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
-      when: agent_tmpfiles is changed
+      notify: Create the token directory now
 
     - name: Allow dagu to run foreman as factory, and nothing else
       ansible.builtin.template:
@@ -148,33 +144,34 @@
 
     - name: Map the CPU architecture to opencode's release naming
       ansible.builtin.set_fact:
-        opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+        agent_opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+        agent_opencode_release: "{{ {'aarch64': 'arm64', 'x86_64': 'x64'}[ansible_facts['architecture']] }}"
 
     - name: Fail on an architecture without a pinned checksum
       ansible.builtin.assert:
-        that: opencode_arch in opencode_checksums
-        fail_msg: "no opencode checksum pinned for {{ opencode_arch }}; add it to group_vars/factory.yml"
+        that: agent_opencode_arch in opencode_checksums
+        fail_msg: "no opencode checksum pinned for {{ agent_opencode_arch }}; add it to group_vars/factory.yml"
 
     - name: Read the installed opencode version
       ansible.builtin.command: /usr/local/bin/opencode --version
-      register: opencode_installed
+      register: agent_opencode_installed
       changed_when: false
       failed_when: false # not installed yet is a valid state, handled by the next block
       check_mode: false
 
     - name: Install opencode
-      when: opencode_installed.stdout | default('') | trim != opencode_version
+      when: agent_opencode_installed.stdout | default('') | trim != opencode_version
       block:
         - name: Download and verify the opencode release
           ansible.builtin.get_url:
-            url: "https://github.com/sst/opencode/releases/download/v{{ opencode_version }}/opencode-linux-{{ {'arm64': 'arm64', 'amd64': 'x64'}[opencode_arch] }}.tar.gz"
-            dest: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
-            checksum: "{{ opencode_checksums[opencode_arch] }}"
+            url: "https://github.com/sst/opencode/releases/download/v{{ opencode_version }}/opencode-linux-{{ agent_opencode_release }}.tar.gz"
+            dest: "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
+            checksum: "{{ opencode_checksums[agent_opencode_arch] }}"
             mode: "0600"
 
         - name: Unpack opencode
           ansible.builtin.unarchive:
-            src: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            src: "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
             dest: /tmp
             remote_src: true
             include: [opencode]
@@ -196,7 +193,7 @@
             state: absent
           loop:
             - /tmp/opencode
-            - "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            - "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
           when: not ansible_check_mode
 
     - name: Create the factory user's agent directories

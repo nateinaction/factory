@@ -35,8 +35,9 @@ To add a host, add it under `factory.hosts` in `inventory/hosts.yml`.
 
 The dev shell installs the `pre-commit` git hook. It runs the hooks in
 `.pre-commit-config.yaml` — `go fix`, `go mod tidy`, `golangci-lint` and the
-Go tests in `foreman/`, then the Ansible syntax check and `tests/*.test` — and
-CI runs the same set. Run them all yourself with:
+Go tests in `foreman/`, then the Ansible syntax check, `ansible-lint`,
+`yamllint` and `tests/*.test` — and CI runs the same set. Run them all yourself
+with:
 
 ```sh
 pre-commit run --all-files
