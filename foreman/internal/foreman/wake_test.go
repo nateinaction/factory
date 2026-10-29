@@ -21,14 +21,62 @@ var _ = Describe("waking on a comment", func() {
 		h = newHarness()
 	})
 
-	// transition posts a handoff marker on issue 1 as the repository's writer.
+	// transition posts a handoff marker on issue 1 as the agent role's App.
 	transition := func(t workflow.Transition) {
+		GinkgoHelper()
+
+		body, err := workflow.RenderTransition(t)
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(1, appLogin(t.Role), body)
+	}
+
+	// forge posts a handoff marker on issue 1 as the repository's writer, who cannot hand off.
+	forge := func(t workflow.Transition) {
 		GinkgoHelper()
 
 		body, err := workflow.RenderTransition(t)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(emulator.CommentAs(context.Background(), "o/r", 1, ghtest.AdminToken, body)).To(Succeed())
 	}
+
+	It("does not wake on a marker only the writer forged", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelWaiting: {{"number": 1}}})
+		forge(workflow.Transition{
+			Role: workflow.Planner, RunID: "forged", From: workflow.Planning, To: workflow.Waiting,
+		})
+		forge(workflow.Transition{
+			Role: workflow.Planner, RunID: "forged", From: workflow.Waiting, To: workflow.Plan,
+		})
+		h.comment(1, "o", "send it back to planning")
+
+		h.installed = map[workflow.Role][]string{
+			workflow.Planner: {"o/r"}, workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"},
+		}
+
+		h.out.Reset()
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	It("does not block on a malformed marker the writer posted", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 1}}})
+		h.comment(1, "o", "<!-- factory:handoff not a marker -->")
+
+		h.installed = map[workflow.Role][]string{workflow.Implementer: {"o/r"}}
+
+		h.out.Reset()
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelImplementing))
+		Expect(h.runner.find("enqueue")).To(HaveLen(1))
+	})
 
 	It("sends a waiting issue back to the Planner on a writer's comment", func() {
 		h.queue(map[string][]map[string]any{workflow.LabelWaiting: {{"number": 1}}})

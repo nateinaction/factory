@@ -11,12 +11,17 @@ type Marker struct {
 	Transition
 }
 
-// Markers reads every handoff marker in comments, oldest first. A body that starts with a marker but
-// does not parse is an error, so a malformed marker is never skipped.
+// Markers reads every factory-authored handoff marker in comments, oldest first. A comment from
+// another author is skipped before its body is read, so a forged marker moves nothing and a forged
+// malformed one does not block. A factory marker that does not parse is an error, never skipped.
 func Markers(comments []Item) ([]Marker, error) {
 	out := make([]Marker, 0, len(comments))
 
 	for _, c := range comments {
+		if !FactoryAuthored(c.Author) {
+			continue
+		}
+
 		t, ok, err := ParseTransition(c.Body)
 		if err != nil {
 			return nil, err
@@ -40,7 +45,9 @@ func LatestMarker(comments []Item) (Marker, bool, error) {
 	return markers[len(markers)-1], true, nil
 }
 
-// AfterMarker returns the comments posted after marker, oldest first, with handoff markers left out.
+// AfterMarker returns the comments posted after marker, oldest first, with factory handoff markers
+// left out. Another author's comment that merely looks like a marker is not a factory record, so it
+// stays in the thread a run reads.
 func AfterMarker(comments []Item, marker Marker) []Item {
 	var out []Item
 
@@ -49,9 +56,11 @@ func AfterMarker(comments []Item, marker Marker) []Item {
 			continue
 		}
 
-		// A handoff marker is foreman's own record, not part of the thread a run reads.
-		if _, ok, err := ParseTransition(c.Body); ok || err != nil {
-			continue
+		// A factory handoff marker is foreman's own record, not part of the thread a run reads.
+		if FactoryAuthored(c.Author) {
+			if _, ok, err := ParseTransition(c.Body); ok || err != nil {
+				continue
+			}
 		}
 
 		out = append(out, c)

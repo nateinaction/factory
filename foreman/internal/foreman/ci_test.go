@@ -131,7 +131,7 @@ var _ = Describe("the CI gate before review", func() {
 
 		// Two earlier CI failures plus this commit reach the limit of three.
 		for _, sha := range []string{"old1", "old2"} {
-			h.comment(5, "factory", workflow.CIFailureMarker(sha))
+			h.comment(5, appLogin(workflow.Reviewer), workflow.CIFailureMarker(sha))
 		}
 
 		Expect(poll()).Error().NotTo(HaveOccurred())

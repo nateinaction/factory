@@ -290,6 +290,11 @@ func (h *harness) serveCI(w http.ResponseWriter, r *http.Request) {
 // isModel reports whether c starts a model run: opencode under srt, or bare opencode.
 func isModel(c proc.Cmd) bool { return strings.Contains(joined(c), "opencode run") }
 
+// appLogin is the bot login of the factory's App for an agent role, as the emulator reports it.
+func appLogin(role workflow.Role) string {
+	return "o-factory-" + string(role) + "[bot]"
+}
+
 // tokenFor is the seeded token of a test user.
 func tokenFor(login string) string {
 	switch login {
@@ -297,6 +302,12 @@ func tokenFor(login string) string {
 		return ghtest.AdminToken
 	case "factory":
 		return "secret-token"
+	}
+
+	for _, role := range workflow.KnownRoles() {
+		if login == appLogin(role) {
+			return "minted-token-" + string(role)
+		}
 	}
 
 	Fail("no seeded token for " + login)
@@ -663,11 +674,12 @@ func (h *harness) retroComments() []string {
 	return out
 }
 
-// seedComment posts a comment on issue 5 as the repository's admin and returns its id.
+// seedComment posts a comment on issue 5 as the factory's Implementer App and returns its id: the
+// markers and retro reports it seeds are the factory's own records.
 func (h *harness) seedComment(text string) int64 {
 	GinkgoHelper()
 
-	h.comment(5, "o", text)
+	h.comment(5, appLogin(workflow.Implementer), text)
 
 	comments, err := emulator.Comments(context.Background(), "o/r", 5)
 	Expect(err).NotTo(HaveOccurred())
