@@ -34,6 +34,13 @@ func (r Repo) Owner() string {
 	return owner
 }
 
+// Name returns the repository name without its owner. It is empty for the zero Repo.
+func (r Repo) Name() string {
+	_, name, _ := strings.Cut(r.name, "/")
+
+	return name
+}
+
 // ParseIssueRef parses the repository and issue number arguments of a command into one IssueRef. On
 // failure it returns the zero IssueRef and an error.
 func ParseIssueRef(repo, number string) (IssueRef, error) {

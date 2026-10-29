@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,8 +38,6 @@ const (
 	StateOpen = "open"
 	// StateAll is the query value that lists issues in any state.
 	StateAll = "all"
-	// stateClosed is the state value that closes an issue.
-	stateClosed = "closed"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
 	// sortParam is the query parameter that picks the sort field.
@@ -85,14 +84,34 @@ func isStatus(err error, code int) bool {
 
 // Call makes one API request; in is sent as JSON and the answer is decoded into out, when both are given.
 func (c Client) Call(ctx context.Context, method, path string, in, out any) error {
-	req, err := c.newRequest(ctx, method, path, in)
+	raw, err := c.send(ctx, method, path, in)
 	if err != nil {
 		return err
 	}
 
+	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
+	}
+
+	return nil
+}
+
+// send is the one request path: it sends the request, bounds the answer's body and checks its status,
+// then returns the body. Call decodes that body as JSON and JobLog reads it as text, so every answer
+// is closed, capped and status-checked in this one place, whatever its content type.
+func (c Client) send(ctx context.Context, method, path string, in any) ([]byte, error) {
+	req, err := c.newRequest(ctx, method, path, in)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("github %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("github %s %s: %w", method, path, err)
 	}
 
 	defer func() {
@@ -104,20 +123,14 @@ func (c Client) Call(ctx context.Context, method, path string, in, out any) erro
 
 	switch {
 	case err != nil:
-		return fmt.Errorf("github %s %s: read: %w", method, path, err)
+		return nil, fmt.Errorf("github %s %s: read: %w", method, path, err)
 	case len(raw) > maxResponseBytes:
-		return fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
+		return nil, fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
 	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
-		return &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
-	case out == nil || len(bytes.TrimSpace(raw)) == 0:
-		return nil
+		return nil, &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
 	}
 
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
-	}
-
-	return nil
+	return raw, nil
 }
 
 // newRequest builds an authenticated request with in, when given, as its JSON body.
@@ -149,6 +162,47 @@ func (c Client) newRequest(ctx context.Context, method, path string, in any) (*h
 	req.Header.Set("Content-Type", "application/json")
 
 	return req, nil
+}
+
+// apiRoot is the segment every repository's API path starts below.
+const apiRoot = "repos"
+
+// repoPath builds the API path of a repository, then of each part under it.
+func repoPath(repo workflow.Repo, parts ...string) string {
+	return joinPath(append([]string{apiRoot, repo.Owner(), repo.Name()}, parts...)...)
+}
+
+// issuePath builds the API path of an issue, then of each part under it. ref.Number names the issue.
+func issuePath(ref workflow.IssueRef, parts ...string) string {
+	return joinPath(append([]string{
+		apiRoot, ref.Repo.Owner(), ref.Repo.Name(), "issues", strconv.Itoa(ref.Number),
+	}, parts...)...)
+}
+
+// pullPath builds the API path of a pull request, then of each part under it. ref.Number names the
+// pull request.
+func pullPath(ref workflow.IssueRef, parts ...string) string {
+	return joinPath(append([]string{
+		apiRoot, ref.Repo.Owner(), ref.Repo.Name(), "pulls", strconv.Itoa(ref.Number),
+	}, parts...)...)
+}
+
+// commentPath builds the API path of one issue comment, which the rest of the issue's path does not
+// name: a comment is addressed by its own id.
+func commentPath(repo workflow.Repo, id int64) string {
+	return repoPath(repo, "issues", "comments", strconv.FormatInt(id, 10))
+}
+
+// joinPath builds a rooted API path, escaping each segment so no segment can leave the path it
+// belongs to.
+func joinPath(segments ...string) string {
+	escaped := make([]string, 0, len(segments)+1)
+
+	for _, segment := range segments {
+		escaped = append(escaped, url.PathEscape(segment))
+	}
+
+	return "/" + strings.Join(escaped, "/")
 }
 
 // Request bodies foreman sends.
@@ -246,7 +300,7 @@ func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label strin
 
 	var issues []workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/issues?"+q.Encode(), nil, &issues)
+	err := c.Call(ctx, http.MethodGet, repoPath(repo, "issues")+"?"+q.Encode(), nil, &issues)
 
 	return issues, err
 }
@@ -260,7 +314,7 @@ func (c Client) ListIssues(
 ) ([]workflow.Issue, error) {
 	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {direction}}
 
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
+	return Paged[workflow.Issue](ctx, c, repoPath(repo, "issues")+"?"+q.Encode())
 }
 
 // Label is the part of a repository label foreman reads.
@@ -272,7 +326,7 @@ type Label struct {
 // EnsureLabels creates each label the repository lacks. A label another poll created between the
 // read and the write is already there, so its 422 is not an error.
 func (c Client) EnsureLabels(ctx context.Context, repo workflow.Repo, labels []string) error {
-	existing, err := Paged[Label](ctx, c, "/repos/"+repo.String()+"/labels")
+	existing, err := Paged[Label](ctx, c, repoPath(repo, "labels"))
 	if err != nil {
 		return err
 	}
@@ -287,7 +341,7 @@ func (c Client) EnsureLabels(ctx context.Context, repo workflow.Repo, labels []s
 			continue
 		}
 
-		err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/labels", labelRequest{Name: name}, nil)
+		err := c.Call(ctx, http.MethodPost, repoPath(repo, "labels"), labelRequest{Name: name}, nil)
 		if err != nil && !isStatus(err, http.StatusUnprocessableEntity) {
 			return err
 		}
@@ -298,7 +352,7 @@ func (c Client) EnsureLabels(ctx context.Context, repo workflow.Repo, labels []s
 
 // ListComments lists an issue's comments, oldest first.
 func (c Client) ListComments(ctx context.Context, ref workflow.IssueRef) ([]workflow.Item, error) {
-	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number))
+	return Paged[workflow.Item](ctx, c, issuePath(ref, "comments"))
 }
 
 // CollaboratorPermission reads a user's permission on the repository. A user who is not a
@@ -308,7 +362,7 @@ func (c Client) CollaboratorPermission(ctx context.Context, repo workflow.Repo, 
 		Permission string `json:"permission"`
 	}
 
-	path := fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(login))
+	path := repoPath(repo, "collaborators", login, "permission")
 
 	err := c.Call(ctx, http.MethodGet, path, nil, &got)
 	if isStatus(err, http.StatusNotFound) {
@@ -327,7 +381,7 @@ func (c Client) CollaboratorPermission(ctx context.Context, repo workflow.Repo, 
 func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]workflow.Issue, bool, error) {
 	var blocking []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
+	path := issuePath(ref, "dependencies", "blocked_by")
 
 	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &blocking)); !supported {
 		return nil, false, err
@@ -336,7 +390,7 @@ func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]work
 	open := make([]workflow.Issue, 0, len(blocking))
 
 	for _, b := range blocking {
-		if b.State != stateClosed {
+		if b.State != string(workflow.Closed) {
 			open = append(open, b)
 		}
 	}
@@ -348,7 +402,7 @@ func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]work
 func (c Client) GetIssue(ctx context.Context, ref workflow.IssueRef) (workflow.Issue, error) {
 	var issue workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number), nil, &issue)
+	err := c.Call(ctx, http.MethodGet, issuePath(ref), nil, &issue)
 
 	return issue, err
 }
@@ -359,7 +413,7 @@ func (c Client) CreateIssue(
 ) (workflow.Issue, error) {
 	var issue workflow.Issue
 
-	err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/issues",
+	err := c.Call(ctx, http.MethodPost, repoPath(repo, "issues"),
 		createIssueRequest{Title: title, Body: body, Labels: labels}, &issue)
 
 	return issue, err
@@ -367,14 +421,14 @@ func (c Client) CreateIssue(
 
 // UpdateIssueBody replaces an issue's body.
 func (c Client) UpdateIssueBody(ctx context.Context, ref workflow.IssueRef, body string) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
+	return c.Call(ctx, http.MethodPatch, issuePath(ref),
 		issueBodyRequest{Body: body}, nil)
 }
 
 // CloseIssue closes an issue.
 func (c Client) CloseIssue(ctx context.Context, ref workflow.IssueRef) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
-		issueStateRequest{State: stateClosed}, nil)
+	return c.Call(ctx, http.MethodPatch, issuePath(ref),
+		issueStateRequest{State: string(workflow.Closed)}, nil)
 }
 
 // endpointSupported reads the outcome of a call to an endpoint a repository may lack. A 404 means the
@@ -393,7 +447,7 @@ func endpointSupported(err error) (bool, error) {
 func (c Client) SubIssueNumbers(ctx context.Context, ref workflow.IssueRef) ([]int, bool, error) {
 	var children []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", ref.Repo, ref.Number)
+	path := issuePath(ref, "sub_issues")
 
 	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &children)); !supported {
 		return nil, false, err
@@ -410,7 +464,7 @@ func (c Client) SubIssueNumbers(ctx context.Context, ref workflow.IssueRef) ([]i
 // AddSubIssue links child, by database id, as a sub-issue of parent. GitHub's 422 for an existing
 // link is not an error: applying the same proposal again changes nothing.
 func (c Client) AddSubIssue(ctx context.Context, ref workflow.IssueRef, childID int64) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", ref.Repo, ref.Number)
+	path := issuePath(ref, "sub_issues")
 
 	err := c.Call(ctx, http.MethodPost, path, subIssueRequest{SubIssueID: childID}, nil)
 	if isStatus(err, http.StatusUnprocessableEntity) {
@@ -437,7 +491,7 @@ func (c Client) IssueID(ctx context.Context, ref workflow.IssueRef) (int64, erro
 // AddBlockedBy blocks child, by database id, on blocker. GitHub's 422 for an existing edge is not an
 // error: applying the same proposal again changes nothing.
 func (c Client) AddBlockedBy(ctx context.Context, ref workflow.IssueRef, blockerID int64) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
+	path := issuePath(ref, "dependencies", "blocked_by")
 
 	err := c.Call(ctx, http.MethodPost, path, dependencyRequest{IssueID: blockerID}, nil)
 	if isStatus(err, http.StatusUnprocessableEntity) {
@@ -452,7 +506,7 @@ func (c Client) AddBlockedBy(ctx context.Context, ref workflow.IssueRef, blocker
 func (c Client) BlockedByNumbers(ctx context.Context, ref workflow.IssueRef) ([]int, bool, error) {
 	var blockers []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
+	path := issuePath(ref, "dependencies", "blocked_by")
 
 	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &blockers)); !supported {
 		return nil, false, err
@@ -471,7 +525,7 @@ func (c Client) BlockedByNumbers(ctx context.Context, ref workflow.IssueRef) ([]
 func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Issue, bool, error) {
 	var parent workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/parent", ref.Repo, ref.Number)
+	path := issuePath(ref, "parent")
 
 	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &parent)); !supported {
 		return workflow.Issue{}, false, err
@@ -489,8 +543,7 @@ func (c Client) UpsertComment(ctx context.Context, ref workflow.IssueRef, marker
 	}
 
 	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
-			bodyRequest{Body: text}, nil)
+		return c.Call(ctx, http.MethodPatch, commentPath(ref.Repo, mine[0].ID), bodyRequest{Body: text}, nil)
 	}
 
 	return c.Comment(ctx, ref, text)
@@ -520,20 +573,19 @@ func (c Client) CloseResolved(ctx context.Context, ref workflow.IssueRef, t work
 		return err
 	}
 
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
-		map[string]string{stateParam: stateClosed}, nil)
+	return c.Call(ctx, http.MethodPatch, issuePath(ref),
+		map[string]string{stateParam: string(workflow.Closed)}, nil)
 }
 
 // Comment posts a comment on an issue.
 func (c Client) Comment(ctx context.Context, ref workflow.IssueRef, text string) error {
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number),
+	return c.Call(ctx, http.MethodPost, issuePath(ref, "comments"),
 		bodyRequest{Body: text}, nil)
 }
 
 // AddLabel adds one label to an issue.
 func (c Client) AddLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", ref.Repo, ref.Number),
-		labelsRequest{Labels: []string{label}}, nil)
+	return c.Call(ctx, http.MethodPost, issuePath(ref, "labels"), labelsRequest{Labels: []string{label}}, nil)
 }
 
 // RemoveLabel takes one label off an issue. A label already gone is not an error, so the removal is
@@ -548,7 +600,7 @@ func (c Client) RemoveLabel(ctx context.Context, ref workflow.IssueRef, label st
 
 // removeLabel removes one label from an issue.
 func (c Client) removeLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", ref.Repo, ref.Number, url.PathEscape(label))
+	path := issuePath(ref, "labels", label)
 
 	return c.Call(ctx, http.MethodDelete, path, nil, nil)
 }
@@ -647,7 +699,7 @@ func (c Client) recordedMarker(ctx context.Context, ref workflow.IssueRef, marke
 func (c Client) CommentReturningID(ctx context.Context, ref workflow.IssueRef, text string) (int64, error) {
 	var comment workflow.Item
 
-	err := c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number),
+	err := c.Call(ctx, http.MethodPost, issuePath(ref, "comments"),
 		bodyRequest{Body: text}, &comment)
 
 	return comment.ID, err
@@ -655,7 +707,7 @@ func (c Client) CommentReturningID(ctx context.Context, ref workflow.IssueRef, t
 
 // Timeline lists an issue's timeline events, oldest first.
 func (c Client) Timeline(ctx context.Context, ref workflow.IssueRef) ([]workflow.TimelineEvent, error) {
-	return Paged[workflow.TimelineEvent](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/timeline", ref.Repo, ref.Number))
+	return Paged[workflow.TimelineEvent](ctx, c, issuePath(ref, "timeline"))
 }
 
 // PullRequest is the part of a pull request foreman reads.
@@ -676,7 +728,7 @@ func (c Client) ExistingPR(ctx context.Context, repo workflow.Repo, branch strin
 	q := url.Values{stateParam: {StateOpen}, "head": {owner + ":" + branch}}
 
 	var pulls []PullRequest
-	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
+	if err := c.Call(ctx, http.MethodGet, repoPath(repo, "pulls")+"?"+q.Encode(), nil, &pulls); err != nil {
 		return nil, err
 	}
 
@@ -691,7 +743,7 @@ func (c Client) ExistingPR(ctx context.Context, repo workflow.Repo, branch strin
 func (c Client) CreatePR(ctx context.Context, repo workflow.Repo, title, head, base, body string) (PullRequest, error) {
 	var pr PullRequest
 
-	err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/pulls",
+	err := c.Call(ctx, http.MethodPost, repoPath(repo, "pulls"),
 		pullRequestRequest{Title: title, Head: head, Base: base, Body: body}, &pr)
 
 	return pr, err
@@ -709,7 +761,7 @@ type Repository struct {
 func (c Client) Repository(ctx context.Context, repo workflow.Repo) (Repository, error) {
 	var r Repository
 
-	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String(), nil, &r); err != nil {
+	if err := c.Call(ctx, http.MethodGet, repoPath(repo), nil, &r); err != nil {
 		return Repository{}, err
 	}
 
@@ -740,8 +792,7 @@ func (c Client) CheckRuns(ctx context.Context, repo workflow.Repo, ref string) (
 			CheckRuns []workflow.CheckRun `json:"check_runs"`
 		}
 
-		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=%d&page=%d",
-			repo, url.PathEscape(ref), PageSize, page)
+		path := fmt.Sprintf("%s?per_page=%d&page=%d", repoPath(repo, "commits", ref, "check-runs"), PageSize, page)
 
 		if err := c.Call(ctx, http.MethodGet, path, nil, &got); err != nil {
 			return nil, err
@@ -758,15 +809,15 @@ func (c Client) CheckRuns(ctx context.Context, repo workflow.Repo, ref string) (
 
 // CommitStatuses lists the commit statuses GitHub reports for a commit.
 func (c Client) CommitStatuses(ctx context.Context, repo workflow.Repo, ref string) ([]workflow.CommitStatus, error) {
-	path := fmt.Sprintf("/repos/%s/commits/%s/statuses", repo, url.PathEscape(ref))
-
-	return Paged[workflow.CommitStatus](ctx, c, path)
+	return Paged[workflow.CommitStatus](ctx, c, repoPath(repo, "commits", ref, "statuses"))
 }
 
 // JobLog reads the plain-text log of one Actions job. The endpoint redirects to a download at another
 // host, which the HTTP client follows without the token.
 func (c Client) JobLog(ctx context.Context, repo workflow.Repo, id int64) (string, error) {
-	raw, err := c.text(ctx, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repo, id))
+	path := repoPath(repo, "actions", "jobs", strconv.FormatInt(id, 10), "logs")
+
+	raw, err := c.send(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return "", err
 	}
@@ -774,41 +825,9 @@ func (c Client) JobLog(ctx context.Context, repo workflow.Repo, id int64) (strin
 	return string(raw), nil
 }
 
-// text makes one API request and returns its body, which is not JSON. The body is bounded like any
-// other answer.
-func (c Client) text(ctx context.Context, path string) ([]byte, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github GET %s: %w", path, err)
-	}
-
-	defer func() {
-		// The body is fully read or abandoned on error; a close failure changes nothing for the caller.
-		_ = resp.Body.Close()
-	}()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-
-	switch {
-	case err != nil:
-		return nil, fmt.Errorf("github GET %s: read: %w", path, err)
-	case len(raw) > maxResponseBytes:
-		return nil, fmt.Errorf("github GET %s: response over %d bytes", path, maxResponseBytes)
-	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
-		return nil, &HTTPError{Method: http.MethodGet, Path: path, Code: resp.StatusCode}
-	}
-
-	return raw, nil
-}
-
 // Reviews lists a pull request's reviews.
 func (c Client) Reviews(ctx context.Context, ref workflow.IssueRef) ([]workflow.Item, error) {
-	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", ref.Repo, ref.Number))
+	return Paged[workflow.Item](ctx, c, pullPath(ref, "reviews"))
 }
 
 // LatestReviewBody is the body of the last review foreman posted, or empty.
@@ -832,7 +851,7 @@ func (c Client) LatestReviewBody(ctx context.Context, ref workflow.IssueRef) (st
 func (c Client) PostReview(
 	ctx context.Context, ref workflow.IssueRef, sha, body string, verdict workflow.Verdict,
 ) error {
-	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", ref.Repo, ref.Number)
+	path := pullPath(ref, "reviews")
 
 	err := c.Call(ctx, http.MethodPost, path,
 		reviewRequest{CommitID: sha, Body: body, Event: verdict.Event()}, nil)
@@ -852,8 +871,7 @@ func (c Client) PostReview(
 
 // UpdatePR replaces a pull request's title and body.
 func (c Client) UpdatePR(ctx context.Context, ref workflow.IssueRef, title, text string) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", ref.Repo, ref.Number),
-		pullRequestBody{Title: title, Body: text}, nil)
+	return c.Call(ctx, http.MethodPatch, pullPath(ref), pullRequestBody{Title: title, Body: text}, nil)
 }
 
 // RequestReviewers asks people to review a pull request. An empty list asks nobody, so foreman never
@@ -863,6 +881,6 @@ func (c Client) RequestReviewers(ctx context.Context, ref workflow.IssueRef, rev
 		return nil
 	}
 
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", ref.Repo, ref.Number),
+	return c.Call(ctx, http.MethodPost, pullPath(ref, "requested_reviewers"),
 		reviewersRequest{Reviewers: reviewers}, nil)
 }

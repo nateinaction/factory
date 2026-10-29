@@ -126,7 +126,9 @@ const (
 	Failed State = LabelFailed
 	// Paused waits until a writer removes the label.
 	Paused State = LabelPaused
-	// Closed is a resolved ticket's terminal state. It has no label: the ticket is closed instead.
+	// Closed is a resolved ticket's terminal state. It has no label: the ticket is closed instead. Its
+	// value is the one name for the state GitHub reports as closed, so the client compares and sends it
+	// rather than spelling it again.
 	Closed State = "closed"
 )
 

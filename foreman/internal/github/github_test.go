@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -73,6 +74,25 @@ var _ = Describe("Client", func() {
 			_, err := c.DefaultBranch(ctx, testRepo())
 			Expect(err).To(MatchError(ContainSubstring("403")))
 			Expect(err.Error()).NotTo(ContainSubstring("secret-token"))
+		})
+	})
+
+	Describe("API paths", func() {
+		It("escapes each part so that none can leave its own segment", func() {
+			var asked []string
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked = append(asked, r.Method+" "+r.RequestURI)
+
+				ghtest.WriteJSON(w, map[string]string{"permission": "none"})
+			}))
+			DeferCleanup(srv.Close)
+
+			escaping := github.NewClient(srv.URL, "secret-token", srv.Client())
+
+			_, err := escaping.CollaboratorPermission(ctx, testRepo(), "o/../factory")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asked).To(Equal([]string{"GET /repos/o/r/collaborators/o%2F..%2Ffactory/permission"}))
 		})
 	})
 

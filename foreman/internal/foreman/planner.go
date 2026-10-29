@@ -163,9 +163,6 @@ func applyProposal(
 	}
 }
 
-// closedState is how GitHub answers an issue that is closed.
-const closedState = "closed"
-
 // applySingle hands the issue itself to the Implementer. The spec stays in the final-round comment.
 func applySingle(ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string) error {
 	posted, err := markerPosted(ctx, c, workflow.IssueRef{Repo: repo, Number: from},
@@ -325,7 +322,7 @@ func applyResolution(
 		return err
 	}
 
-	if issue.State == closedState {
+	if issue.State == string(workflow.Closed) {
 		return nil
 	}
 
