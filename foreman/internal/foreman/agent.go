@@ -157,7 +157,9 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	return stream, errors.Join(err, parseErr)
 }
 
-// logUsage writes the run's single usage line to stdout, which dagu captures in the run log.
+// logUsage prints the run's single usage line to stdout, which dagu captures in the run log. The line
+// is kept while people and `foreman logs` read it; status reads the run's out-of-band record instead
+// (see recordUsage), so nothing in a report depends on a line the run's stdout carries.
 func (d Deps) logUsage(r opencode.UsageReport) {
 	line, err := json.Marshal(r)
 	if err != nil {

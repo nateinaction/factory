@@ -1110,6 +1110,20 @@ func (h *harness) usageLines() []map[string]any {
 	return out
 }
 
+// usageRecord reads the out-of-band usage record the run left for status.
+func (h *harness) usageRecord(runID string) map[string]any {
+	path, err := usageRecordPath(h.deps.Settings.WorkRoot, runID)
+	Expect(err).NotTo(HaveOccurred())
+
+	raw, err := os.ReadFile(path) //nolint:gosec // a path the test names, under the harness's own work root
+	Expect(err).NotTo(HaveOccurred())
+
+	var m map[string]any
+	Expect(json.Unmarshal(raw, &m)).To(Succeed())
+
+	return m
+}
+
 // testRepo parses a repository name the way the command edge would.
 func testRepo(name string) workflow.Repo {
 	repo, err := workflow.ParseRepo(name)
