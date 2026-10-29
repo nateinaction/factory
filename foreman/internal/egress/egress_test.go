@@ -257,7 +257,7 @@ var _ = Describe("Proxy", func() {
 		Expect(p.Domains()).To(ContainElement("127.0.0.1"))
 	})
 
-	It("refuses a denied CONNECT and still records the domain", func() {
+	It("refuses a denied CONNECT and lists the domain as refused", func() {
 		p := start(policy("api.example.com"), "")
 		DeferCleanup(p.Close)
 
@@ -267,7 +267,7 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-		Expect(p.Domains()).To(ContainElement("blocked.example"))
+		Expect(p.Refused()).To(ContainElement("blocked.example"))
 	})
 
 	It("forwards an absolute-form request through the same policy", func() {
@@ -504,7 +504,7 @@ var _ = Describe("Proxy", func() {
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		Expect(dials).To(BeEmpty(), "the proxy dialed a destination the allowlist refused")
-		Expect(p.Domains()).To(ContainElement("unlisted.example"))
+		Expect(p.Refused()).To(ContainElement("unlisted.example"))
 	})
 
 	It("refuses an origin-form path outside the API even with an API configured", func() {
@@ -581,7 +581,7 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
-		Expect(logged.String()).To(ContainSubstring("tunnel limit reached"))
+		Expect(logged.String()).To(ContainSubstring("refused_tunnel_limit"))
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
@@ -715,8 +715,39 @@ var _ = Describe("Proxy", func() {
 				_ = conn.Close()
 
 				Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
-				Expect(p.Domains()).To(ContainElement(host))
+				Expect(p.Refused()).To(ContainElement(host))
 			}
+		})
+
+		It("refuses the telemetry collector's OTLP address and never connects to it", func() {
+			// The collector listens on loopback (OTLP gRPC 4317, HTTP 4318). A sandboxed run reaches
+			// the network only through this proxy, so the proxy refusing loopback keeps the run off it.
+			ln, err := (&net.ListenConfig{}).Listen(GinkgoT().Context(), "tcp", "127.0.0.1:0")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(ln.Close)
+
+			accepted := make(chan struct{}, 1)
+
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return // the listener closed at cleanup
+				}
+
+				accepted <- struct{}{}
+
+				_ = conn.Close() // test cleanup: a close error changes no assertion
+			}()
+
+			p := start(policy(), "")
+			DeferCleanup(p.Close)
+
+			resp, conn := connect(p.Address(), ln.Addr().String())
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Consistently(accepted, 200*time.Millisecond).ShouldNot(Receive())
 		})
 
 		It("refuses a plain HTTP request to every range that is not publicly routable", func() {
@@ -745,7 +776,7 @@ var _ = Describe("Proxy", func() {
 			_ = conn.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-			Expect(p.Domains()).To(ContainElement("internal.example"))
+			Expect(p.Refused()).To(ContainElement("internal.example"))
 
 			resp, conn = forward(p.Address(), "http://internal.example/thing")
 			// test cleanup: a close error changes no assertion

@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# A run's trace id is the way in: Tempo opens the trace, and links to the run's diagnostics in Loki
+# (stored with trace_id as structured metadata) and its metrics in Prometheus.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://{{ factory_telemetry_host_loopback }}:{{ factory_telemetry_prometheus_port }}
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://{{ factory_telemetry_host_loopback }}:{{ factory_telemetry_tempo_http_port }}
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://{{ factory_telemetry_host_loopback }}:{{ factory_telemetry_loki_port }}
+    jsonData:
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          datasourceUid: tempo

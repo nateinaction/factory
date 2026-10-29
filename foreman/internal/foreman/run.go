@@ -26,6 +26,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -167,10 +168,9 @@ type session struct {
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
 	settings string
-	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
-	key string
-	// token is the run's proxy token, kept only to scrub it from anything echoed.
-	token string
+	// secrets are every secret the run holds (the OpenRouter key, the proxy token and the model's
+	// read-only GitHub token), kept only to scrub them from anything the model process writes.
+	secrets []string
 }
 
 // git runs git in the clone.
@@ -206,8 +206,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
-		key:      j.sec.openrouterKey,
-		token:    j.token,
+		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
 
@@ -277,11 +276,16 @@ func (r run) loadJob(ctx context.Context, env runEnv, external []string, db stri
 // egress starts the run's egress proxy with the agent role's policy, forwarding its API calls to
 // apiURL. A proxy that cannot start fails the run: the model has no other egress, and there is never
 // an unsandboxed fallback.
-func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
+func (d Deps) egress(
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, policy sandbox.Network, apiURL, token string,
+) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
 		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
-			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, d.log())
+			// The proxy's security events carry the run they belong to.
+			log := security.Scope(d.log(), string(role), ref.Repo.String(), ref.Number)
+
+			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log)
 		}
 	}
 

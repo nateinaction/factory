@@ -395,18 +395,21 @@ type UsageReport struct {
 	PeakContext *int          `json:"peak_context,omitempty"`
 	Cost        *float64      `json:"cost,omitempty"`
 	Domains     []string      `json:"domains,omitempty"`
-	Missing     []string      `json:"missing"`
+	// RefusedDomains are the domains the egress proxy refused, apart from the allowed Domains.
+	RefusedDomains []string `json:"refused_domains,omitempty"`
+	Missing        []string `json:"missing"`
 }
 
-// WithDomains records every domain the run's egress proxy was asked for, refused ones included. A
-// nil slice means the adapter could not observe egress, and domains stays listed as missing rather
-// than reported as none.
-func (r UsageReport) WithDomains(domains []string) UsageReport {
+// WithDomains records the domains the run's egress proxy allowed and, apart, the ones it refused. A
+// nil allowed slice means the adapter could not observe egress, and domains stays listed as missing
+// rather than reported as none.
+func (r UsageReport) WithDomains(domains, refused []string) UsageReport {
 	if domains == nil {
 		return r
 	}
 
 	r.Domains = domains
+	r.RefusedDomains = refused
 	r.Missing = slices.DeleteFunc(r.Missing, func(field string) bool { return field == "domains" })
 
 	return r

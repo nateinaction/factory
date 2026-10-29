@@ -1,0 +1,31 @@
+[Unit]
+Description=Prometheus (foreman telemetry metrics, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=prometheus
+ExecStart=/nix/var/nix/profiles/default/bin/prometheus \
+  --config.file=/etc/prometheus/prometheus.yml \
+  --storage.tsdb.path=/var/lib/prometheus \
+  --storage.tsdb.retention.time={{ factory_telemetry_prometheus_retention_time }} \
+  --storage.tsdb.retention.size={{ factory_telemetry_prometheus_retention_size }} \
+  --web.listen-address={{ factory_telemetry_host_loopback }}:{{ factory_telemetry_prometheus_port }} \
+  --web.enable-otlp-receiver \
+  --enable-feature=exemplar-storage
+Environment=GOMEMLIMIT={{ (factory_telemetry_memory_max_mib.prometheus * 0.8) | int }}MiB
+MemoryMax={{ factory_telemetry_memory_max_mib.prometheus }}M
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

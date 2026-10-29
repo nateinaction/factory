@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
@@ -87,7 +86,7 @@ func (s session) afterAttempt(
 }
 
 // attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to
-// the dagu log with the OpenRouter key removed. A session without a backend or settings refuses to
+// the dagu log with every secret the run holds removed. A session without a backend or settings refuses to
 // start the model: there is no unsandboxed fallback.
 func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Duration) (opencode.Stream, error) {
 	argv := sandbox.Argv(s.srt, s.settings, opencode.Argv(r))
@@ -95,11 +94,18 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 		return opencode.Stream{}, errors.New("the sandbox is not configured")
 	}
 
+	// Every byte the model process writes reaches a log through here: stdout through the
+	// "agent output" record, stderr through this writer. There is no other path out.
+	stderr := newRedactWriter(s.d.errOut(), s.secrets)
+
 	out, err := s.d.Runner.Run(ctx, proc.Cmd{
 		Argv: argv, Dir: s.workdir, Env: s.agentEnv, ReplaceEnv: true, Timeout: timeout, Capture: true,
+		Stderr: stderr,
 	})
+	err = errors.Join(err, stderr.flush())
+
 	if out != "" {
-		s.d.log().Info("agent output", "text", s.redact(out))
+		s.d.log().Info("agent output", "text", redact(out, s.secrets))
 	}
 
 	stream, parseErr := opencode.ParseStream(out)
@@ -107,19 +113,6 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	// steps, the usage and any failure event after the unreadable line are missing, so the run is
 	// never read as a success.
 	return stream, errors.Join(err, parseErr)
-}
-
-// redact removes the run's key and proxy token from text bound for a log.
-func (s session) redact(text string) string {
-	for _, secret := range []string{s.key, s.token} {
-		if secret == "" {
-			continue
-		}
-
-		text = strings.ReplaceAll(text, secret, "[redacted]")
-	}
-
-	return text
 }
 
 // logUsage writes the run's single usage line to stdout, which dagu captures in the run log.

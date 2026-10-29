@@ -68,8 +68,10 @@ type EgressProxy interface {
 	URL() string
 	// Address is the loopback host:port srt settings point at.
 	Address() string
-	// Domains is every host the run was refused or reached: the proxy records a refusal too.
+	// Domains is every host the proxy allowed.
 	Domains() []string
+	// Refused is every host the proxy refused, listed apart from the allowed ones.
+	Refused() []string
 	// Close stops the proxy.
 	Close() error
 }
@@ -84,6 +86,8 @@ type Deps struct {
 	HTTP *http.Client
 	// Out receives normal output.
 	Out io.Writer
+	// Err receives the model process's standard error, redacted; nil discards it.
+	Err io.Writer
 	// Log receives diagnostics as leveled, structured records. The edge builds it; nil logs nowhere.
 	Log *slog.Logger
 	// Tracer opens spans; nil opens no-op spans, as a spec that ignores telemetry does.
@@ -109,6 +113,15 @@ type Deps struct {
 // client returns a GitHub client for token.
 func (d Deps) client(token string) github.Client {
 	return github.NewClient(d.Settings.API, token, d.HTTP)
+}
+
+// errOut is where the model's redacted standard error goes.
+func (d Deps) errOut() io.Writer {
+	if d.Err == nil {
+		return io.Discard
+	}
+
+	return d.Err
 }
 
 // gitProgram is the git binary foreman runs on the host, outside every sandbox.

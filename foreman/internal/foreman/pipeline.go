@@ -244,13 +244,13 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	defer func() { err = errors.Join(err, files.remove()) }()
 
 	// The domains the egress proxy saw are the run's, and are read in the defer below.
-	var domains []string
+	var domains, refused []string
 
 	// The run's one usage line is logged even when the run failed, once the proxies have added what
 	// they read: that merge happens in the defer below, which runs first.
 	defer func() {
 		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage).
-			WithDomains(domains))
+			WithDomains(domains, refused))
 	}()
 
 	network, err := sandbox.ParseNetwork(r.spec.agent.Egress.AllowedDomains)
@@ -278,7 +278,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		return runResult{}, err
 	}
 
-	e, err := r.d.egress(ctx, network, p.URL(), token)
+	e, err := r.d.egress(ctx, r.role, r.spec.ref, network, p.URL(), token)
 	if err != nil {
 		// A failure to stop the key proxy is part of the run's outcome, not a diagnostic to drop.
 		return runResult{}, errors.Join(err, p.Close())
@@ -288,7 +288,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	// and Close is what ends it.
 	defer func() {
 		result.usage = result.usage.Use(reported(p.Usage()))
-		domains = e.Domains()
+		domains, refused = e.Domains(), e.Refused()
 		err = errors.Join(err, e.Close(), p.Close())
 	}()
 
