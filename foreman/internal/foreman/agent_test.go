@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -140,6 +141,34 @@ var _ = Describe("the opencode adapter", func() {
 	})
 
 	Describe("the usage line", func() {
+		It("takes the tokens and cost the run's proxy read", func() {
+			input, output, cached, cost := 70, 7, 3, 0.125
+			proxy := &fakeProxy{
+				url: "http://127.0.0.1:9/api/v1",
+				usage: openrouter.Usage{
+					Input: &input, Output: &output, Cached: &cached, Cost: &cost,
+				},
+			}
+			h.deps.Proxy = func(key, _ string) (Forwarder, error) {
+				proxy.key = key
+
+				return proxy, nil
+			}
+
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1), h.out.String())
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("input_tokens", 70.0), HaveKeyWithValue("output_tokens", 7.0),
+				HaveKeyWithValue("cached_tokens", 3.0), HaveKeyWithValue("cost", 0.125),
+				HaveKeyWithValue("peak_context", 1400.0),
+			), "the adapter still reports the context peak")
+			Expect(proxy.key).To(Equal("or-key"), "the proxy never got the key")
+			Expect(proxy.closed).To(BeTrue(), "the proxy outlived the run")
+			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(proxy.url))
+			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
+		})
+
 		It("is one JSON line per run, summed over the run and its retro", func() {
 			h.deps.Host = "pi-1"
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())

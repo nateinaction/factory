@@ -6,11 +6,31 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 |---|---|
 | Named agent per agent role, model from `factory_models` | `agent.<role>` in the rendered `opencode.json`, run as `opencode run --agent <role>` |
 | Context cap | the agent's model is an alias (`<role>-200k`) whose `limit.input` is the cap |
-| Compaction on or off per agent role | `OPENCODE_CONFIG_CONTENT={"compaction":{"auto":<bool>}}` set per run |
+| Compaction on or off per agent role | `OPENCODE_CONFIG_CONTENT={"compaction":{"auto":<bool>},"provider":...}` set per run |
 | No repository config or skills | `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
 | Fresh state, deleted after the run and its retro | `OPENCODE_DB` in `<work root>/state-<role>-<issue>/`; `:memory:` for the Reviewer |
 | Retro in the run's session | `--session <id>` from the run's JSON stream, never `--continue` |
-| Usage | parsed from `--format json` `step_finish` events |
+| The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's loopback proxy, which adds `Authorization` |
+| Usage | the proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
+
+## The OpenRouter key proxy
+
+`foreman/internal/openrouter` is a loopback forwarding proxy that foreman starts for each run and
+stops when the run ends. It binds `127.0.0.1` on a free port, holds the key, adds
+`Authorization: Bearer <key>` to every request, and forwards only to `https://openrouter.ai/api/v1`.
+A request naming any other path or destination is refused, and the proxy's client ignores
+`HTTPS_PROXY`, so the key cannot be sent anywhere else. A proxy that cannot bind fails the run, with
+no unsandboxed fallback.
+
+opencode sees only `http://127.0.0.1:<port>/api/v1` in `provider.openrouter.options.baseURL`. The
+proxy reads `usage.prompt_tokens`, `usage.completion_tokens`, `usage.prompt_tokens_details.cached_tokens`
+and `usage.cost` from each response (the last SSE message when streaming), and the run's usage line
+takes those totals over the adapter's own.
+
+Not yet checked against the pinned v1.19.3: whether opencode starts a run with no `OPENROUTER_API_KEY`
+or provider auth entry. If it insists on one, set a placeholder `provider.openrouter.options.apiKey`
+(a literal such as `proxy`, never the key): opencode sends it and the proxy replaces the header.
+
 
 ## Does opencode still read AGENTS.md with project config disabled?
 
