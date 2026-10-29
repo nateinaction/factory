@@ -4,6 +4,7 @@
 Each App is told apart by the `iss` claim of the JWT it presents: the token it is
 handed names that App, so a test can tell whose credential minted what.
 App 1 is installed on o/r (installation 7); App 2 on o/r and o/q (installations 7 and 8).
+App 6 (Planner) and App 7 (Curator) are installed on o/r and hold fewer reads.
 Apps 3 to 5 are installed past a ceiling of the listing the tool reads: App 3's
 installation listing is full on its last allowed page, App 4's one installation has
 a full repository listing on its last allowed page, and App 5 has more installations
@@ -20,12 +21,23 @@ PAGE_SIZE = 100
 MAX_PAGES = 10
 MAX_INSTALLATIONS = 50
 
+# What each App holds that a read-only token may ask for (the spec's permission table, reads only).
+# GitHub refuses a token that asks for more than its App holds.
+HELD_READS = {
+    "1": {"contents", "issues", "metadata", "pull_requests"},
+    "2": {"contents", "issues", "metadata", "pull_requests"},
+    "6": {"contents", "issues", "metadata"},
+    "7": {"issues", "metadata"},
+}
+
 INSTALLED = {
     "1": {7: ["o/r"]},
     "2": {7: ["o/r"], 8: ["o/q"]},
     "3": {i: ["o/paged"] for i in range(PAGE_SIZE * MAX_PAGES)},
     "4": {9: [f"o/wide-{i}" for i in range(PAGE_SIZE * MAX_PAGES)]},
     "5": {i: ["o/crowded"] for i in range(MAX_INSTALLATIONS + 1)},
+    "6": {7: ["o/r"]},
+    "7": {7: ["o/r"]},
 }
 
 
@@ -79,12 +91,11 @@ class Handler(BaseHTTPRequestHandler):
             suffix = ""
             permissions = (body or {}).get("permissions")
             if permissions is not None:
-                # The model's token must be read-only on the four permissions the spec names.
-                if any(v != "read" for v in permissions.values()) or set(permissions) != {
-                    "contents", "issues", "metadata", "pull_requests",
-                }:
-                    return self.reply(400, {"message": "not a read-only token request"})
-                suffix = "-ro"
+                # A read-only token asks only for reads, and only for reads its App holds.
+                held = HELD_READS.get(app, set())
+                if not permissions or any(v != "read" for v in permissions.values()) or not set(permissions) <= held:
+                    return self.reply(422, {"message": "not a read-only token request this App holds"})
+                suffix = "-ro-" + "+".join(sorted(permissions))
             return self.reply(201, {"token": f"tok-{app}-{parts[3]}-{scope}{suffix}"})
         self.reply(500, {"message": "unexpected " + self.path})
 

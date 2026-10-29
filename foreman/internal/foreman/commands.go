@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1182,7 +1183,11 @@ func runAsFactory(
 		return 0, err
 	}
 
-	path := d.Settings.TokenPath(role)
+	path, err := d.tokenPath(role)
+	if err != nil {
+		return 0, err
+	}
+
 	if err := writeTokenFile(path, token); err != nil {
 		return 0, err
 	}
@@ -1218,16 +1223,31 @@ func runAsFactory(
 }
 
 // writeTokenFile leaves the token readable by the factory group, set by the directory's setgid bit.
-func writeTokenFile(path, token string) error {
-	// The path is the edge-configured token directory joined with a parsed agent role, never input.
-	// The mode is group-readable on purpose: the factory half runs as another user in the factory
-	// group.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, tokenFileMode) //nolint:gosec // see above
+// It writes a private temporary file in the same directory, sets the final mode, then renames it into
+// place, so a reader sees the whole token or no file, never an empty or partial one.
+func writeTokenFile(path, token string) (err error) {
+	// The path is the edge-configured token directory joined with a vetted name, never input.
+	// CreateTemp opens exclusively with a random name and mode 0600.
+	f, err := os.CreateTemp(filepath.Dir(path), ".gh-token-*")
 	if err != nil {
 		return fmt.Errorf("write token file: %w", err)
 	}
 
+	tmp := f.Name()
+
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.Remove(tmp)) // nothing is renamed on failure
+		}
+	}()
+
 	if _, err := f.WriteString(token); err != nil {
+		return errors.Join(fmt.Errorf("write token file: %w", err), f.Close())
+	}
+
+	// The mode is group-readable on purpose: the factory half runs as another user in the factory
+	// group. Set it before the rename so the file is never visible with another mode.
+	if err := f.Chmod(tokenFileMode); err != nil {
 		return errors.Join(fmt.Errorf("write token file: %w", err), f.Close())
 	}
 
@@ -1235,8 +1255,7 @@ func writeTokenFile(path, token string) error {
 		return fmt.Errorf("write token file: %w", err)
 	}
 
-	// Chmod again: OpenFile's mode is masked by the umask and ignored for an existing file.
-	if err := os.Chmod(path, tokenFileMode); err != nil { //nolint:gosec // group-readable on purpose, as above
+	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("write token file: %w", err)
 	}
 

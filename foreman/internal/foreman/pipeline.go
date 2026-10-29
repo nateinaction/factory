@@ -255,7 +255,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		return runResult{}, err
 	}
 
-	sec, err := readSecrets(r.d.Settings, r.role)
+	sec, err := readSecrets(r.d, r.role)
 	if err != nil {
 		return runResult{}, err
 	}

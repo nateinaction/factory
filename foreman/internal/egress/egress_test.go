@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -175,6 +176,9 @@ func refusedHosts() []string {
 		"0.0.0.0", "127.0.0.1", "127.9.9.9", "10.1.2.3", "172.16.0.1", "192.168.1.1",
 		"169.254.169.254", "100.64.0.1", "224.0.0.1", "255.255.255.255",
 		"::1", "fd00::1", "fe80::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:192.168.1.1",
+		// NAT64, 6to4 and the reserved class E block: Go counts them as global unicast.
+		"64:ff9b::1", "64:ff9b::7f00:1", "2002::1", "2002:7f00:1::1", "240.0.0.1", "250.1.2.3",
+		"255.255.255.254",
 	}
 }
 
@@ -483,6 +487,61 @@ var _ = Describe("Proxy", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 	})
 
+	It("refuses plain HTTP to a public host the allowlist leaves out without contacting upstream", func() {
+		dials := make(chan string, 1)
+		p := startWith(policy("allowed.example"), gateway{
+			resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+			dial: func(_ context.Context, _ string, address string) (net.Conn, error) {
+				dials <- address
+
+				return nil, errors.New("test dial: must not be reached")
+			},
+		})
+
+		resp, conn := forward(p.Address(), "http://unlisted.example/thing")
+		// test cleanup: a close error changes no assertion
+		_ = conn.Close()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		Expect(dials).To(BeEmpty(), "the proxy dialed a destination the allowlist refused")
+		Expect(p.Domains()).To(ContainElement("unlisted.example"))
+	})
+
+	It("refuses an origin-form path outside the API even with an API configured", func() {
+		var hits atomic.Int32
+
+		api := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			hits.Add(1)
+		}))
+		DeferCleanup(api.Close)
+
+		p := start(policy(), api.URL+"/api/v1")
+		DeferCleanup(p.Close)
+
+		for _, path := range []string{"/elsewhere", "/api/v1x/chat", "/api/v1/../x", "/api/v1/../../etc"} {
+			resp, err := apiGet("http://" + p.Address() + path)
+			Expect(err).NotTo(HaveOccurred(), path)
+			// test cleanup: a close error changes no assertion
+			_ = resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden), path)
+		}
+
+		Expect(hits.Load()).To(BeZero(), "a refused path reached the key proxy")
+	})
+
+	It("never lets a wildcard match a host that merely ends with its suffix", func() {
+		p := startWith(policy("*.npmjs.org"), loopbackGateway())
+
+		for _, host := range []string{"evilnpmjs.org", "npmjs.org", "evil.org.npmjs.org.evil.example"} {
+			resp, conn := forward(p.Address(), "http://"+host+"/thing")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
+		}
+	})
+
 	It("lists each contacted domain once, in order", func() {
 		echo, stop := echoServer()
 		DeferCleanup(stop)
@@ -730,6 +789,22 @@ var _ = Describe("Proxy", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(checked).To(HaveLen(maxResolvedAddresses),
 				"a long DNS answer grew the dial list without bound")
+		})
+
+		It("refuses an empty DNS answer without dialing", func() {
+			dialed := false
+			g := gateway{
+				resolve: staticResolver{},
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					dialed = true
+
+					return nil, errors.New("test dial: must not be reached")
+				},
+			}
+
+			_, err := g.dialContext(context.Background(), "tcp", "empty.example:443")
+			Expect(err).To(MatchError(ContainSubstring("no addresses")))
+			Expect(dialed).To(BeFalse())
 		})
 
 		It("answers bad gateway when the name cannot be resolved", func() {

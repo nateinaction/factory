@@ -64,6 +64,14 @@ live in this repo.
    the factory. Installing any App assigns it; uninstalling all of them unassigns
    it. The factory works only the agent roles whose Apps are installed there,
    and other agent roles' issues wait in their queue.
+5. On each assigned repository, require code-owner review in branch protection
+   (or a ruleset) with a human in `CODEOWNERS`, so no factory App's approval can
+   merge a pull request alone. No App can satisfy code-owner review. For example:
+
+   ```
+   # .github/CODEOWNERS
+   * @your-github-login
+   ```
 
 Skip the Ansible role with `-e factory_github_app=false`. If the Ansible role runs and the
 secrets file is missing, the play fails rather than skipping.
@@ -101,8 +109,11 @@ There are five agent roles. The Planner, Researcher, Implementer and Reviewer
 work an issue; the Curator looks after the repository's retro dashboard. The
 **human gate** sits between planning and building: the Planner asks questions
 in rounds and ends with a final round holding a proposal, and only a writer's
-reply approving it (or a writer's explicit "ready to build") lets foreman apply
-the proposal and queue the Implementer. A person merges every PR; foreman has
+reply of "yes", "yep", "yeah", "ok", "okay" or "lgtm" (or a writer's explicit
+"ready to build", which also works with no final round pending) lets foreman
+apply the proposal and queue the Implementer. The gate opens only from
+`factory:waiting`, on the latest Planner round, and never on a non-writer's
+comment. A person merges every PR; foreman has
 no code path that merges.
 
 1. `factory-poll` runs on the server every 5 minutes. It uses no model.
@@ -125,7 +136,8 @@ no code path that merges.
    up to the host's run cap (`factory_agent_run_cap`, one at a time by default).
    It mints a one-hour token of that agent role's App scoped to the repo
    (`github-app-token token --app <agent role> --repo`), writes it to
-   `/run/factory/gh-token-<agent role>`, and runs
+   `/run/factory/gh-token-<agent role>-<run id>` (one file per run, written
+   atomically), and runs
    `foreman run <agent role> <owner/repo> <issue>` as `factory` through a
    single-purpose sudoers rule.
 3. Plan (`run`): the Planner reads the issue and its thread and writes a round

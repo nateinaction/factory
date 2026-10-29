@@ -525,7 +525,7 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 
 // writeToken leaves a token for the factory half of the agent role.
 func (h *harness) writeToken(role workflow.Role, token string) {
-	Expect(os.WriteFile(h.deps.Settings.TokenPath(role), []byte(token), 0o640)).To(Succeed())
+	Expect(os.WriteFile(h.deps.Settings.TokenPath(role, h.deps.RunID), []byte(token), 0o640)).To(Succeed())
 }
 
 // queue creates the issues a poll of o/r should find: each label maps to the issues carrying it.
@@ -699,7 +699,7 @@ func (h *harness) sudoExit(code int) *factoryHalf {
 			return base(c)
 		}
 
-		path := h.deps.Settings.TokenPath(workflow.Role(c.Argv[6]))
+		path := h.deps.Settings.TokenPath(workflow.Role(c.Argv[6]), c.Env["DAG_RUN_ID"])
 		raw, err := os.ReadFile(path)
 		Expect(err).NotTo(HaveOccurred(), "token file not in place")
 
