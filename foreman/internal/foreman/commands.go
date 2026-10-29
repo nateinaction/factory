@@ -11,10 +11,14 @@ import (
 	"strconv"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/dagu"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -143,8 +147,9 @@ func (s runState) free(role workflow.Role, capacity int) int {
 	return max(0, capacity-s.active[role])
 }
 
-// queuedIssue is one claimable issue, with the repository and client that found it.
+// queuedIssue is one claimable issue, with the repository, client and repository span that found it.
 type queuedIssue struct {
+	ctx    context.Context
 	repo   workflow.Repo
 	issue  workflow.Issue
 	client github.Client
@@ -195,9 +200,17 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		return 1, err
 	}
 
-	if err := prepareAll(ctx, d, cfg, perms, assigned, repos, runs.waiting); err != nil {
-		return 1, err
+	inst := newPollInstruments(d)
+
+	// Capacity is what the poll finds after reading dagu, before this poll's own claims.
+	for _, role := range workflow.KnownRoles() {
+		inst.capacityLeft(ctx, role, runs.free(role, cfg.Capacity(role)))
 	}
+
+	traces := newPollTraces()
+	defer traces.end()
+
+	prepareAll(ctx, d, cfg, perms, inst, traces, assigned, repos, runs.waiting)
 
 	// An agent role no worker host takes leaves its issues queued. One warning per poll, and nothing
 	// fails: the queue stays visible and pausable until a host takes the agent role.
@@ -205,6 +218,8 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 
 	for _, q := range pollQueues() {
 		if cfg.Unhosted(q.role) {
+			queueSkipped(ctx, q.role, telemetry.SkipUnhosted)
+
 			continue
 		}
 
@@ -212,6 +227,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		// for yet: its queued issue is what the worker takes next.
 		if runs.waiting[q.role] {
 			d.log().Info("leaving an agent role's queue while its DAG is busy", "agent_role", q.role)
+			queueSkipped(ctx, q.role, telemetry.SkipDAGBusy)
 
 			continue
 		}
@@ -220,11 +236,12 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		slots := runs.free(q.role, cfg.Capacity(q.role))
 		if slots == 0 {
 			d.log().Info("leaving an agent role's queue while its runs fill its capacity", "agent_role", q.role)
+			queueSkipped(ctx, q.role, telemetry.SkipCapacityFull)
 
 			continue
 		}
 
-		code, done, err := claimFromQueue(ctx, d, cfg, perms, assigned, repos, q, slots)
+		code, done, err := claimFromQueue(ctx, d, cfg, perms, inst, traces, assigned, repos, q, slots)
 		if done || err != nil {
 			return code, err
 		}
@@ -298,26 +315,29 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 	return "", false
 }
 
-// prepareAll brings every assigned repository up to date; the first failure fails the poll.
+// prepareAll brings every assigned repository up to date. A repository the poll cannot read marks its
+// span as an error and is skipped; the poll still works the others.
 func prepareAll(
-	ctx context.Context, d Deps, cfg config.Config, perms permissions, assigned Assignment,
-	repos []workflow.Repo, waiting map[workflow.Role]bool,
-) error {
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, inst pollInstruments,
+	traces *pollTraces, assigned Assignment, repos []workflow.Repo, waiting map[workflow.Role]bool,
+) {
 	for _, repo := range repos {
-		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], waiting); err != nil {
-			return err
+		repoCtx, span := startRepoSpan(ctx, d, repo)
+		traces.set(repo, span)
+
+		if err := prepareRepo(repoCtx, d, cfg, perms, inst, repo, assigned[repo], waiting); err != nil {
+			d.log().Warn("skipping a repository the poll cannot read", "repo", repo, "error", err)
+			failSpan(span, "repository read failed")
 		}
 	}
-
-	return nil
 }
 
 // prepareRepo creates the factory labels, calls dead runs failed, repairs stranded issues from their
 // latest marker, wakes an issue a writer has commented on, and routes new issues to their first
 // queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
 func prepareRepo(
-	ctx context.Context, d Deps, cfg config.Config, perms permissions, repo workflow.Repo, roles []workflow.Role,
-	waiting map[workflow.Role]bool,
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, inst pollInstruments,
+	repo workflow.Repo, roles []workflow.Role, waiting map[workflow.Role]bool,
 ) error {
 	role, ok := pollingRole(roles)
 	if !ok {
@@ -329,7 +349,7 @@ func prepareRepo(
 		d.log().Warn("cannot mint token; treating the repository as unassigned",
 			"agent_role", role, "repo", repo, "error", err)
 
-		return nil
+		return fmt.Errorf("mint %s token: %w", role, err)
 	}
 
 	c := d.client(token)
@@ -348,6 +368,8 @@ func prepareRepo(
 		return err
 	}
 
+	measureIssues(ctx, inst, repo, issues)
+
 	for _, issue := range issues {
 		if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) {
 			continue
@@ -360,6 +382,29 @@ func prepareRepo(
 	}
 
 	return nil
+}
+
+// measureIssues records how many open issues the repository has in each factory state. A stranded
+// issue carrying more than one state label counts in each, which is what the labels say.
+func measureIssues(ctx context.Context, inst pollInstruments, repo workflow.Repo, issues []workflow.Issue) {
+	counts := map[workflow.State]int64{}
+
+	for _, issue := range issues {
+		if issue.IsPullRequest {
+			continue
+		}
+
+		for _, state := range workflow.States() {
+			if state != workflow.Closed && workflow.HasLabel(issue, string(state)) {
+				counts[state]++
+			}
+		}
+	}
+
+	for state, count := range counts {
+		role, _ := workflow.RoleOf(state)
+		inst.issuesInState(ctx, repo, state, role, count)
+	}
 }
 
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
@@ -619,10 +664,17 @@ func issueComments(
 	return c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 }
 
-// permissions caches, for one poll, whether each login may write to the repository, keyed by
-// "repo\x00login". A permission it cannot read is cached as not-a-writer, so every decision fails
-// closed. It is a map so every reader of one poll's cache shares the one cache.
-type permissions map[string]bool
+// permissionState is what one poll read about a login: whether it may write, and whether the read
+// succeeded at all, so a failed-closed check is never mistaken for a plain non-writer.
+type permissionState struct {
+	writer   bool
+	readable bool
+}
+
+// permissions caches, for one poll, whether each login may write to the repository and whether that
+// could be read, keyed by "repo\x00login". A permission it cannot read is cached as not-a-writer, so
+// every decision fails closed. It is a map so every reader of one poll's cache shares the one cache.
+type permissions map[string]permissionState
 
 // newPermissions starts an empty permission cache.
 func newPermissions() permissions {
@@ -631,13 +683,21 @@ func newPermissions() permissions {
 
 // isWriter reports whether login has write access. An unreadable permission is not write access.
 func (p permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string) bool {
+	return p.check(ctx, d, c, repo, login).writer
+}
+
+// check reports whether login has write access and whether the permission could be read at all. An
+// unreadable permission is cached as not-a-writer, so every decision fails closed.
+func (p permissions) check(
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string,
+) permissionState {
 	if login == "" {
-		return false
+		return permissionState{}
 	}
 
 	key := repo.String() + "\x00" + login
-	if writer, ok := p[key]; ok {
-		return writer
+	if state, ok := p[key]; ok {
+		return state
 	}
 
 	permission, err := c.CollaboratorPermission(ctx, repo, login)
@@ -645,12 +705,12 @@ func (p permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo
 		d.log().Warn("cannot read a collaborator's permission; failing closed",
 			"repo", repo, "login", login, "error", err)
 
-		p[key] = false
+		p[key] = permissionState{writer: false, readable: false}
 
-		return false
+		return p[key]
 	}
 
-	p[key] = workflow.WriterPermission(permission)
+	p[key] = permissionState{writer: workflow.WriterPermission(permission), readable: true}
 
 	return p[key]
 }
@@ -705,8 +765,8 @@ func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 // token cannot be minted is unassigned for this agent role. done is true when the poll is over: an
 // issue was claimed or lost, or the CI gate moved one.
 func claimFromQueue(
-	ctx context.Context, d Deps, cfg config.Config, perms permissions, assigned Assignment,
-	repos []workflow.Repo, q queueStep, slots int,
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, inst pollInstruments,
+	traces *pollTraces, assigned Assignment, repos []workflow.Repo, q queueStep, slots int,
 ) (code int, done bool, err error) {
 	candidates := make([]queuedIssue, 0)
 
@@ -715,29 +775,37 @@ func claimFromQueue(
 			continue // that agent role isn't here: its issues wait in the queue
 		}
 
-		token, err := d.mint(ctx, q.role, repo, writableToken)
+		repoCtx := traces.context(ctx, repo)
+
+		token, err := d.mint(repoCtx, q.role, repo, writableToken)
 		if err != nil {
 			d.log().Warn("cannot mint token; treating the repository as unassigned",
 				"agent_role", q.role, "repo", repo, "error", err)
+			traces.fail(repo, "token mint failed")
 
 			continue
 		}
 
 		c := d.client(token)
 
-		issues, err := c.ListLabeled(ctx, repo, string(q.src))
+		issues, err := c.ListLabeled(repoCtx, repo, string(q.src))
 		if err != nil {
-			return 1, true, err
+			// One unreadable repository must not stop the poll working the others.
+			d.log().Warn("skipping a repository whose queue cannot be read",
+				"agent_role", q.role, "repo", repo, "error", err)
+			traces.fail(repo, "queue read failed")
+
+			continue
 		}
 
 		for _, issue := range issues {
-			if eligible(ctx, d, c, perms, repo, issue) {
-				candidates = append(candidates, queuedIssue{repo: repo, issue: issue, client: c})
+			if eligible(repoCtx, d, c, perms, repo, issue) {
+				candidates = append(candidates, queuedIssue{ctx: repoCtx, repo: repo, issue: issue, client: c})
 			}
 		}
 	}
 
-	return claimOldest(ctx, d, cfg, q, candidates, slots)
+	return claimOldest(d, cfg, inst, q, candidates, slots)
 }
 
 // claimOldest claims the oldest candidates in one agent role's queue, up to the slots the role's run
@@ -745,7 +813,7 @@ func claimFromQueue(
 // later candidate, while an issue the gate moved ends the poll with no model run. A lost claim ends it
 // too, so a second poll never takes the issue this one just lost.
 func claimOldest(
-	ctx context.Context, d Deps, cfg config.Config, q queueStep, candidates []queuedIssue, slots int,
+	d Deps, cfg config.Config, inst pollInstruments, q queueStep, candidates []queuedIssue, slots int,
 ) (code int, done bool, err error) {
 	slices.SortStableFunc(candidates, compareIssues)
 
@@ -757,7 +825,7 @@ func claimOldest(
 		}
 
 		if q.role == workflow.Reviewer {
-			claim, moved, gateErr := ciGate(ctx, d, cfg, candidate.client, candidate.repo, candidate.issue)
+			claim, moved, gateErr := ciGate(candidate.ctx, d, cfg, candidate.client, candidate.repo, candidate.issue)
 			if gateErr != nil {
 				d.log().Warn("skipping an issue whose CI cannot be read",
 					"repo", candidate.repo, "issue", candidate.issue.Number, "error", gateErr)
@@ -775,7 +843,7 @@ func claimOldest(
 			}
 		}
 
-		won, code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
+		won, code, err := claimAndEnqueue(candidate.ctx, d, inst, candidate.client, candidate.repo, candidate.issue, q)
 		if err != nil || !won {
 			return code, true, err
 		}
@@ -1027,9 +1095,11 @@ func headSHA(ctx context.Context, c github.Client, ref workflow.IssueRef) (strin
 }
 
 // claimAndEnqueue claims the issue, then queues its run. won is false when another run claimed the
-// issue first. A queue failure fails the issue rather than leaving it claimed.
+// issue first. A queue failure fails the issue rather than leaving it claimed. The enqueue is its own
+// span, so a run can continue this trace through the DAG's parameters.
 func claimAndEnqueue(
-	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue, q queueStep,
+	ctx context.Context, d Deps, inst pollInstruments, c github.Client, repo workflow.Repo,
+	issue workflow.Issue, q queueStep,
 ) (won bool, code int, err error) {
 	sha, err := headSHA(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
@@ -1047,13 +1117,27 @@ func claimAndEnqueue(
 		return false, 0, writeLine(d.Out, fmt.Sprintf("issue %d was claimed by someone else", issue.Number))
 	}
 
-	_, err = d.run(ctx, proc.Cmd{Argv: []string{
+	trace.SpanFromContext(ctx).AddEvent(telemetry.EventClaim, trace.WithAttributes(
+		attribute.String(telemetry.AttrAgentRole, string(q.role)),
+		attribute.Int(telemetry.AttrIssue, issue.Number),
+	))
+
+	enqueueCtx, span := startEnqueueSpan(ctx, d, repo, q.role, issue.Number)
+
+	_, err = d.run(enqueueCtx, proc.Cmd{Argv: []string{
 		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(q.role), "--",
 		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(issue.Number),
 	}})
-	if err != nil {
+	if err == nil {
+		inst.claim(ctx, repo, q.role)
+	} else {
 		d.log().Error("enqueue failed", "agent_role", q.role, "repo", repo, "issue", issue.Number, "error", err)
+		failSpan(span, "enqueue failed")
+	}
 
+	span.End()
+
+	if err != nil {
 		t.From, t.To = q.dst, workflow.Failed
 
 		ref := workflow.IssueRef{Repo: repo, Number: issue.Number}

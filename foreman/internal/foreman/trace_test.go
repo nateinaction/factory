@@ -161,7 +161,7 @@ var _ = Describe("a run's trace", func() {
 			for _, span := range t.spansNamed(name) {
 				Expect(span.Attributes()).To(ContainElements(
 					attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
-					attribute.String(telemetry.AttrRepository, "o/r"),
+					attribute.String(telemetry.AttrRepo, "o/r"),
 					attribute.Int(telemetry.AttrIssue, 5),
 					attribute.String(telemetry.AttrModel, testAgent().Model),
 					attribute.String(telemetry.AttrWorkerHost, testHost),
@@ -186,7 +186,7 @@ var _ = Describe("a run's trace", func() {
 		// cached and 0.002 cost apiece. The run's attempts count only its own model calls.
 		Expect(span.Attributes()).To(ContainElements(
 			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
-			attribute.String(telemetry.AttrRepository, "o/r"),
+			attribute.String(telemetry.AttrRepo, "o/r"),
 			attribute.Int(telemetry.AttrIssue, 5),
 			attribute.String(telemetry.AttrModel, testAgent().Model),
 			attribute.String(telemetry.AttrWorkerHost, testHost),

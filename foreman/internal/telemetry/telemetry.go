@@ -40,12 +40,16 @@ const (
 	AttrVerb = "factory.verb"
 	// AttrExitCode is the process's exit code.
 	AttrExitCode = "factory.exit_code"
-	// AttrAgentRole is the agent role a run works.
+	// AttrAgentRole is the agent role a span, event or measurement belongs to.
 	AttrAgentRole = "factory.agent_role"
-	// AttrRepository is the repository a run works, as owner/name.
-	AttrRepository = "factory.repository"
-	// AttrIssue is the issue number a run works. It is a span attribute only, never a metric label.
+	// AttrRepo is the repository a span, event or measurement belongs to.
+	AttrRepo = "factory.repo"
+	// AttrIssue is the issue number a span or event belongs to. It is never a metric label.
 	AttrIssue = "factory.issue"
+	// AttrState is the factory handoff state an issue is in.
+	AttrState = "factory.state"
+	// AttrSkipReason is why a poll left a queue alone.
+	AttrSkipReason = "factory.skip_reason"
 	// AttrModel is the model an agent role's run calls.
 	AttrModel = "factory.model"
 	// AttrWorkerHost is the host the run ran on.
@@ -71,7 +75,39 @@ const (
 	AttrCost = "factory.cost"
 )
 
-// Span names: the run stage spans are children of the process root span, which names the run verb.
+// Poll span names. Enqueue is separate from its repository span so a run can continue its trace.
+const (
+	// PollRepoSpanName is the span for one assigned repository's poll.
+	PollRepoSpanName = "foreman.poll.repo"
+	// PollEnqueueSpanName is the span for queueing one claimed issue's run.
+	PollEnqueueSpanName = "foreman.poll.enqueue"
+)
+
+// Poll event names and skip reasons.
+const (
+	// EventQueueSkipped is recorded when a poll leaves a queue alone.
+	EventQueueSkipped = "factory.poll.queue_skipped"
+	// EventClaim is recorded on a repository span when the poll claims one of its issues.
+	EventClaim = "factory.poll.claim"
+	// SkipDAGBusy means the agent role's DAG already has a run waiting for a worker.
+	SkipDAGBusy = "dag_busy"
+	// SkipCapacityFull means the agent role's runs fill its capacity.
+	SkipCapacityFull = "capacity_full"
+	// SkipUnhosted means no worker host takes the agent role.
+	SkipUnhosted = "unhosted"
+)
+
+// Metric names.
+const (
+	// MetricPollIssues counts open issues in each factory state, per repository.
+	MetricPollIssues = "factory.poll.issues"
+	// MetricPollClaims counts the issues a poll claimed, per agent role and repository.
+	MetricPollClaims = "factory.poll.claims"
+	// MetricPollCapacity is the run capacity left for an agent role after the poll's claims.
+	MetricPollCapacity = "factory.poll.capacity_left"
+)
+
+// Run span names. Each stage span is a child of the process root span, which names the run verb.
 const (
 	// SpanClone clones the repository the run works.
 	SpanClone = "foreman.run.clone"

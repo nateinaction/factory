@@ -59,6 +59,7 @@ func (s session) retroEpilogue(
 
 	usage, err := s.tracedRetro(ctx, j.c, repo, number, role, sessionID, key, budget)
 	if err != nil {
+		emitStepCap(s.d, role, repo, number, err)
 		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role, "error", err)
 	}
 

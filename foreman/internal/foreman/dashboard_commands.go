@@ -6,6 +6,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -45,7 +46,7 @@ func (r *commandRun) run(
 		return state, nil
 	}
 
-	state, settle := r.onComments(ctx, state, nil, comments)
+	state, settle := r.onComments(ctx, state, nil, dashboard, comments)
 	published := r.publish(ctx, state)
 
 	return published.state, append(settle, published.settle...)
@@ -60,9 +61,10 @@ type applied struct {
 }
 
 // onComments applies the commands in one thread. promoted is the group the thread's issue was promoted
-// as, or nil for the dashboard.
+// as, or nil for the dashboard; number is the issue the comments sit on, which the event names.
 func (r *commandRun) onComments(
-	ctx context.Context, state workflow.DashboardState, promoted *workflow.GroupID, comments []workflow.Item,
+	ctx context.Context, state workflow.DashboardState, promoted *workflow.GroupID, number int,
+	comments []workflow.Item,
 ) (workflow.DashboardState, []workflow.Item) {
 	var settle []workflow.Item
 
@@ -71,7 +73,7 @@ func (r *commandRun) onComments(
 			continue
 		}
 
-		next, done := r.onComment(ctx, state, promoted, comment)
+		next, done := r.onComment(ctx, state, promoted, number, comment)
 		if !done {
 			continue
 		}
@@ -87,7 +89,8 @@ func (r *commandRun) onComments(
 // onComment applies one comment. done is true when the comment was dealt with, so it is recorded as
 // handled and then minimized or deleted; a comment no one acted on is left where it is.
 func (r *commandRun) onComment(
-	ctx context.Context, state workflow.DashboardState, promoted *workflow.GroupID, comment workflow.Item,
+	ctx context.Context, state workflow.DashboardState, promoted *workflow.GroupID, number int,
+	comment workflow.Item,
 ) (workflow.DashboardState, bool) {
 	cmd, ok, err := workflow.ParseCommand(comment.Body)
 	if err != nil {
@@ -100,7 +103,20 @@ func (r *commandRun) onComment(
 		return state, false
 	}
 
-	if !r.perms.isWriter(ctx, r.d, r.c, r.repo, comment.Author) {
+	permission := r.perms.check(ctx, r.d, r.c, r.repo, comment.Author)
+	if !permission.writer {
+		// A command that takes no action is a security event: either an outsider tried to act, or the
+		// permission check failed closed. Nothing about the command's text reaches the event.
+		outcome := security.CommandByNonWriter
+		if !permission.readable {
+			outcome = security.CommandCheckUnreadable
+		}
+
+		security.Emit(
+			security.Scope(r.d.log(), string(r.role), r.repo.String(), number),
+			security.EventDashboardCommandRefused, outcome, "",
+		)
+
 		r.d.log().Info("a non-writer's dashboard command is minimized and takes no action",
 			"repo", r.repo, "comment", comment.ID, "by", comment.Author, "command", cmd.Kind)
 
@@ -293,7 +309,7 @@ func (r *commandRun) publish(ctx context.Context, state workflow.DashboardState)
 		}
 
 		group := thread.group
-		state, settle := r.onComments(ctx, out.state, &group, thread.comments)
+		state, settle := r.onComments(ctx, out.state, &group, issue.Number, thread.comments)
 		out.state, out.settle = state, append(out.settle, settle...)
 	}
 

@@ -25,7 +25,7 @@ type stageSpans struct {
 func runAttrs(role workflow.Role, ref workflow.IssueRef, model, host string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String(telemetry.AttrAgentRole, string(role)),
-		attribute.String(telemetry.AttrRepository, ref.Repo.String()),
+		attribute.String(telemetry.AttrRepo, ref.Repo.String()),
 		attribute.Int(telemetry.AttrIssue, ref.Number),
 		attribute.String(telemetry.AttrModel, model),
 		attribute.String(telemetry.AttrWorkerHost, host),
