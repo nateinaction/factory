@@ -831,21 +831,9 @@ func Blocking(findings []ReviewFinding) []ReviewFinding {
 	return out
 }
 
-// StartsWith keeps the items whose body starts with prefix, in API order.
-func StartsWith(items []Item, prefix string) []Item {
-	var out []Item
-
-	for _, i := range items {
-		if strings.HasPrefix(i.Body, prefix) {
-			out = append(out, i)
-		}
-	}
-
-	return out
-}
-
 // FactoryStartsWith keeps the items a factory App authored whose body starts with prefix, in API
-// order. A marker mid-body is not a marker, and another author's marker is not a factory record.
+// order. A marker mid-body is not a marker, and another author's marker is not a factory record, so
+// this is the only way foreman reads a marker it did not write itself.
 func FactoryStartsWith(items []Item, prefix, owner string) []Item {
 	var out []Item
 
@@ -859,11 +847,12 @@ func FactoryStartsWith(items []Item, prefix, owner string) []Item {
 }
 
 // ReviewRounds counts the distinct commits that took a review round, counting sha whether or not it
-// is posted yet. A posted review and a CI failure both count once per commit.
+// is posted yet. A posted review and a CI failure both count once per commit; only the factory's own
+// records count, so another author's marker cannot spend a round.
 func ReviewRounds(reviews, comments []Item, sha, owner string) int {
 	marked := map[string]bool{sha: true}
 
-	for _, r := range StartsWith(reviews, ReviewMarkerPrefix) {
+	for _, r := range FactoryStartsWith(reviews, ReviewMarkerPrefix, owner) {
 		if sha := reviewSHA(r.Body); sha != "" {
 			marked[sha] = true
 		}

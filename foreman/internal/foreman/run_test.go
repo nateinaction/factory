@@ -207,6 +207,8 @@ var _ = Describe("Run", func() {
 		It("changes nothing when the same output is applied twice", func() {
 			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 				[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
+			// A run writes with its own App's token, so the replies it posted are its own to update.
+			h.writeToken(workflow.Implementer, "minted-token-implementer")
 			h.roleWrites(workflow.Implementer, 5, reworkOutput)
 
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
@@ -666,6 +668,30 @@ var _ = Describe("Run", func() {
 			Expect(h.retroComments()).To(BeEmpty(), "added a second retro comment")
 		})
 
+		It("posts its own retro comment rather than editing one another author marked", func() {
+			h.reviewerGH(nil)
+
+			theirs := retroBody(workflow.Reviewer, "sha-head", workflow.RetroFinding{
+				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+				Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
+				Claim: "THEIR CLAIM", Evidence: "THEIR EVIDENCE",
+			})
+			h.comment(5, "o", theirs)
+
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
+			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
+
+			Expect(h.gh.Summary()).NotTo(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")),
+				"edited a comment the factory did not write")
+			Expect(h.retroComments()).To(ConsistOf(
+				ContainSubstring("<!-- factory:retro issue=5 role=reviewer key=sha-head -->")))
+
+			comments, err := emulator.Comments(context.Background(), "o/r", 5)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(ContainElement(HaveField("Body", theirs)), "another author's record changed")
+		})
+
 		It("requests changes as a native review of the head commit", func() {
 			h.reviewerGH(nil)
 			h.roleWrites(workflow.Reviewer, 5, blockingReview)
@@ -711,6 +737,21 @@ var _ = Describe("Run", func() {
 			h.roleWrites(workflow.Reviewer, 5, blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty(), "posted again")
+		})
+
+		It("posts its verdict for a commit only another author marked reviewed", func() {
+			h.reviewerGH(nil)
+			pr, _ := h.pullRequest()
+
+			// Someone who can review the pull request posts the Reviewer's marker for this commit first.
+			Expect(emulator.CreateReview(context.Background(), "o/r", pr,
+				workflow.ReviewMarker("sha-head")+"\nnot a verdict")).To(Succeed())
+
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
+			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
+				ContainSubstring(`"event":"REQUEST_CHANGES"`), ContainSubstring(`"commit_id":"sha-head"`),
+			)), "another author's marker suppressed the verdict")
 		})
 
 		It("fails closed on a malformed review, posting nothing", func() {
@@ -853,6 +894,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("reuses the branch and the resolution comment on a re-run", func() {
+			// A run writes with its own App's token, so the resolution it posted is its own to update.
+			h.writeToken(workflow.Researcher, "minted-token-researcher")
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "ls-remote --heads origin research/emulate") {
 					return "sha-branch\trefs/heads/research/emulate\n", nil

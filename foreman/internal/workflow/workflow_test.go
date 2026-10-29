@@ -103,10 +103,11 @@ var _ = Describe("RenderReview", func() {
 })
 
 var _ = Describe("ReviewRounds", func() {
+	// The Reviewer's App posted every marked review, so each one is the factory's own record.
 	reviews := []workflow.Item{
-		{Body: workflow.ReviewMarker("a") + "\nx"},
-		{Body: workflow.ReviewMarker("a") + "\ny"},
-		{Body: workflow.ReviewMarker("b")},
+		{Body: workflow.ReviewMarker("a") + "\nx", Author: factoryApp(workflow.Reviewer)},
+		{Body: workflow.ReviewMarker("a") + "\ny", Author: factoryApp(workflow.Reviewer)},
+		{Body: workflow.ReviewMarker("b"), Author: factoryApp(workflow.Reviewer)},
 		{Body: "human review"},
 	}
 
