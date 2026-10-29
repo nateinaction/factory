@@ -10,6 +10,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -56,12 +57,30 @@ func (s session) retroEpilogue(
 		return opencode.Usage{}
 	}
 
-	usage, err := s.retro(ctx, j.c, repo, number, role, sessionID, key, budget)
+	usage, err := s.tracedRetro(ctx, j.c, repo, number, role, sessionID, key, budget)
 	if err != nil {
+		emitStepCap(s.d, role, repo, number, err)
 		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role, "error", err)
 	}
 
 	return usage
+}
+
+// tracedRetro runs the retro inside its stage span, which spans the resumed model run and the comment
+// it posts. The retro is best effort, so its failure marks only its own span.
+func (s session) tracedRetro(
+	ctx context.Context, c github.Client, repo workflow.Repo, number int, role workflow.Role, sessionID, key string,
+	budget config.Budget,
+) (opencode.Usage, error) {
+	ctx, span := s.spans.start(ctx, telemetry.SpanRetro)
+	defer span.End()
+
+	usage, err := s.retro(ctx, c, repo, number, role, sessionID, key, budget)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return usage, err
 }
 
 // retro resumes the finished session, by its explicit id, for its retro. It writes retro.json, parses

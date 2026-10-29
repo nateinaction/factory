@@ -169,6 +169,13 @@ var _ = Describe("Run", func() {
 			Expect(h.runner.find("commit -m")).To(BeEmpty(), "committed a rejected file")
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty(), "pushed a rejected file")
 			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "invalid_output"),
+				HaveKeyWithValue("agent_role", "implementer"),
+				HaveKeyWithValue("repository", "o/r"),
+				HaveKeyWithValue("issue", "5"),
+			)))
 		})
 
 		It("rejects a factory marker in the model's text", func() {
@@ -179,6 +186,11 @@ var _ = Describe("Run", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("carries a factory marker")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "factory_marker"),
+				HaveKeyWithValue("issue", "5"),
+			)))
 		})
 
 		It("rejects a run whose model wrote no output file", func() {
@@ -187,6 +199,10 @@ var _ = Describe("Run", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("cannot be read")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "unreadable_output"),
+			)))
 		})
 
 		It("answers the review's findings on the pull request", func() {
@@ -347,6 +363,11 @@ var _ = Describe("Run", func() {
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
 			Expect(h.retroComments()).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "run_capped"),
+				HaveKeyWithValue("outcome", "step_cap"),
+				HaveKeyWithValue("issue", "5"),
+			)))
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {

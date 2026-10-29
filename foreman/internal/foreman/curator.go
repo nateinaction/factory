@@ -7,6 +7,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -42,6 +43,9 @@ func curatorInputs(
 // for its prompt, and the flake the run's toolchain resolves from. No other branch is cloned. The
 // Curator never calls it: its App has no Contents permission.
 func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch string) error {
+	_, span := s.spans.start(ctx, telemetry.SpanClone)
+	defer span.End()
+
 	_, err := s.d.run(ctx, proc.Cmd{
 		Argv: []string{
 			gitProgram, gitClone, "--depth", "1", "--branch", branch,
@@ -49,6 +53,9 @@ func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch st
 		},
 		Env: s.gitEnv, Timeout: ToolchainTimeout,
 	})
+	if err != nil {
+		markFailureOf(span, err)
+	}
 
 	return err
 }

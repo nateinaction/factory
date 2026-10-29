@@ -12,6 +12,11 @@ import (
 	"regexp"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
@@ -63,8 +68,10 @@ type EgressProxy interface {
 	URL() string
 	// Address is the loopback host:port srt settings point at.
 	Address() string
-	// Domains is every host the run was refused or reached: the proxy records a refusal too.
+	// Domains is every host the proxy allowed.
 	Domains() []string
+	// Refused is every host the proxy refused, listed apart from the allowed ones.
+	Refused() []string
 	// Close stops the proxy.
 	Close() error
 }
@@ -83,6 +90,10 @@ type Deps struct {
 	Err io.Writer
 	// Log receives diagnostics as leveled, structured records. The edge builds it; nil logs nowhere.
 	Log *slog.Logger
+	// Tracer opens spans; nil opens no-op spans, as a spec that ignores telemetry does.
+	Tracer trace.Tracer
+	// Meter records instruments; nil records nothing.
+	Meter metric.Meter
 	// Host names this worker host in the usage report; empty is reported as missing.
 	Host string
 	// RunID is the dagu run id recorded in transition markers; empty is recorded as unknown.
@@ -137,6 +148,24 @@ func (d Deps) log() *slog.Logger {
 	}
 
 	return d.Log
+}
+
+// tracer returns d's tracer. A Deps built without one traces nowhere.
+func (d Deps) tracer() trace.Tracer {
+	if d.Tracer == nil {
+		return tracenoop.NewTracerProvider().Tracer("")
+	}
+
+	return d.Tracer
+}
+
+// meter returns d's meter. A Deps built without one records nowhere.
+func (d Deps) meter() metric.Meter {
+	if d.Meter == nil {
+		return metricnoop.NewMeterProvider().Meter("")
+	}
+
+	return d.Meter
 }
 
 // runID is the id transition markers record: the dagu run's id, or a placeholder outside dagu.

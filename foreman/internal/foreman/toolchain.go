@@ -8,6 +8,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -22,7 +23,7 @@ type devEnv struct {
 // accept-flake-config is off, so a flake cannot grant itself settings, and the evaluation is told not
 // to write a lock file: the default branch is used exactly as committed.
 func (d Deps) toolchain(
-	ctx context.Context, c github.Client, repo workflow.Repo, token, branch string, f sandboxFiles,
+	ctx context.Context, c github.Client, repo workflow.Repo, token, branch string, f sandboxFiles, spans stageSpans,
 ) (string, error) {
 	if branch == "" {
 		var err error
@@ -31,16 +32,49 @@ func (d Deps) toolchain(
 		}
 	}
 
-	if _, err := d.run(ctx, proc.Cmd{
+	if err := d.shallowClone(ctx, repo, branch, token, f, spans); err != nil {
+		return "", err
+	}
+
+	return d.devEnv(ctx, repo, f, spans)
+}
+
+// shallowClone clones the default branch's flake inside its stage span.
+func (d Deps) shallowClone(
+	ctx context.Context, repo workflow.Repo, branch, token string, f sandboxFiles, spans stageSpans,
+) error {
+	_, span := spans.start(ctx, telemetry.SpanToolchainClone)
+	defer span.End()
+
+	_, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
 			gitProgram, gitClone, "--depth", "1", "--branch", branch,
 			"https://github.com/" + repo.String() + ".git", f.toolchain,
 		},
 		Env: GitAuthEnv(token), Timeout: ToolchainTimeout,
-	}); err != nil {
-		return "", err
+	})
+	if err != nil {
+		markFailureOf(span, err)
 	}
 
+	return err
+}
+
+// devEnv evaluates the cloned flake inside its stage span and returns the PATH it resolved.
+func (d Deps) devEnv(ctx context.Context, repo workflow.Repo, f sandboxFiles, spans stageSpans) (string, error) {
+	_, span := spans.start(ctx, telemetry.SpanToolchainEnv)
+	defer span.End()
+
+	path, err := d.evaluateDevEnv(ctx, repo, f)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return path, err
+}
+
+// evaluateDevEnv runs the dev-environment evaluation and reads the PATH it reports.
+func (d Deps) evaluateDevEnv(ctx context.Context, repo workflow.Repo, f sandboxFiles) (string, error) {
 	out, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
 			"nix", "print-dev-env", "--json",
