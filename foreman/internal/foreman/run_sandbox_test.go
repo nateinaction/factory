@@ -222,6 +222,29 @@ var _ = Describe("the sandbox", func() {
 		Expect(p.closed).To(BeTrue(), "the key proxy outlived the failed run")
 	})
 
+	It("fails closed when the run's proxy token is empty", func() {
+		h.deps.Token = func() (string, error) { return "", nil }
+
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(MatchError(ContainSubstring("empty")))
+		Expect(code).NotTo(BeZero())
+		Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran with a token both proxies would refuse")
+	})
+
+	It("fails closed when the egress proxy's address cannot be parsed", func() {
+		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
+		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "not an address"}
+		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(HaveOccurred())
+		Expect(code).NotTo(BeZero())
+		Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran without an egress boundary")
+		Expect(p.closed).To(BeTrue(), "the key proxy outlived the failed run")
+		Expect(e.closed).To(BeTrue(), "the egress proxy outlived the failed run")
+	})
+
 	It("stops both proxies and removes the run's directories however the run ends", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
 		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9"}

@@ -259,6 +259,26 @@ var _ = Describe("the Curator", func() {
 		Expect(filedIn("o/r", curatorDocsGroup)).To(HaveLen(1), "filed the group twice")
 	})
 
+	It("files the drafts it can when one fails, and reports the failure", func() {
+		// No factory repository is configured, so a public skill group has nowhere to go.
+		number := dashboard(workflow.DashboardState{})
+
+		ready(curatorSkillGroup)
+		ready(curatorDocsGroup)
+
+		out := `{"version":1,"merges":[],"links":[],"issues":[` +
+			`{"group":"` + curatorSkillGroup.String() + `","title":"Fix the guide","body":"Mention tests."},` +
+			`{"group":"` + curatorDocsGroup.String() + `","title":"Add a test command","body":"Say how to run tests."}]}`
+		h.roleWrites(workflow.Curator, number, out)
+
+		code, err := runCuratorRun(number)
+		Expect(err).To(MatchError(ContainSubstring("factory repository")))
+		Expect(code).NotTo(BeZero())
+
+		Expect(filedIn("o/r", curatorSkillGroup)).To(BeEmpty(), "filed a group with nowhere to go")
+		Expect(filedIn("o/r", curatorDocsGroup)).To(HaveLen(1), "one failed draft stopped the rest")
+	})
+
 	It("fails on an invalid output without commenting on the dashboard", func() {
 		number := dashboard(workflow.DashboardState{})
 

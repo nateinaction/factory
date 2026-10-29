@@ -311,6 +311,90 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(theDashboardOf("o/r").Body).To(ContainSubstring("published by o"))
 	})
 
+	// seedPromoted files a promoted issue for group in o/r directly, with body when it is non-empty
+	// and the lesson a promotion would render otherwise, and returns its number.
+	seedPromoted := func(group workflow.GroupID, body string) int {
+		GinkgoHelper()
+
+		if body == "" {
+			reports := []workflow.DashboardReport{{
+				Role: workflow.Implementer, Key: "sha-a", Issue: 1, Severity: workflow.SeverityMedium,
+				Claim: "the guide never mentions tests", Evidence: "the session showed it",
+			}}
+
+			_, rendered, err := workflow.RenderPromotion(group, reports, true)
+			Expect(err).NotTo(HaveOccurred())
+
+			body = rendered
+		}
+
+		number := h.createAs("o", nil, "Retro: "+group.String())
+		h.setBody(number, body)
+
+		return number
+	}
+
+	// expectNothingPublished polls after a publish command and expects the lesson stayed where it was.
+	expectNothingPublished := func(factory string, cfg config.Config, group workflow.GroupID, why string) {
+		GinkgoHelper()
+
+		Expect(poll(cfg)).Error().NotTo(HaveOccurred())
+		Expect(publishedIn(factory, group)).To(BeEmpty(), why)
+		Expect(theDashboardOf("o/r").Body).NotTo(ContainSubstring("published by"), why)
+	}
+
+	Describe("a publish that fails closed", func() {
+		var (
+			factory string
+			cfg     config.Config
+		)
+
+		BeforeEach(func() {
+			h.graphql(true)
+			factory = h.factoryRepo()
+			cfg = promoteConfig(factory)
+		})
+
+		It("ignores a non-writer's publish of a private promoted issue", func() {
+			h.asPrivate()
+			ready(skillGroup, cfg)
+			promoted := seedPromoted(skillGroup, "")
+
+			h.comment(promoted, "factory", "publish")
+			expectNothingPublished(factory, cfg, skillGroup, "a non-writer published a private lesson")
+			Expect(h.logs.String()).To(ContainSubstring("a non-writer's dashboard command"))
+		})
+
+		It("does not publish when the repository's visibility cannot be read", func() {
+			h.gh.Status("GET /repos/o/r", http.StatusInternalServerError)
+			ready(skillGroup, cfg)
+			promoted := seedPromoted(skillGroup, "")
+
+			h.comment(promoted, "o", "publish")
+			expectNothingPublished(factory, cfg, skillGroup, "published without knowing the repository is private")
+			Expect(h.logs.String()).To(ContainSubstring("cannot read the repository's visibility; not publishing"))
+		})
+
+		It("does not publish out of a public repository", func() {
+			ready(skillGroup, cfg)
+			promoted := seedPromoted(skillGroup, "")
+
+			h.comment(promoted, "o", "publish")
+			expectNothingPublished(factory, cfg, skillGroup, "published a public repository's lesson")
+			Expect(h.logs.String()).To(ContainSubstring("publish only copies a private repository's lesson out"))
+		})
+
+		It("does not publish a promoted issue that has no lesson", func() {
+			h.asPrivate()
+			ready(skillGroup, cfg)
+			promoted := seedPromoted(skillGroup, workflow.PromotionMarker(skillGroup)+"\n\nNo lesson here.\n")
+
+			h.comment(promoted, "o", "publish")
+			expectNothingPublished(factory, cfg, skillGroup, "published an issue with no lesson")
+			Expect(h.logs.String()).To(ContainSubstring("a promoted issue has no lesson to publish"))
+		})
+	})
+
 	It("takes no action for a non-writer's command, and minimizes it", func() {
 		graphql := h.graphql(true)
 
