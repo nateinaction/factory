@@ -87,6 +87,10 @@ var _ = Describe("ParseRetro", func() {
 		Entry("no findings key", `{"version":1}`),
 		Entry("null findings", `{"version":1,"findings":null}`),
 		Entry("unknown field", `{"version":1,"findings":[],"extra":true}`),
+		Entry("repeated key", `{"version":1,"findings":[],"findings":[]}`),
+		Entry("repeated key in a finding", `{"version":1,"findings":[{"target":"skill:implement",`+
+			`"group":"g","severity":"low","claim":"c","claim":"d","evidence":"e"}]}`),
+		Entry("trailing data", `{"version":1,"findings":[]} {"version":1,"findings":[]}`),
 		Entry("unknown finding field", `{"version":1,"findings":[{"target":"skill:implement",`+
 			`"group":"g","severity":"low","claim":"c","evidence":"e","extra":1}]}`),
 		Entry("bad target", `{"version":1,"findings":[{"target":"other:x",`+

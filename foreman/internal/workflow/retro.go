@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -120,6 +119,9 @@ type retroFindingWire struct {
 	Evidence string   `json:"evidence"`
 }
 
+// RetroOutputFile names the retro in the errors that reject it.
+const RetroOutputFile = "retro.json"
+
 // retroVersion is the only version of retro.json foreman accepts.
 const retroVersion = 1
 
@@ -131,15 +133,10 @@ func ParseRetro(text string) ([]RetroFinding, error) {
 		Findings *[]retroFindingWire `json:"findings"`
 	}
 
-	dec := json.NewDecoder(strings.NewReader(text))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("retro is not valid: %w", err)
-	}
-
-	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return nil, errors.New("retro is not valid: trailing data")
+	// The same strict decoder as every other output file: repeated keys, trailing data, unknown
+	// fields and factory markers reject the whole file.
+	if problems := decodeStrict(text, &raw); len(problems) > 0 {
+		return nil, &OutputError{File: RetroOutputFile, Problems: problems}
 	}
 
 	if raw.Version == nil || *raw.Version != retroVersion {
