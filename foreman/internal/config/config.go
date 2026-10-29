@@ -135,6 +135,15 @@ type Config struct {
 	// DeadRunMarginMinutes is how far past an agent role's deadline its running label may age before
 	// a poll calls the run dead.
 	DeadRunMarginMinutes int `json:"dead_run_margin_minutes" mapstructure:"dead_run_margin_minutes"`
+	// ReviewRoundLimit is how many review rounds, CI failures included, an issue gets before it fails.
+	ReviewRoundLimit int `json:"review_round_limit" mapstructure:"review_round_limit"`
+	// CIPendingDeadlineMinutes is how long an issue waits in factory:review with pending CI before it fails.
+	CIPendingDeadlineMinutes int `json:"ci_pending_deadline_minutes" mapstructure:"ci_pending_deadline_minutes"`
+}
+
+// CIPendingDeadline is how long pending CI may keep an issue queued before it fails.
+func (c Config) CIPendingDeadline() time.Duration {
+	return time.Duration(c.CIPendingDeadlineMinutes) * time.Minute
 }
 
 // DeadRunMargin is how long past an agent role's deadline a run keeps its claim before a poll calls
@@ -188,7 +197,15 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateDeadRun(path, c.DeadRunMarginMinutes)
+	if err := validateDeadRun(path, c.DeadRunMarginMinutes); err != nil {
+		return err
+	}
+
+	if err := validateReviewRoundLimit(path, c.ReviewRoundLimit); err != nil {
+		return err
+	}
+
+	return validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes)
 }
 
 // validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
@@ -220,6 +237,24 @@ func validateRetro(path string, r Budget) error {
 func validateDeadRun(path string, minutes int) error {
 	if minutes <= 0 {
 		return fmt.Errorf("config %s: dead-run margin must be a positive number of minutes", path)
+	}
+
+	return nil
+}
+
+// validateReviewRoundLimit checks the review round limit is a positive number of rounds.
+func validateReviewRoundLimit(path string, limit int) error {
+	if limit <= 0 {
+		return fmt.Errorf("config %s: review round limit must be a positive number of rounds", path)
+	}
+
+	return nil
+}
+
+// validateCIPendingDeadline checks the CI pending deadline is a positive number of minutes.
+func validateCIPendingDeadline(path string, minutes int) error {
+	if minutes <= 0 {
+		return fmt.Errorf("config %s: CI pending deadline must be a positive number of minutes", path)
 	}
 
 	return nil

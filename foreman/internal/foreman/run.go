@@ -30,7 +30,7 @@ import (
 // that already reported its failure on the issue returns workflow.ExitReported.
 func Run(
 	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
-	number int,
+	limit, number int,
 ) (int, error) {
 	// A host the sandbox adapter cannot serve does no work: there is never an unsandboxed fallback.
 	if err := sandbox.Supported(runtime.GOOS); err != nil {
@@ -45,7 +45,7 @@ func Run(
 	case workflow.Researcher:
 		return exitCode(runResearcher(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Reviewer:
-		code, err := runReviewer(ctx, d, repo, agent, retro, number)
+		code, err := runReviewer(ctx, d, repo, agent, retro, limit, number)
 
 		return exitCode(err, code)
 	case workflow.Curator:
@@ -461,12 +461,25 @@ func buildImplementerPrompt(
 		return "", err
 	}
 
-	thread, err := guidance(ctx, c, repo, issue.Number)
+	thread, ci, err := rework(ctx, c, repo, issue.Number)
 	if err != nil {
 		return "", err
 	}
 
-	return prompt.Implementer(docs, repo, issue, feedback, thread, out), nil
+	return prompt.Implementer(docs, repo, issue, feedback, thread, ci, out), nil
+}
+
+// rework reads what a run that was sent back must answer: every comment since the marker that woke
+// the issue, and the CI failure report when that is why it came back.
+func rework(ctx context.Context, c github.Client, repo string, number int) ([]workflow.Item, string, error) {
+	thread, err := guidance(ctx, c, repo, number)
+	if err != nil {
+		return nil, "", err
+	}
+
+	ci, err := ciFeedback(ctx, c, repo, number)
+
+	return thread, ci, err
 }
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
@@ -496,6 +509,22 @@ func guidance(ctx context.Context, c github.Client, repo string, number int) ([]
 	})
 
 	return workflow.Guidance(comments), nil
+}
+
+// ciFeedback is the CI failure report that sent this run back, when the report comes after the
+// handoff that sent the pull request to review. A report from an earlier round is stale and left out.
+func ciFeedback(ctx context.Context, c github.Client, repo string, number int) (string, error) {
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return "", err
+	}
+
+	report, ok, err := workflow.LatestCIFailure(comments)
+	if err != nil || !ok {
+		return "", err
+	}
+
+	return workflow.CIFailureText(report.Body), nil
 }
 
 // implementerPaths clears and returns an Implementer run's clone and scratch paths. The output file
@@ -1105,7 +1134,7 @@ func (s session) resolveResearch(
 
 // runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
 func runReviewer(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, limit, number int,
 ) (int, error) {
 	var (
 		usage   opencode.Usage
@@ -1121,7 +1150,7 @@ func runReviewer(
 
 	defer func() { err = errors.Join(err, files.remove()) }()
 
-	code, usage, domains, err = review(ctx, d, repo, agent, retro, number, files)
+	code, usage, domains, err = review(ctx, d, repo, agent, retro, limit, number, files)
 	d.logUsage(opencode.NewUsageReport(workflow.Reviewer, repo, number, d.Host, agent, usage).
 		WithDomains(domains))
 
@@ -1135,7 +1164,7 @@ func runReviewer(
 // review clones the pull request's branch, runs the review under the sandbox, posts it, and returns
 // the verdict code.
 func review(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, limit, number int,
 	files sandboxFiles,
 ) (int, opencode.Usage, []string, error) {
 	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
@@ -1152,7 +1181,9 @@ func review(
 
 	usage, domains, err := d.withProxy(
 		ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
-			runCode, u, e := reviewRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, files)
+			runCode, u, e := reviewRun(
+				ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, limit, number, files,
+			)
 			code = runCode
 
 			return u, e
@@ -1164,7 +1195,7 @@ func review(
 // reviewRun is the Reviewer's work, with its proxies already up.
 func reviewRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
-	repo string, agent config.AgentConfig, retro config.Budget, number int, files sandboxFiles,
+	repo string, agent config.AgentConfig, retro config.Budget, limit, number int, files sandboxFiles,
 ) (int, opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number,
 		files.db(workflow.Reviewer))
@@ -1217,7 +1248,7 @@ func reviewRun(
 		return 1, res.Usage, rejectOutput(ctx, j.c, repo, number, workflow.Reviewer, err)
 	}
 
-	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue)
+	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue, limit)
 
 	return code, res.Usage.Add(s.retroEpilogue(
 		ctx, j, repo, number, workflow.Reviewer, res.Session, sha, err, retro,
@@ -1307,9 +1338,14 @@ func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
 // verdict leaves only through the output file, so nothing else can decide it.
 func postVerdict(
 	ctx context.Context, c github.Client, repo string, pr int, sha string, out workflow.ReviewerOutput,
-	issue workflow.Issue,
+	issue workflow.Issue, limit int,
 ) (int, error) {
 	reviews, err := c.Reviews(ctx, repo, pr)
+	if err != nil {
+		return 1, err
+	}
+
+	comments, err := c.ListComments(ctx, repo, issue.Number)
 	if err != nil {
 		return 1, err
 	}
@@ -1327,7 +1363,7 @@ func postVerdict(
 		return workflow.ReviewClean, c.RequestReviewers(ctx, repo, pr, humans(issue.Author))
 	}
 
-	if workflow.ReviewRounds(reviews, sha) >= workflow.MaxReviewRounds {
+	if workflow.RoundLimitReached(workflow.ReviewRounds(reviews, comments, sha), limit) {
 		return workflow.ReviewExhausted, nil
 	}
 

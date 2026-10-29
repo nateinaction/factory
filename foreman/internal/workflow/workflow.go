@@ -40,8 +40,6 @@ const (
 	BodyLimitChars = 20_000
 	// CommentLimitChars caps any comment foreman posts.
 	CommentLimitChars = 60_000
-	// MaxReviewRounds is how many distinct commits are reviewed before a person is called.
-	MaxReviewRounds = 3
 )
 
 // Exit codes of `run <agent role>`, read by `start <agent role>`.
@@ -50,7 +48,7 @@ const (
 	ReviewClean = 0
 	// ReviewFindings means high or medium findings were posted.
 	ReviewFindings = 10
-	// ReviewExhausted means findings remain after MaxReviewRounds rounds.
+	// ReviewExhausted means findings remain at the review round limit.
 	ReviewExhausted = 11
 	// ExitReported means the factory half already posted the reason on the issue, so `start` only
 	// records the failure and adds nothing but the transition marker.
@@ -762,14 +760,44 @@ func StartsWith(items []Item, prefix string) []Item {
 	return out
 }
 
-// ReviewRounds counts the distinct commits reviewed so far, counting sha whether or not it is posted yet.
-func ReviewRounds(reviews []Item, sha string) int {
-	marked := map[string]bool{ReviewMarker(sha): true}
+// ReviewRounds counts the distinct commits that took a review round, counting sha whether or not it
+// is posted yet. A posted review and a CI failure both count once per commit.
+func ReviewRounds(reviews, comments []Item, sha string) int {
+	marked := map[string]bool{sha: true}
 
 	for _, r := range StartsWith(reviews, ReviewMarkerPrefix) {
-		first, _, _ := strings.Cut(r.Body, "\n")
-		marked[first] = true
+		if sha := reviewSHA(r.Body); sha != "" {
+			marked[sha] = true
+		}
+	}
+
+	for _, c := range StartsWith(comments, CIFailureMarkerPrefix) {
+		if sha := ciFailureSHA(c.Body); sha != "" {
+			marked[sha] = true
+		}
 	}
 
 	return len(marked)
+}
+
+// reviewSHA reads the commit a review marker names.
+func reviewSHA(body string) string {
+	first, _, _ := strings.Cut(body, "\n")
+	sha, _, _ := strings.Cut(strings.TrimPrefix(first, ReviewMarkerPrefix), " -->")
+
+	return sha
+}
+
+// ciFailureSHA reads the commit a CI failure marker names.
+func ciFailureSHA(body string) string {
+	first, _, _ := strings.Cut(body, "\n")
+	fields, _, _ := strings.Cut(strings.TrimPrefix(first, CIFailureMarkerPrefix), " -->")
+
+	for field := range strings.FieldsSeq(fields) {
+		if sha, ok := strings.CutPrefix(field, "sha="); ok {
+			return sha
+		}
+	}
+
+	return ""
 }
