@@ -94,6 +94,9 @@ func researchAfter(ctx context.Context, rc runCtx, s session) outcome {
 	return outcome{retro: true, retroKey: sha}
 }
 
+// reviewSpecFile is the issue spec the Reviewer reads, in its scratch directory beside its output.
+const reviewSpecFile = "issue.md"
+
 // prepareReviewer checks out the pull request's branch and writes the issue where the Reviewer reads
 // it. The verdict is the output's, and the retro is keyed by the reviewed commit.
 func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
@@ -110,7 +113,7 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 		return prepared{}, err
 	}
 
-	specPath := filepath.Join(rc.paths.scratch, "issue.md")
+	specPath := filepath.Join(rc.paths.scratch, reviewSpecFile)
 
 	comments, err := rc.j.c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: rc.spec.ref.Number})
 	if err != nil {

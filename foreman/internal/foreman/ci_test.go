@@ -265,7 +265,7 @@ var _ = Describe("the Implementer's next run", func() {
 	It("carries the failed CI report into the prompt", func() {
 		h.implementerGH(map[string]any{}, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWrites(reworkOutput)
+		h.roleWrites(workflow.Implementer, 5, reworkOutput)
 		h.seedComment(transition(workflow.Implementer, "r1", workflow.Implement, workflow.Review))
 		h.seedComment(workflow.RenderCIFailure(workflow.CIReport{
 			SHA: "abc123",
@@ -291,7 +291,7 @@ var _ = Describe("the Implementer's next run", func() {
 	It("counts a CI failure toward the Reviewer's round limit", func() {
 		h.reviewerGH([]workflow.Item{{Body: workflow.ReviewMarker("s1")}})
 		h.seedComment(workflow.RenderCIFailure(workflow.CIReport{SHA: "s2"}))
-		h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
+		h.roleWrites(workflow.Reviewer, 5, blockingReview)
 
 		code, err := Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).NotTo(HaveOccurred())
@@ -301,7 +301,7 @@ var _ = Describe("the Implementer's next run", func() {
 	It("leaves an earlier round's report out", func() {
 		h.implementerGH(map[string]any{}, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWrites(reworkOutput)
+		h.roleWrites(workflow.Implementer, 5, reworkOutput)
 		h.seedComment(transition(workflow.Implementer, "r1", workflow.Implement, workflow.Review))
 		h.seedComment(workflow.RenderCIFailure(workflow.CIReport{SHA: "abc123"}))
 		h.seedComment(transition(workflow.Reviewer, "r2", workflow.Review, workflow.Implement))

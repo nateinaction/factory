@@ -39,9 +39,19 @@ type sandboxFiles struct {
 	toolchain string
 }
 
+// runDirName is the name of the agent role's run directory for an issue, under the work root.
+func runDirName(role workflow.Role, number int) string {
+	return fmt.Sprintf("run-%s-%d", role, number)
+}
+
+// toolchainDirName is the name of the dev environment clone of the agent role's run for an issue.
+func toolchainDirName(role workflow.Role, number int) string {
+	return fmt.Sprintf("toolchain-%s-%d", role, number)
+}
+
 // newSandboxFiles clears and creates one run's directories. A re-run starts from nothing.
 func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles, error) {
-	dir, err := freshPath(root, fmt.Sprintf("run-%s-%d", role, number))
+	dir, err := freshPath(root, runDirName(role, number))
 	if err != nil {
 		return sandboxFiles{}, err
 	}
@@ -64,7 +74,7 @@ func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles,
 
 	// The toolchain sits beside the run directory, not inside it: it is read-only inside the
 	// sandbox, while everything under the run directory is writable.
-	if f.toolchain, err = freshPath(root, fmt.Sprintf("toolchain-%s-%d", role, number)); err != nil {
+	if f.toolchain, err = freshPath(root, toolchainDirName(role, number)); err != nil {
 		return sandboxFiles{}, err
 	}
 

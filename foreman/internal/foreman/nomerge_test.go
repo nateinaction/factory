@@ -102,13 +102,13 @@ var _ = Describe("the merge path", func() {
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			_, err := Run(context.Background(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run reviewer", func(h *harness) {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
 			_, err := Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)
 			Expect(err).NotTo(HaveOccurred())
 		}),

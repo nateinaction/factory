@@ -369,26 +369,42 @@ type runPaths struct {
 	workdir, scratch, out string
 }
 
-// newRunPaths clears and returns the paths of the agent role's run for an issue.
-func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) {
+// runPathsFor is where the agent role's run for an issue works, scratches and writes, before anything
+// is created: the agent role table owns the names.
+func runPathsFor(root string, role workflow.Role, number int) (runPaths, error) {
 	ar, ok := agentRoleFor(role)
 	if !ok {
 		return runPaths{}, fmt.Errorf("no run paths for agent role %q", role)
 	}
 
-	names := ar.names
+	named := func(prefix string) string { return filepath.Join(root, fmt.Sprintf("%s-%d", prefix, number)) }
 
-	workdir, err := freshPath(root, fmt.Sprintf("%s-%d", names.workdir, number))
+	return runPaths{
+		workdir: named(ar.names.workdir),
+		scratch: named(ar.names.scratch),
+		out:     filepath.Join(named(ar.names.scratch), ar.names.file),
+	}, nil
+}
+
+// newRunPaths clears and returns the paths of the agent role's run for an issue.
+func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) {
+	paths, err := runPathsFor(root, role, number)
 	if err != nil {
 		return runPaths{}, err
 	}
 
-	scratch, err := scratchDir(root, fmt.Sprintf("%s-%d", names.scratch, number))
+	// freshPath and scratchDir take a name under the work root, so they get the paths' last element.
+	workdir, err := freshPath(root, filepath.Base(paths.workdir))
 	if err != nil {
 		return runPaths{}, err
 	}
 
-	return runPaths{workdir: workdir, scratch: scratch, out: filepath.Join(scratch, names.file)}, nil
+	scratch, err := scratchDir(root, filepath.Base(paths.scratch))
+	if err != nil {
+		return runPaths{}, err
+	}
+
+	return runPaths{workdir: workdir, scratch: scratch, out: filepath.Join(scratch, filepath.Base(paths.out))}, nil
 }
 
 // roleNames are the names an agent role's run directories and output file carry.

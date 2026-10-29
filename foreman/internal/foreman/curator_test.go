@@ -125,7 +125,7 @@ var _ = Describe("the Curator", func() {
 
 		out := `{"version":1,"merges":[],"links":[],"issues":[{"group":"` + curatorDocsGroup.String() +
 			`","title":"Add a test command","body":"Say how to run tests."}]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 
@@ -153,7 +153,7 @@ var _ = Describe("the Curator", func() {
 
 		prompt := joined(h.runCalls()[0])
 		Expect(prompt).To(ContainSubstring("the session searched and found none"), "the log's evidence is missing")
-		Expect(prompt).To(ContainSubstring("Write the JSON to " + h.curatorOut(number)))
+		Expect(prompt).To(ContainSubstring("Write the JSON to " + h.rolePaths(workflow.Curator, number).out))
 	})
 
 	It("shows a merge proposal and a cross-target link under Proposed merges", func() {
@@ -169,7 +169,7 @@ var _ = Describe("the Curator", func() {
 			`"links":[{"id":"l1","groups":["` + curatorSkillGroup.String() + `","` + curatorDocsGroup.String() +
 			`"],"reason":"the docs and the guide disagree"}],` +
 			`"issues":[]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 
@@ -192,7 +192,7 @@ var _ = Describe("the Curator", func() {
 
 		out := `{"version":1,"merges":[{"id":"new","groups":["` + curatorSkillGroup.String() + `","` +
 			curatorReviewGroup.String() + `"],"reason":"one guide problem"}],"links":[],"issues":[]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 		Expect(dashboardBody(number)).To(ContainSubstring("## Proposed merges (0)"))
@@ -210,7 +210,7 @@ var _ = Describe("the Curator", func() {
 			`{"group":"` + curatorDocsGroup.String() + `","title":"Add a test command",` +
 			`"lesson":"Say how to run tests.","private_evidence":"a private repository detail"},` +
 			`{"group":"` + curatorSkillGroup.String() + `","title":"Fix the guide","lesson":"Mention tests."}]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 
@@ -235,7 +235,7 @@ var _ = Describe("the Curator", func() {
 
 		out := `{"version":1,"merges":[],"links":[],"issues":[{"group":"` + curatorSkillGroup.String() +
 			`","title":"Fix the guide","body":"Mention tests."}]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 
@@ -252,7 +252,7 @@ var _ = Describe("the Curator", func() {
 
 		out := `{"version":1,"merges":[],"links":[],"issues":[{"group":"` + curatorDocsGroup.String() +
 			`","title":"Add a test command","body":"Say how to run tests."}]}`
-		h.curatorWrites(number, out)
+		h.roleWrites(workflow.Curator, number, out)
 
 		Expect(runCuratorRun(number)).To(BeZero())
 		Expect(runCuratorRun(number)).To(BeZero())
@@ -267,7 +267,7 @@ var _ = Describe("the Curator", func() {
 
 		before := dashboardBody(number)
 
-		h.curatorWrites(number, `{"version":1,"merges":[],"links":[],"issues":[{"group":"`+
+		h.roleWrites(workflow.Curator, number, `{"version":1,"merges":[],"links":[],"issues":[{"group":"`+
 			curatorDocsGroup.String()+`","title":"t","body":"b","lesson":"l"}]}`)
 
 		code, err := runCuratorRun(number)

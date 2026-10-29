@@ -37,13 +37,13 @@ var _ = Describe("Run", func() {
 		})
 
 		It("commits with hooks disabled, pushes, opens the PR and posts the retro", func() {
-			h.implementerWrites(firstRunOutput)
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 			Expect(run(workflow.Implementer)).To(BeZero())
 
 			pr, prURL := h.pullRequest()
 
-			work := filepath.Join(h.deps.Settings.WorkRoot, "issue-5")
+			work := h.rolePaths(workflow.Implementer, 5).workdir
 			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
 			Expect(h.runner.find("checkout -B agent/issue-5")).To(HaveLen(1))
 			Expect(h.runner.find("fetch origin")).To(BeEmpty())
@@ -53,7 +53,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
-			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.implOut()))
+			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.rolePaths(workflow.Implementer, 5).out))
 			h.expectNoSecretInFiles(work, "or-key")
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(joined(oc[0])).NotTo(ContainSubstring("Review:"), "first run carries review feedback")
@@ -89,8 +89,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("shows the retro the groups other issues reported on the same target", func() {
-			h.implementerWrites(firstRunOutput)
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 
 			earlier := h.createAs("o", nil, "An earlier issue")
 
@@ -130,8 +130,8 @@ var _ = Describe("Run", func() {
 
 				return base(c)
 			})
-			h.implementerWrites(firstRunOutput)
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.retroComments()).To(ConsistOf(
@@ -139,7 +139,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("gives the model a read-only token of its own App, scoped to the repository", func() {
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			Expect(run(workflow.Implementer)).To(BeZero())
 
 			oc := h.runner.find("opencode run --agent implementer")
@@ -154,7 +154,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("rejects a file with an unknown or labelled field, applying nothing", func() {
-			h.implementerWrites(`{"version":1,"commit_message":"Add x",` +
+			h.roleWrites(workflow.Implementer, 5, `{"version":1,"commit_message":"Add x",`+
 				`"pr_title":"Add x","pr_body":"Closes #5","labels":["factory:done"]}`)
 
 			code, err := run(workflow.Implementer)
@@ -172,7 +172,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("rejects a factory marker in the model's text", func() {
-			h.implementerWrites(strings.Replace(firstRunOutput, "Add x", "Add x <!-- factory:handoff -->", 1))
+			h.roleWrites(workflow.Implementer, 5, strings.Replace(firstRunOutput, "Add x", "Add x <!-- factory:handoff -->", 1))
 
 			code, err := run(workflow.Implementer)
 			Expect(code).To(Equal(workflow.ExitReported))
@@ -192,7 +192,7 @@ var _ = Describe("Run", func() {
 		It("answers the review's findings on the pull request", func() {
 			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 				[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
-			h.implementerWrites(reworkOutput)
+			h.roleWrites(workflow.Implementer, 5, reworkOutput)
 
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 
@@ -207,7 +207,7 @@ var _ = Describe("Run", func() {
 		It("changes nothing when the same output is applied twice", func() {
 			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 				[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
-			h.implementerWrites(reworkOutput)
+			h.roleWrites(workflow.Implementer, 5, reworkOutput)
 
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
@@ -222,7 +222,7 @@ var _ = Describe("Run", func() {
 
 		It("updates the open pull request from a rework's output", func() {
 			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"}, nil)
-			h.implementerWrites(`{"version":1,"commit_message":"Fix x","pr_title":"Better title",` +
+			h.roleWrites(workflow.Implementer, 5, `{"version":1,"commit_message":"Fix x","pr_title":"Better title",`+
 				`"pr_body":"Better body","replies":[{"finding":"bug","status":"fixed","reason":"fixed it"}]}`)
 
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
@@ -236,7 +236,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails without new commits, publishing nothing", func() {
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "rev-list --count") {
 					return "0\n", nil
@@ -253,7 +253,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("logs a failed retro but does not fail the run", func() {
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "--session") {
 					return "", errors.New("retro blew up")
@@ -266,8 +266,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("logs an invalid retro.json and posts nothing", func() {
-			h.implementerWrites(firstRunOutput)
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), `{"version":1,"findings":[{"target":"nope"}]}`)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, `{"version":1,"findings":[{"target":"nope"}]}`)
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("retro target")))
@@ -276,7 +276,7 @@ var _ = Describe("Run", func() {
 
 		It("gives a run that failed at the model its retro", func() {
 			h.answerOpencode(errStream("APIError", 500))
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 
 			code, err := run(workflow.Implementer)
 			Expect(err).To(HaveOccurred())
@@ -286,8 +286,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("moves the issue to review before its retro starts", func() {
-			h.implementerWrites(firstRunOutput)
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 
 			var labelsAtRetro []string
 
@@ -305,7 +305,7 @@ var _ = Describe("Run", func() {
 
 		It("moves a failed run to failed before its retro starts", func() {
 			h.answerOpencode(errStream("APIError", 500))
-			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
 
 			var labelsAtRetro []string
 
@@ -340,7 +340,7 @@ var _ = Describe("Run", func() {
 
 		It("drops a retro over its own step cap and leaves the run's outcome alone", func() {
 			h.answerOpencode(okStream("ses_1"), stepsStream(testRetro().Steps))
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
@@ -348,7 +348,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 
 			short := config.Budget{Steps: testRetro().Steps}
 
@@ -375,9 +375,10 @@ var _ = Describe("Run", func() {
 		})
 
 		It("clears stale scratch from an earlier run", func() {
-			h.implementerWrites(firstRunOutput)
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 			Expect(os.MkdirAll(h.deps.Settings.WorkRoot, 0o700)).To(Succeed())
-			Expect(os.WriteFile(h.retroOut(workflow.Implementer), []byte(validRetro), 0o600)).To(Succeed())
+			stale := retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer)
+			Expect(os.WriteFile(stale, []byte(validRetro), 0o600)).To(Succeed())
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 			Expect(h.retroComments()).To(BeEmpty(), "posted a stale retro")
 		})
@@ -387,7 +388,7 @@ var _ = Describe("Run", func() {
 		h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 			[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
 		h.writeToken(workflow.Implementer, "repo-token")
-		h.implementerWrites(reworkOutput)
+		h.roleWrites(workflow.Implementer, 5, reworkOutput)
 		Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 
 		_, prURL := h.pullRequest()
@@ -414,8 +415,8 @@ var _ = Describe("Run", func() {
 	Describe("the Reviewer", func() {
 		It("approves a clean review of the head commit, posts its retro and asks a human to merge", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 
 			var spec []byte
 
@@ -423,7 +424,7 @@ var _ = Describe("Run", func() {
 				if isModel(c) {
 					var err error
 
-					spec, err = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
+					spec, err = os.ReadFile(h.reviewSpec(5))
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -439,7 +440,7 @@ var _ = Describe("Run", func() {
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(
 				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "no human was asked to merge")
 
-			work := filepath.Join(h.deps.Settings.WorkRoot, "review-5")
+			work := h.rolePaths(workflow.Reviewer, 5).workdir
 			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
 			Expect(h.runner.find("fetch origin agent/issue-5")).To(HaveLen(1))
 			Expect(h.runner.find("checkout -B agent/issue-5 origin/agent/issue-5")).To(HaveLen(1))
@@ -470,8 +471,8 @@ var _ = Describe("Run", func() {
 
 			h.comment(5, appLogin(workflow.Planner),
 				"The plan.\n\nIs this ready to build?\n\n"+block)
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 
 			var spec []byte
 
@@ -479,7 +480,7 @@ var _ = Describe("Run", func() {
 				if isModel(c) {
 					var readErr error
 
-					spec, readErr = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
+					spec, readErr = os.ReadFile(h.reviewSpec(5))
 					Expect(readErr).NotTo(HaveOccurred())
 				}
 
@@ -577,9 +578,8 @@ var _ = Describe("Run", func() {
 
 		It("gives a review whose output file was rejected a retro", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(),
-				`{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[]}`)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, `{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[]}`)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(HaveOccurred())
@@ -599,8 +599,8 @@ var _ = Describe("Run", func() {
 
 				return base(c)
 			})
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 			Expect(h.retroComments()).To(ConsistOf(
@@ -620,8 +620,8 @@ var _ = Describe("Run", func() {
 				Claim: "review retros run long", Evidence: "REVIEW EVIDENCE",
 			}))
 
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 
 			for _, c := range h.opencodeCalls() {
@@ -642,8 +642,8 @@ var _ = Describe("Run", func() {
 
 		It("posts a retro whose findings target the Implementer's skills", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 			Expect(h.retroComments()).To(ConsistOf(
 				ContainSubstring(`"target":"skill:implement"`)))
@@ -657,8 +657,8 @@ var _ = Describe("Run", func() {
 				Claim: "an earlier wording", Evidence: "e",
 			}))
 
-			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview)
+			h.roleWritesRetro(workflow.Reviewer, validRetro)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 
 			Expect(h.gh.Bodies("PATCH", fmt.Sprintf("/repos/o/r/issues/comments/%d", existing))).To(ConsistOf(
@@ -668,7 +668,7 @@ var _ = Describe("Run", func() {
 
 		It("requests changes as a native review of the head commit", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
 				ContainSubstring(`"event":"REQUEST_CHANGES"`), ContainSubstring("### High (1)"),
@@ -677,9 +677,8 @@ var _ = Describe("Run", func() {
 
 		It("rejects a high finding without REQUEST_CHANGES, posting no review", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(),
-				`{"version":1,"verdict":"APPROVE","summary":"s","findings":[`+
-					`{"severity":"high","path":"a.go","claim":"bug"}]}`)
+			h.roleWrites(workflow.Reviewer, 5, `{"version":1,"verdict":"APPROVE","summary":"s","findings":[`+
+				`{"severity":"high","path":"a.go","claim":"bug"}]}`)
 
 			code, err := run(workflow.Reviewer)
 			Expect(code).To(Equal(workflow.ExitReported))
@@ -691,8 +690,7 @@ var _ = Describe("Run", func() {
 
 		It("rejects REQUEST_CHANGES without findings", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(),
-				`{"version":1,"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}`)
+			h.roleWrites(workflow.Reviewer, 5, `{"version":1,"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}`)
 
 			code, err := run(workflow.Reviewer)
 			Expect(code).To(Equal(workflow.ExitReported))
@@ -704,20 +702,20 @@ var _ = Describe("Run", func() {
 
 		It("stops after the maximum number of rounds", func() {
 			h.reviewerGH([]workflow.Item{{Body: workflow.ReviewMarker("s1")}, {Body: workflow.ReviewMarker("s2")}})
-			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewExhausted))
 		})
 
 		It("posts nothing for a commit it already reviewed", func() {
 			h.reviewerGH([]workflow.Item{{Body: workflow.ReviewMarker("sha-head") + "\nearlier"}})
-			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty(), "posted again")
 		})
 
 		It("fails closed on a malformed review, posting nothing", func() {
 			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", h.reviewOut(), `{"summary":"ok"}`)
+			h.roleWrites(workflow.Reviewer, 5, `{"summary":"ok"}`)
 
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(HaveOccurred())
@@ -738,10 +736,12 @@ var _ = Describe("Run", func() {
 
 			outside := filepath.Join(h.dir, "outside.json")
 			Expect(os.WriteFile(outside, []byte(cleanReview), 0o600)).To(Succeed())
+
+			out := h.rolePaths(workflow.Reviewer, 5).out
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if isModel(c) && strings.Contains(joined(c), "code-review") {
-					Expect(os.MkdirAll(filepath.Dir(h.reviewOut()), 0o700)).To(Succeed())
-					Expect(os.Symlink(outside, h.reviewOut())).To(Succeed())
+					Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+					Expect(os.Symlink(outside, out)).To(Succeed())
 				}
 
 				return base(c)
@@ -770,12 +770,12 @@ var _ = Describe("Run", func() {
 		})
 
 		It("commits the findings, pushes research/<name>, posts the resolution and appends the decision", func() {
-			h.researcherWrites(researcherRun)
-			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
 
 			Expect(run(workflow.Researcher)).To(BeZero())
 
-			work := filepath.Join(h.deps.Settings.WorkRoot, "research-5")
+			work := h.rolePaths(workflow.Researcher, 5).workdir
 			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
 			Expect(h.runner.find("checkout -B research/emulate")).To(HaveLen(1))
 			Expect(h.runner.find("fetch origin research/emulate")).To(BeEmpty())
@@ -785,7 +785,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-researcher"))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
-			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.researchOut()))
+			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.rolePaths(workflow.Researcher, 5).out))
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 
 			Expect(h.runner.find("add -A")).To(HaveLen(1))
@@ -814,7 +814,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails without new commits, publishing nothing", func() {
-			h.researcherWrites(researcherRun)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "rev-list --count") {
 					return "0\n", nil
@@ -833,8 +833,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("runs the retro after the push, keyed by the branch's commit", func() {
-			h.researcherWrites(researcherRun)
-			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
 			Expect(run(workflow.Researcher)).To(BeZero())
 
 			push, retro := -1, -1
@@ -860,7 +860,7 @@ var _ = Describe("Run", func() {
 
 				return base(c)
 			})
-			h.researcherWrites(researcherRun)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
 
 			Expect(run(workflow.Researcher)).Error().NotTo(HaveOccurred())
 			Expect(run(workflow.Researcher)).Error().NotTo(HaveOccurred())
@@ -877,7 +877,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("rejects a file with no branch, applying nothing", func() {
-			h.researcherWrites(`{"version":1,"resolution":"r","decision_line":"d"}`)
+			h.roleWrites(workflow.Researcher, 5, `{"version":1,"resolution":"r","decision_line":"d"}`)
 
 			code, err := run(workflow.Researcher)
 			Expect(code).To(Equal(workflow.ExitReported))
@@ -888,7 +888,7 @@ var _ = Describe("Run", func() {
 
 		It("fails without a parent map, pushing nothing", func() {
 			h.setBody(5, "## Question\n\nWhich?")
-			h.researcherWrites(researcherRun)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
 
 			code, err := run(workflow.Researcher)
 			Expect(err).To(MatchError(ContainSubstring("parent")))
@@ -898,7 +898,7 @@ var _ = Describe("Run", func() {
 
 		It("fails closed when the parent is not a map, pushing nothing", func() {
 			Expect(emulator.RemoveLabel(context.Background(), "o/r", 6, workflow.LabelMap)).To(Succeed())
-			h.researcherWrites(researcherRun)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
 
 			code, err := run(workflow.Researcher)
 			Expect(err).To(MatchError(ContainSubstring("not a wayfinder:map issue")))
@@ -911,7 +911,7 @@ var _ = Describe("Run", func() {
 
 		It("gives a run that failed at the model its retro", func() {
 			h.answerOpencode(errStream("APIError", 500))
-			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
 
 			code, err := run(workflow.Researcher)
 			Expect(err).To(HaveOccurred())

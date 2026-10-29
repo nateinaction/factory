@@ -73,8 +73,8 @@ var _ = Describe("the opencode adapter", func() {
 
 	It("keeps the Reviewer's state for its retro, then deletes it", func() {
 		h.reviewerGH(nil)
-		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-		h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+		h.roleWrites(workflow.Reviewer, 5, cleanReview)
+		h.roleWritesRetro(workflow.Reviewer, validRetro)
 
 		var seen []string
 
@@ -103,7 +103,7 @@ var _ = Describe("the opencode adapter", func() {
 
 	It("gives the Reviewer its own deadline", func() {
 		h.reviewerGH(nil)
-		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+		h.roleWrites(workflow.Reviewer, 5, cleanReview)
 
 		agent := testAgent()
 		agent.DeadlineMinutes = 30
@@ -295,8 +295,9 @@ var _ = Describe("the opencode adapter", func() {
 	})
 
 	It("keeps the prompt prefix byte-identical across runs, role prompt before repository docs", func() {
-		// promptOf runs the Implementer under its own work root, with a clone that leaves an AGENTS.md.
-		promptOf := func(root string) string {
+		// promptOf runs the Implementer under its own work root, with a clone that leaves an AGENTS.md,
+		// and returns the prompt and the clone it ran in.
+		promptOf := func(root string) (string, string) {
 			h := newHarness()
 			h.deps.Settings.WorkRoot = filepath.Join(h.dir, root, "work")
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
@@ -311,15 +312,18 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
 			argv := h.opencodeCalls()[0].Argv
 
-			return argv[len(argv)-1]
+			return argv[len(argv)-1], h.rolePaths(workflow.Implementer, 5).workdir
 		}
-		a, b := promptOf("a"), promptOf("b")
+		a, cloned := promptOf("a")
+		b, _ := promptOf("b")
 		prefixA, _, found := strings.Cut(a, prompt.IssueMaterialHeading)
 		Expect(found).To(BeTrue(), "no issue material")
 
 		prefixB, _, _ := strings.Cut(b, prompt.IssueMaterialHeading)
 		Expect(prefixA).To(Equal(prefixB))
 		Expect(strings.Index(prefixA, "implement")).To(BeNumerically("<", strings.Index(prefixA, "AGENTS-MD-CONTENT")))
-		Expect(prefixA).NotTo(Or(ContainSubstring("issue-5"), ContainSubstring("#5"), ContainSubstring("work")))
+		Expect(prefixA).NotTo(Or(
+			ContainSubstring(cloned), ContainSubstring(filepath.Base(cloned)),
+			ContainSubstring("#5"), ContainSubstring("work")))
 	})
 })
