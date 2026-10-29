@@ -12,11 +12,15 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/foreman"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
 
 // ExitUsage is the exit code of a malformed invocation, including an unknown agent role.
@@ -49,7 +53,11 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	tel := telemetry.Start(ctx, logger)
+
 	d := &foreman.Deps{
+		Tracer: tel.Tracer,
+		Meter:  tel.Meter,
 		Runner: proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
 		HTTP:   &http.Client{Timeout: github.HTTPTimeout},
 		Out:    os.Stdout,
@@ -65,9 +73,50 @@ func run() int {
 		return 1
 	}
 
-	cmd, err := executeCommand(ctx, root, os.Args[1:], underSudo(os.Getenv("SUDO_UID"), os.Getuid(), os.Geteuid()))
+	sudo := underSudo(os.Getenv("SUDO_UID"), os.Getuid(), os.Geteuid())
+	code := executeTraced(ctx, d.Tracer, logger, root, os.Args[1:], sudo)
 
-	return exit(logger, cmd, err)
+	// Flush after the exit code is settled; the flush is bounded and never changes the code.
+	tel.Shutdown(ctx)
+
+	return code
+}
+
+// executeTraced runs one command line under the process's one root span, named for its verb, and
+// returns the exit code. The span ends only after the failure is logged, so that record carries its ids.
+func executeTraced(
+	ctx context.Context, tracer trace.Tracer, logger *slog.Logger, root *cobra.Command, args []string, sudo bool,
+) int {
+	verb := verbOf(root, args)
+
+	ctx, span := tracer.Start(ctx, telemetry.RootSpanName(verb),
+		trace.WithAttributes(attribute.String(telemetry.AttrVerb, verb)))
+	defer span.End()
+
+	cmd, err := executeCommand(ctx, root, args, sudo)
+	code := exit(ctx, logger, cmd, err)
+
+	span.SetAttributes(attribute.Int(telemetry.AttrExitCode, code))
+
+	if code != 0 {
+		// No error text: the span leaves the host, and the diagnostic record already has it.
+		span.SetStatus(codes.Error, "non-zero exit")
+	}
+
+	return code
+}
+
+// unknownVerb names the span of an invocation that names no verb foreman has.
+const unknownVerb = "unknown"
+
+// verbOf is the verb args select, or unknownVerb. It reads the raw arguments only to name the span.
+func verbOf(root *cobra.Command, args []string) string {
+	cmd, _, err := root.Find(args)
+	if err != nil || cmd == root {
+		return unknownVerb
+	}
+
+	return cmd.Name()
 }
 
 // underSudo reports whether sudo started this process. sudo exports SUDO_UID to the command it runs,
@@ -79,21 +128,21 @@ func underSudo(sudoUID string, realUID, effectiveUID int) bool {
 }
 
 // exit maps the command's result to a process exit code, logging the failure once.
-func exit(logger *slog.Logger, cmd *cobra.Command, err error) int {
+func exit(ctx context.Context, logger *slog.Logger, cmd *cobra.Command, err error) int {
 	if err == nil {
 		return 0
 	}
 
 	if failure, ok := errors.AsType[*exitError](err); ok {
 		if failure.err != nil {
-			logger.Error("foreman failed", "error", failure.err)
+			logger.ErrorContext(ctx, "foreman failed", "error", failure.err)
 		}
 
 		return failure.code
 	}
 
 	// Anything cobra did not wrap is a malformed invocation. The usage comes from the commands.
-	logger.Error("bad invocation", "reason", err)
+	logger.ErrorContext(ctx, "bad invocation", "reason", err)
 	cmd.PrintErr(cmd.UsageString())
 
 	return ExitUsage
@@ -101,7 +150,9 @@ func exit(logger *slog.Logger, cmd *cobra.Command, err error) int {
 
 // newLogger builds the diagnostic logger: JSON records, one per line, to out, leveled by FACTORY_LOG_LEVEL.
 func newLogger(out io.Writer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))}))
+	handler := slog.NewJSONHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))})
+
+	return slog.New(telemetry.LogHandler(handler))
 }
 
 // parseLevel reads a level name, falling back to info when it is missing or unknown.

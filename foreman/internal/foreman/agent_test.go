@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -38,6 +39,24 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(joined(c)).NotTo(ContainSubstring("--model"))
 			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DISABLE_PROJECT_CONFIG", "1"))
 			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"))
+		}
+	})
+
+	It("hands the model no OTEL_* variable, and replaces the inherited environment", func() {
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid:4318")
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=secret")
+
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+		calls := h.opencodeCalls()
+		Expect(calls).NotTo(BeEmpty())
+
+		for _, c := range calls {
+			Expect(c.ReplaceEnv).To(BeTrue(), "the model must not inherit foreman's environment")
+
+			for name := range c.Env {
+				Expect(name).NotTo(HavePrefix("OTEL_"))
+			}
 		}
 	})
 
@@ -205,10 +224,19 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.sleeps).To(HaveLen(2))
 	})
 
-	It("shows a permission denial in the log", func() {
+	It("logs a permission denial at debug, where an operator can find it", func() {
 		h.answerOpencode(`{"type":"permission","sessionID":"ses_1","permission":"bash","action":"deny"}` + "\n")
 		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
-		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`), "a denial must reach the dagu run log")
+		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`))
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring(`"action":"deny"`),
+			"a denial is transcript, so it stays below the default level")
+	})
+
+	It("keeps the transcript out of the default info-level diagnostics", func() {
+		h.answerOpencode(`{"type":"text","part":{"text":"private repository code"}}` + "\n")
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+		Expect(h.logs.String()).To(ContainSubstring("private repository code"), "the transcript is still logged")
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring("private repository code"))
 	})
 
 	It("removes the key from what it echoes to the log", func() {
