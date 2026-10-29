@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
@@ -191,23 +192,15 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 	}, nil
 }
 
-// prepareCurator clones the default branch read-only, reads the retro log and the dashboard state, and
-// applies the Curator's proposals once the agent returns. It runs no retro.
+// prepareCurator reads the retro log and the dashboard state, and applies the Curator's proposals once
+// the agent returns. Its App holds no Contents permission, so it clones nothing and resolves no
+// toolchain: it works in an empty directory, and its prompt carries no repository docs. It runs no
+// retro.
 func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 	repo := rc.spec.ref.Repo
 
-	branch, err := rc.j.c.DefaultBranch(ctx, repo)
-	if err != nil {
-		return prepared{}, err
-	}
-
-	if err := rc.s.cloneDefault(ctx, repo, branch); err != nil {
-		return prepared{}, err
-	}
-
-	docs, err := prompt.ReadRepoDocs(rc.paths.workdir)
-	if err != nil {
-		return prepared{}, err
+	if err := os.MkdirAll(rc.paths.workdir, privateDirMode); err != nil {
+		return prepared{}, fmt.Errorf("make the Curator's empty working directory: %w", err)
 	}
 
 	reports, state, private, err := curatorInputs(ctx, rc.d, rc.j.c, repo, rc.j.issue)
@@ -219,8 +212,8 @@ func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 	ref := workflow.IssueRef{Repo: repo, Number: rc.spec.ref.Number}
 
 	return prepared{
-		prompt:          prompt.Curator(docs, ref, private, reports, view, rc.paths.out),
-		toolchainBranch: branch,
+		prompt:      prompt.Curator(ref, private, reports, view, rc.paths.out),
+		noToolchain: true,
 		after: func(ctx context.Context, s session, _ opencode.Result) outcome {
 			out, err := readOutput(rc.paths.out, workflow.CuratorOutputFile, workflow.ParseCuratorOutput)
 			if err != nil {

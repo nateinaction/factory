@@ -146,11 +146,17 @@ func scratchOf(output string) string {
 // settings compiled from the agent role's spec, and the proxies the model may use. The agent role's
 // prepared output files join the run's own.
 func (rc runCtx) sandboxed(ctx context.Context, files sandboxFiles, env runEnv, prep prepared) (session, error) {
-	toolchain, err := rc.d.toolchain(
-		ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files,
-	)
-	if err != nil {
-		return session{}, err
+	var toolchain string
+
+	if !prep.noToolchain {
+		var err error
+
+		toolchain, err = rc.d.toolchain(
+			ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files,
+		)
+		if err != nil {
+			return session{}, err
+		}
 	}
 
 	spec := sandbox.Plan(rc.role, files.layout(rc.d, rc.paths.workdir, rc.paths.out, toolchainPaths(toolchain)))

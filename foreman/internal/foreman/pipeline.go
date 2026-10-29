@@ -60,6 +60,9 @@ type prepared struct {
 	prompt string
 	// toolchainBranch is the branch whose dev environment the sandbox uses; empty is the default.
 	toolchainBranch string
+	// noToolchain skips the dev environment resolution, which clones the repository: for an agent
+	// role whose App cannot read Contents.
+	noToolchain bool
 	// extraWrite names output files the agent role writes outside the clone, besides its retro.
 	extraWrite []string
 	// failKey is the retro key of a run whose agent failed. Nil means the agent role runs no retro
