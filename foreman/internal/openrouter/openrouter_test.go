@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -382,6 +383,25 @@ var _ = Describe("the OpenRouter proxy", func() {
 		resp, body := get(p.URL() + "/chat/completions")
 		Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
 		Expect(body).NotTo(ContainSubstring("sk-or-test"))
+	})
+
+	It("logs the upstream failure without the key or the run token", func() {
+		var logged bytes.Buffer
+
+		previous := slog.Default()
+
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+		DeferCleanup(func() { slog.SetDefault(previous) })
+
+		p, err := start("sk-or-test", testToken, Loopback, "http://127.0.0.1:1")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(p.Close)
+
+		resp, _ := get(p.URL() + "/chat/completions")
+		Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+		Expect(logged.String()).To(ContainSubstring("upstream request failed"))
+		Expect(logged.String()).NotTo(ContainSubstring("sk-or-test"))
+		Expect(logged.String()).NotTo(ContainSubstring(testToken))
 	})
 })
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -139,7 +140,10 @@ func (p *Proxy) reverseProxy() *httputil.ReverseProxy {
 		Transport:      p.transport,
 		FlushInterval:  -1,
 		ModifyResponse: p.recordUsage,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			// The proxy's own error carries the destination, never the key, the run token or a
+			// response header. Log it once where it is handled, then answer the caller.
+			slog.Error("openrouter proxy: upstream request failed", "error", err)
 			http.Error(w, "openrouter proxy: upstream request failed", http.StatusBadGateway)
 		},
 	}
