@@ -59,4 +59,45 @@ expect "reviewer lists its repositories across installations" 0 "$(printf 'o/r\n
 expect "an App without credentials lists nothing" 1 "" repositories --app planner
 expect "unknown command" 1 "" frobnicate --app implementer
 
+# expect_error <name> <want-stderr> <args...>
+expect_error() {
+  local name="$1" want_err="$2"
+  shift 2
+  local out err code
+  out="$("$script" "$@" 2>"$work/err")"
+  code=$?
+  err="$(cat "$work/err")"
+  if [ "$code" -eq 0 ] || [ -n "$out" ] || [[ "$err" != *"$want_err"* ]]; then
+    echo "FAIL $name: exit $code, stdout '$out', stderr '$err' (want non-zero, no stdout, stderr with '$want_err')" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   $name"
+  fi
+}
+
+# expect_help <name> <args...>
+expect_help() {
+  local name="$1"
+  shift
+  local out code
+  out="$("$script" "$@" 2>/dev/null)"
+  code=$?
+  if [ "$code" -ne 0 ] || [[ "$out" != *usage:* ]]; then
+    echo "FAIL $name: exit $code, stdout '$out' (want exit 0, stdout with 'usage:')" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   $name"
+  fi
+}
+
+expect_help "the top level has --help" --help
+expect_help "each command has --help" token --help
+expect_help "each command has --help" repositories --help
+expect_error "token needs --app, and says so" "usage:" token --repo o/r
+expect_error "repositories needs --app, and says so" "usage:" repositories
+expect_error "a repeated value flag is refused" "--app" token --app implementer --app reviewer --repo o/r
+expect_error "a repeated switch is refused" "--read-only" token --app implementer --repo o/r --read-only --read-only
+expect_error "a flag the command does not take is refused" "--repo" repositories --app implementer --repo o/r
+expect_error "a flag with no value is refused" "--repo" token --app implementer --repo
+
 [ "$failures" -eq 0 ]
