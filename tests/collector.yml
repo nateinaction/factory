@@ -10,7 +10,7 @@
   tasks:
     - name: Point the collector at a backend, when the test says so
       ansible.builtin.set_fact:
-        factory_collector_backend_endpoint: "{{ lookup('env', 'COLLECTOR_BACKEND') }}"
+        factory_collector_backend_host: "{{ lookup('env', 'COLLECTOR_BACKEND') }}"
 
     - name: Render the collector config
       ansible.builtin.template:
@@ -40,4 +40,7 @@
         vars_asserted:
           factory_collector_allowed_attributes: "{{ factory_collector_allowed_attributes }}"
           factory_collector_queue_size: "{{ factory_collector_queue_size }}"
+          factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port }}"
+          factory_telemetry_prometheus_port: "{{ factory_telemetry_prometheus_port }}"
+          factory_telemetry_loki_port: "{{ factory_telemetry_loki_port }}"
           factory_collector_memory_limit_mib: "{{ factory_collector_memory_limit_mib }}"

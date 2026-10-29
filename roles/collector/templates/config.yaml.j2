@@ -34,14 +34,38 @@ connectors:
     dimensions:
       - name: factory.agent_role
       - name: factory.outcome
+    # Lets Grafana jump from a metric to the trace behind it.
+    exemplars:
+      enabled: true
 
 exporters:
   nop: {}
-{% if factory_collector_backend_endpoint | length > 0 %}
-  otlp_grpc/backend:
-    endpoint: {{ factory_collector_backend_endpoint }}
-    # Buffers locally, within a fixed size, while the backend is unreachable. The file storage keeps
-    # the buffer across a collector restart.
+{% if factory_collector_backend_host | length > 0 %}
+  # Traces, metrics and diagnostics each go to their own backend port (tempo, prometheus, loki).
+  # Each buffers locally, within a fixed size, while the backend is unreachable. The file storage
+  # keeps the buffer across a collector restart.
+  otlp_grpc/traces:
+    endpoint: {{ factory_collector_backend_host }}:{{ factory_telemetry_tempo_otlp_port }}
+    tls:
+      insecure: true # the tailnet encrypts
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+  otlp_http/metrics:
+    endpoint: http://{{ factory_collector_backend_host }}:{{ factory_telemetry_prometheus_port }}/api/v1/otlp
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+  otlp_http/logs:
+    endpoint: http://{{ factory_collector_backend_host }}:{{ factory_telemetry_loki_port }}/otlp
     sending_queue:
       enabled: true
       queue_size: {{ factory_collector_queue_size }}
@@ -51,14 +75,14 @@ exporters:
       max_elapsed_time: 0s
 {% endif %}
 
-{% if factory_collector_backend_endpoint | length > 0 %}
+{% if factory_collector_backend_host | length > 0 %}
 extensions:
   file_storage/queue:
     directory: /var/lib/otelcol/queue
 
 {% endif %}
 service:
-{% if factory_collector_backend_endpoint | length > 0 %}
+{% if factory_collector_backend_host | length > 0 %}
   extensions: [file_storage/queue]
 {% endif %}
   telemetry:
@@ -68,8 +92,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, redaction, batch]
-      exporters: [spanmetrics, nop{% if factory_collector_backend_endpoint | length > 0 %}, otlp_grpc/backend{% endif %}]
+      exporters: [spanmetrics, nop{% if factory_collector_backend_host | length > 0 %}, otlp_grpc/traces{% endif %}]
     metrics:
       receivers: [otlp, spanmetrics]
       processors: [memory_limiter, redaction, batch]
-      exporters: [nop{% if factory_collector_backend_endpoint | length > 0 %}, otlp_grpc/backend{% endif %}]
+      exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/metrics{% endif %}]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/logs{% endif %}]

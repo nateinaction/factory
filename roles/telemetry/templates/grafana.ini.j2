@@ -1,0 +1,13 @@
+; {{ ansible_managed }}
+[server]
+http_addr = {{ factory_telemetry_host_loopback }}
+http_port = {{ factory_telemetry_grafana_port }}
+
+[paths]
+data = /var/lib/grafana
+provisioning = /etc/grafana/provisioning
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+check_for_plugin_updates = false

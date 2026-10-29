@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+server:
+  http_listen_address: {{ factory_telemetry_host_loopback }}
+  http_listen_port: {{ factory_telemetry_tempo_http_port }}
+  grpc_listen_address: {{ factory_telemetry_host_loopback }}
+  grpc_listen_port: {{ factory_telemetry_tempo_grpc_port }}
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: {{ factory_telemetry_host_loopback }}:{{ factory_telemetry_tempo_otlp_port }}
+
+# Traces older than block_retention are deleted by the compactor.
+compactor:
+  compaction:
+    block_retention: {{ factory_telemetry_tempo_retention }}
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/lib/tempo/wal
+    local:
+      path: /var/lib/tempo/blocks
