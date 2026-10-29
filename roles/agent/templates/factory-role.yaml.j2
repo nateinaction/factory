@@ -20,6 +20,7 @@ params:
   - name: TRACEPARENT
     type: string
     required: false
+    default: ""
     description: W3C trace context of the poll's enqueue span, so the run continues its trace
 steps:
   - name: {{ agent_role }}
