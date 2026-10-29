@@ -6,7 +6,9 @@ carrying the permissions the App was granted; with --read-only it is restricted
 to read Contents, Issues, Pull requests and Metadata: what the model inside a run
 gets as GH_TOKEN, so it can read the issue and the pull request but never write.
 
-`repositories` prints OWNER/NAME for every repository the App is installed on.
+`repositories` prints OWNER/NAME for every repository the App is installed on. A listing
+longer than the tool reads, or an App installed on more installations than it lists, is a
+failure: it prints nothing rather than part of the answer.
 
 Config dir (default /etc/github-app, override with GITHUB_APP_DIR) holds one
 directory per App, named for its agent role:
@@ -143,28 +145,32 @@ def repo_token(app, repo, read_only=False):
     return installation_token(app, inst["id"], m.group(2), read_only)
 
 
+def listing(path, bearer, key=None):
+    """Every item of a paged listing. A short page ends it; a full last allowed page means
+    the listing is longer than this tool reads, so it fails instead of answering with part."""
+    items = []
+    for page in range(1, MAX_PAGES + 1):
+        answer = call("GET", f"{path}?per_page={PAGE_SIZE}&page={page}", bearer)
+        batch = answer if key is None else answer[key]
+        items.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return items
+    raise RuntimeError(f"{path} is longer than {MAX_PAGES} pages of {PAGE_SIZE}")
+
+
 def installed_repositories(app):
     """Every repository the App is installed on, across its installations."""
-    installations = []
-    for page in range(1, MAX_PAGES + 1):
-        batch = call("GET", f"/app/installations?per_page={PAGE_SIZE}&page={page}", jwt(app))
-        installations.extend(batch)
-        if len(batch) < PAGE_SIZE:
-            break
+    installations = listing("/app/installations", jwt(app))
+    if len(installations) > MAX_INSTALLATIONS:
+        raise RuntimeError(f"{len(installations)} installations are over the {MAX_INSTALLATIONS} listed")
     names = []
-    for inst in installations[:MAX_INSTALLATIONS]:
+    for inst in installations:
         names.extend(installation_repositories(installation_token(app, inst["id"])))
     return names
 
 
 def installation_repositories(token):
-    names = []
-    for page in range(1, MAX_PAGES + 1):
-        r = call("GET", f"/installation/repositories?per_page={PAGE_SIZE}&page={page}", token)
-        names.extend(x["full_name"] for x in r["repositories"])
-        if len(r["repositories"]) < PAGE_SIZE:
-            break
-    return names
+    return [x["full_name"] for x in listing("/installation/repositories", token, "repositories")]
 
 
 def main(argv):

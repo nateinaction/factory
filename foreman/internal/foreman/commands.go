@@ -17,7 +17,8 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// MaxAssignedRepos bounds how many assigned repositories one poll looks at.
+// MaxAssignedRepos is how many assigned repositories one poll looks at. More is an error: a poll
+// never leaves an assigned repository unpolled without saying so.
 const MaxAssignedRepos = 200
 
 // supervisorGitRuns is how many git ceilings the supervisor adds around a run: the clone and the push.
@@ -91,16 +92,18 @@ func Assigned(ctx context.Context, d Deps, roles []workflow.Role) Assignment {
 	return a
 }
 
-// Repos lists the assigned repositories in a stable order, at most MaxAssignedRepos of them.
-func (a Assignment) Repos() []workflow.Repo {
+// Repos lists the assigned repositories in a stable order. More than MaxAssignedRepos is an error:
+// nothing is skipped, so a poll that would not look at every assigned repository fails instead.
+func (a Assignment) Repos() ([]workflow.Repo, error) {
 	repos := slices.SortedFunc(maps.Keys(a), func(x, y workflow.Repo) int {
 		return strings.Compare(x.String(), y.String())
 	})
 	if len(repos) > MaxAssignedRepos {
-		repos = repos[:MaxAssignedRepos]
+		return nil, fmt.Errorf("%d repositories are assigned, over the %d a poll looks at",
+			len(repos), MaxAssignedRepos)
 	}
 
-	return repos
+	return repos, nil
 }
 
 // queueStep is one queue a poll looks at, in priority order.
@@ -177,7 +180,11 @@ func firstIssue(a, b queuedIssue) bool {
 func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	assigned := Assigned(ctx, d, cfg.Roles)
 
-	repos := assigned.Repos()
+	repos, err := assigned.Repos()
+	if err != nil {
+		return 1, err
+	}
+
 	perms := newPermissions()
 
 	// Reading dagu first means an agent role whose DAG already has a run waiting for a worker is not
@@ -187,10 +194,8 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		return 1, err
 	}
 
-	for _, repo := range repos {
-		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], runs.waiting); err != nil {
-			return 1, err
-		}
+	if err := prepareAll(ctx, d, cfg, perms, assigned, repos, runs.waiting); err != nil {
+		return 1, err
 	}
 
 	// An agent role no worker host takes leaves its issues queued. One warning per poll, and nothing
@@ -290,6 +295,20 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 	}
 
 	return "", false
+}
+
+// prepareAll brings every assigned repository up to date; the first failure fails the poll.
+func prepareAll(
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, assigned Assignment,
+	repos []workflow.Repo, waiting map[workflow.Role]bool,
+) error {
+	for _, repo := range repos {
+		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], waiting); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // prepareRepo creates the factory labels, calls dead runs failed, repairs stranded issues from their

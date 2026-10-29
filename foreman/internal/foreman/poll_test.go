@@ -687,6 +687,20 @@ var _ = Describe("Poll", func() {
 			Expect(apps).To(Equal([]string{"implementer", "reviewer"}))
 		})
 
+		It("fails loudly when the assigned repositories exceed the cap", func() {
+			crowded := make([]string, 0, MaxAssignedRepos+1)
+			for i := range MaxAssignedRepos + 1 {
+				crowded = append(crowded, fmt.Sprintf("o/assigned-%d", i))
+			}
+
+			h.installed = map[workflow.Role][]string{workflow.Implementer: crowded}
+
+			code, err := poll()
+			Expect(err).To(MatchError(ContainSubstring("over the 200 a poll looks at")))
+			Expect(code).NotTo(BeZero())
+			Expect(h.gh.Calls()).To(BeEmpty(), "a poll over its cap must not act on a truncated view")
+		})
+
 		It("ignores a repository no factory App is installed on", func() {
 			h.installed = map[workflow.Role][]string{}
 
