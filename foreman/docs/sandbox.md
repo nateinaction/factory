@@ -17,17 +17,54 @@ as `GH_TOKEN`; the token file it was minted from stays in the deny list.
 |---|---|
 | Read-write | the clone's working tree (Implementer and Reviewer); the run's scratch/output directory; the run's own `HOME` and XDG directories |
 | Read-only | the forked skills; `/nix/store`; the dev environment resolved from the default branch; `.git` |
-| Not visible | the real home (`~/.ssh` included), the work root and so every other run, dagu's home, the token directory, the key file and `/etc/factory-agent` |
+| Not visible | the real home (`~/.ssh` included), the work root and so every other run and every other run's scratch directory, dagu's home, the token directory, the key file and `/etc/factory-agent` |
 
 The Reviewer gets a throwaway writable clone under the work root. The Planner, Researcher and Curator
 get a clone they can only read. `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
 `XDG_STATE_HOME` and `TMPDIR` are created under `<work root>/run-<role>-<issue>/` and deleted with the
 run and its retro. Only `/nix/store` is shared between runs, read-only.
 
-srt's read model is deny-then-allow: reads are open unless denied. foreman denies each sensitive
-location explicitly instead of denying `/` and re-allowing the operating system, which would need a
-long, fragile allow list. The acceptance criterion — the real home, `~/.ssh`, other runs, dagu's
-directories and foreman's secrets are unreachable — is met by the deny list above.
+### Hide the host, then allow the operating system
+
+srt's read model is deny-then-allow: reads are open unless denied. foreman compiles every run with
+`denyRead: ["/"]`, which srt 0.0.81 expands to every directory in `/` (it exempts `/proc`, `/dev` and
+`/sys`; see the residual visibility below). `allowRead` then binds back only two things:
+
+- the host's own share in `hostRead` (`foreman/internal/sandbox`): `/nix/store`, `/usr`, `/bin`,
+  `/sbin`, `/lib`, `/lib64`, `/etc`, `/opt`, `/dev`, `/proc`, `/sys`, and on macOS `/System`,
+  `/Library`, `/private/etc` and `/private/var`. These let a process start and use the toolchain;
+  they hold no factory or run data.
+- this run's paths: its run directory, its clone (read-only for the roles that never commit), the
+  forked skills, the resolved toolchain, and its scratch/output directory.
+
+The named sensitive paths stay in `denyRead` as well. srt keeps a deny that is more specific than an
+allow, so `/etc/factory-agent` stays hidden even though `/etc` is readable. Another run is hidden by
+the work root's deny: its run directory and its `scratch-<role>-<issue>` directory are nowhere in
+this run's `allowRead`, so neither is reachable. The two-run acceptance spec proves it with a real
+`srt` and two real directories.
+
+### Residual visibility in srt 0.0.81
+
+srt cannot hide quite everything, and this file records the gap rather than claiming otherwise:
+
+- `denyRead: ["/"]` still leaves **`/proc`, `/dev` and `/sys`** visible on Linux and macOS. On Linux
+  srt starts bubblewrap with `--unshare-pid`, so `/proc` holds only the sandbox's own processes and no
+  host process's command line or environment. `/dev` and `/sys` expose device nodes and kernel
+  metadata.
+- `/etc` is readable because a toolchain needs TLS certificates, DNS and NSS configuration. Any
+  world-readable host configuration there (`/etc/hostname`, `/etc/machine-id`, `/etc/passwd`) is
+  therefore visible. `/etc/factory-agent`, the `/etc/github-app` credential directories (mode 0700
+  and 0600, owned by dagu) and the OpenRouter key file remain denied where the factory can name
+  them; the token directory is denied by name.
+- A path under a symlinked parent is bound where it really is. macOS's `/tmp` is a symlink to
+  `/private/tmp`, so an accepted run directory is a real path, not one reached through `/tmp`; the
+  acceptance test resolves its temp directory for this reason.
+
+The concrete residual risk is therefore a prompt-injected run reading **host system files that are
+world-readable under `/etc`, `/dev`, `/proc` or `/sys`** — for example `/etc/machine-id` — but not the
+factory's secrets, another run's clone or scratch directory, the real home, dagu's directories or the
+token directory. Those stay in the explicit deny list; the list is the mitigation, not a claim that
+`denyRead: ["/"]` alone is one.
 
 ## Toolchain
 

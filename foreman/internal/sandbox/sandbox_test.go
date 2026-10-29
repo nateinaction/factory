@@ -14,7 +14,8 @@ var _ = Describe("Spec", func() {
 	layout := Layout{
 		RunDir:    "/work/run-implementer-5",
 		Clone:     "/work/issue-5",
-		Output:    "/work/run-implementer-5/retro.md",
+		Scratch:   "/work/implementer-5",
+		Output:    "/work/implementer-5/retro.md",
 		Skills:    "/opt/skills",
 		Toolchain: []string{"/nix/store/abc-go-1.27"},
 		Hidden:    []string{"/home/factory", "/work", "/var/lib/dagu", "/run/factory"},
@@ -22,7 +23,7 @@ var _ = Describe("Spec", func() {
 
 	It("gives the Implementer a writable clone, the run directory and its output", func() {
 		spec := Plan(workflow.Implementer, layout)
-		Expect(spec.ReadWrite).To(ConsistOf(layout.RunDir, layout.Clone, layout.Output))
+		Expect(spec.ReadWrite).To(ConsistOf(layout.RunDir, layout.Scratch, layout.Clone))
 		Expect(spec.ReadOnly).To(ConsistOf(layout.Skills, "/nix/store/abc-go-1.27"))
 		Expect(spec.DenyWrite).To(ConsistOf(filepath.Join(layout.Clone, ".git")),
 			"the model may edit the working tree but never the clone's history")
@@ -66,10 +67,37 @@ var _ = Describe("Spec", func() {
 		Expect(got.Network.HTTPProxyPort).To(Equal(43210), "srt must send egress through foreman's proxy")
 		Expect(got.Network.AllowedDomains).To(BeEmpty(), "the egress proxy enforces the allowlist")
 		Expect(got.Network.DeniedDomains).To(BeEmpty())
-		Expect(got.Filesystem.DenyRead).To(ConsistOf(layout.Hidden))
-		Expect(got.Filesystem.AllowRead).To(ContainElements(layout.Skills, layout.RunDir, layout.Clone))
-		Expect(got.Filesystem.AllowWrite).To(ConsistOf(layout.RunDir, layout.Clone, layout.Output))
+		Expect(got.Filesystem.DenyRead).To(ConsistOf(append([]string{"/"}, layout.Hidden...)),
+			"the host is hidden by default, not only the named sensitive paths")
+		Expect(got.Filesystem.AllowRead).To(ContainElements(
+			"/nix/store", "/usr", layout.Skills, layout.RunDir, layout.Clone),
+			"the operating system and this run's paths are bound back")
+		Expect(got.Filesystem.AllowWrite).To(ConsistOf(layout.RunDir, layout.Scratch, layout.Clone),
+			"the scratch directory covers the output file")
 		Expect(got.Filesystem.DenyWrite).To(ConsistOf(filepath.Join(layout.Clone, ".git")))
+	})
+
+	It("leaves another run's scratch directory and clone out of the run's visible paths", func() {
+		spec := Plan(workflow.Implementer, layout)
+		raw, err := Settings(spec, 43210)
+		Expect(err).NotTo(HaveOccurred())
+
+		var got struct {
+			Filesystem struct {
+				AllowRead []string `json:"allowRead"`
+				DenyRead  []string `json:"denyRead"`
+			} `json:"filesystem"`
+		}
+		Expect(json.Unmarshal(raw, &got)).To(Succeed())
+
+		otherRun := "/work/run-implementer-6"
+		otherScratch := "/work/implementer-6"
+
+		Expect(got.Filesystem.DenyRead).To(ContainElement("/work"), "the work root holds every run")
+		Expect(got.Filesystem.AllowRead).NotTo(ContainElement(otherRun))
+		Expect(got.Filesystem.AllowRead).NotTo(ContainElement(otherScratch))
+		Expect(got.Filesystem.AllowRead).NotTo(ContainElement("/work/**"),
+			"a work-root wildcard would reopen every run")
 	})
 
 	It("refuses a settings file with no proxy port", func() {
@@ -80,10 +108,10 @@ var _ = Describe("Spec", func() {
 	It("writes empty path lists as arrays, which srt accepts and null it refuses", func() {
 		raw, err := Settings(Spec{}, 1234)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(string(raw)).To(ContainSubstring(`"denyRead":[]`))
+		Expect(string(raw)).To(ContainSubstring(`"denyRead":["/"]`), "the host is hidden even with no paths")
 		Expect(string(raw)).To(ContainSubstring(`"denyWrite":[]`))
 		Expect(string(raw)).To(ContainSubstring(`"allowWrite":[]`))
-		Expect(string(raw)).To(ContainSubstring(`"allowRead":[]`))
+		Expect(string(raw)).To(ContainSubstring(`"allowRead":["/nix/store"`), "the OS is bound back")
 	})
 })
 

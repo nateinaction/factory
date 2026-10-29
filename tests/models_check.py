@@ -4,6 +4,7 @@ Usage: models_check.py <render dir>. Exits non-zero, naming the first mismatch. 
 come from the spec (issue #33), not from group_vars, so a wrong group_vars value fails here.
 """
 
+import fnmatch
 import json
 import sys
 
@@ -71,6 +72,19 @@ def allowed(rule) -> set:
     return {pattern for pattern, action in rule.items() if action == "allow" and pattern != "*"}
 
 
+def command_permission(rule, command: str) -> str:
+    """The action opencode resolves for a command: the last matching rule wins."""
+    if isinstance(rule, str):
+        return rule
+
+    action = None
+    for pattern, effect in rule.items():
+        if fnmatch.fnmatchcase(command, pattern):
+            action = effect
+
+    return action
+
+
 def assert_common(role: str) -> None:
     """Every role denies by default, allows the clone's read tools and the web, and denies ask-only tools."""
     perm = permissions(role)
@@ -79,9 +93,10 @@ def assert_common(role: str) -> None:
         assert perm[tool] == "allow", role + ": " + tool + " is not allowed"
     for tool in ("question", "task", "doom_loop"):
         assert perm[tool] == "deny", role + ": " + tool + " is not denied"
-    external = perm["external_directory"]
-    assert external["*"] == "deny", role + ": external directories are not denied by default"
-    assert allowed(external), role + ": no scratch directory is allowed"
+    # Every external path is denied in the rendered config. foreman's per-run inline config is the
+    # only place that names the run's own scratch directory, so no work-root wildcard may appear here.
+    external = OC["permission"]["external_directory"]
+    assert external == {"*": "deny"}, role + ": external directories are not denied by default"
 
 
 def assert_skills(role: str) -> None:
@@ -110,25 +125,82 @@ def assert_edits(role: str) -> None:
     assert output == sorted(output) and all(OUTPUT_FILE[role] in p for p in output), role + ": extra output"
 
 
+READ_ONLY_GH = (
+    "gh api --method GET",
+    "gh api -X GET",
+    "gh auth status",
+    "gh issue list",
+    "gh issue view",
+    "gh label list",
+    "gh pr checks",
+    "gh pr diff",
+    "gh pr list",
+    "gh pr status",
+    "gh pr view",
+    "gh release list",
+    "gh release view",
+    "gh repo list",
+    "gh repo view",
+    "gh run list",
+    "gh run view",
+    "gh workflow list",
+    "gh workflow view",
+)
+
+# Commands that must resolve to deny for every role: gh writes, and the api forms that mutate.
+WRITE_COMMANDS = (
+    "gh pr comment 5 --body fixed",
+    "gh pr review 5 --approve",
+    "gh pr merge 5 --squash",
+    "gh pr create --title x --body y",
+    "gh issue comment 5 --body hi",
+    "gh api -f body=hi repos/o/r/issues/5/comments",
+    "gh api repos/o/r/issues/5 -f body=hi",
+    "gh api --field body=hi repos/o/r/issues/5/comments",
+    "gh api --raw-field body=hi repos/o/r/issues/5/comments",
+    "gh api --input payload.json repos/o/r/issues/5/comments",
+    "gh api --method POST repos/o/r/issues/5/comments",
+    "gh api -X POST repos/o/r/issues/5/comments",
+    "git push origin HEAD",
+)
+
+READ_COMMANDS = (
+    "git status",
+    "git log --oneline",
+    "gh pr view 5",
+    "gh issue view 5",
+    "gh pr list",
+    "gh pr diff 5",
+    "go test ./...",
+)
+
+
 def assert_shell(role: str) -> None:
     """Only the Implementer and Reviewer run arbitrary commands, and nobody pushes or writes via gh."""
     bash = permissions(role)["bash"]
     if role in ("implementer", "reviewer"):
         assert bash["*"] == "allow", role + ": bash is not allowed"
-        assert bash["git push*"] == "deny", role + ": git push is not denied"
-        for key, action in bash.items():
-            if key.startswith("gh ") and action == "allow":
-                assert any(w in key for w in (" view", " list")), role + ": gh write allowed"
-        return
-    assert bash["*"] == "deny", role + ": bash is not read-only"
-    if role in ("planner", "curator"):
-        assert allowed(bash), role + ": no read-only commands"
-    for key in bash:
-        assert not key.startswith("git push"), role + ": git push allowed"
-        if key.startswith("gh "):
-            assert "--method GET" in key or any(w in key for w in (" view", " list")), (
-                role + ": gh write allowed"
-            )
+    else:
+        assert bash["*"] == "deny", role + ": bash is not read-only"
+        if role in ("planner", "curator"):
+            assert allowed(bash), role + ": no read-only commands"
+
+    for key, action in bash.items():
+        if key.startswith("gh ") and action == "allow":
+            assert key.removesuffix("*").rstrip() in READ_ONLY_GH, role + ": gh write allowed: " + key
+    for command in WRITE_COMMANDS:
+        assert command_permission(bash, command) == "deny", role + ": write allowed: " + command
+    for command in READ_COMMANDS:
+        effect = command_permission(bash, command)
+        if effect == "deny" and role in ("implementer", "reviewer"):
+            raise AssertionError(role + ": a read is denied: " + command)
+        if (
+            command.startswith("gh ")
+            and role in ("planner", "curator")
+            and any(word in command for word in (" view", " list", "--method GET", "-X GET"))
+            and effect != "allow"
+        ):
+            raise AssertionError(role + ": a read-only gh command is denied: " + command)
 
 
 def assert_steps(role: str) -> None:

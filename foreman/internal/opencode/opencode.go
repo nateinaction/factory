@@ -318,10 +318,11 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 }
 
 // Env is the environment of one opencode process. The inline config turns compaction on or off for
-// this agent role and points the OpenRouter provider at the run's proxy; the rest keeps repository
-// config and external skills out and state private. opencode sends token as its provider key, which
-// both proxies require; the OpenRouter key is never here: the key proxy holds it.
-func Env(baseURL, token, stateDB string, a config.AgentConfig) (map[string]string, error) {
+// this agent role, points the OpenRouter provider at the run's proxy, and names the only paths the
+// run may touch outside its clone. The rest keeps repository config and external skills out and
+// state private. opencode sends token as its provider key, which both proxies require; the
+// OpenRouter key is never here: the key proxy holds it.
+func Env(baseURL, token, stateDB string, external []string, a config.AgentConfig) (map[string]string, error) {
 	inline, err := json.Marshal(map[string]any{
 		"compaction": map[string]bool{"auto": a.Compaction},
 		"provider": map[string]any{
@@ -331,6 +332,7 @@ func Env(baseURL, token, stateDB string, a config.AgentConfig) (map[string]strin
 				"baseURL": baseURL, "apiKey": token,
 			}},
 		},
+		"permission": map[string]any{"external_directory": externalDirectory(external)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode opencode config: %w", err)
@@ -342,6 +344,21 @@ func Env(baseURL, token, stateDB string, a config.AgentConfig) (map[string]strin
 		"OPENCODE_DB":                      stateDB,
 		"OPENCODE_CONFIG_CONTENT":          string(inline),
 	}, nil
+}
+
+// externalDirectory is opencode's second layer for paths outside the clone: deny every path, then
+// allow only this run's directories and files. opencode applies the last matching rule, and the
+// rendered rules are sorted, so `*` (0x2a) precedes every absolute path (0x2f) and the allows win.
+func externalDirectory(paths []string) map[string]string {
+	rules := map[string]string{"*": "deny"}
+
+	for _, path := range paths {
+		if path != "" {
+			rules[path] = "allow"
+		}
+	}
+
+	return rules
 }
 
 // Run is one `opencode run` invocation.
