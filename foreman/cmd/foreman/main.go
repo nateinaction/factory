@@ -98,9 +98,9 @@ func exit(logger *slog.Logger, cmd *cobra.Command, err error) int {
 	return ExitUsage
 }
 
-// newLogger builds the diagnostic logger: text records to out, leveled by FACTORY_LOG_LEVEL.
+// newLogger builds the diagnostic logger: JSON records, one per line, to out, leveled by FACTORY_LOG_LEVEL.
 func newLogger(out io.Writer) *slog.Logger {
-	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))}))
+	return slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))}))
 }
 
 // parseLevel reads a level name, falling back to info when it is missing or unknown.
