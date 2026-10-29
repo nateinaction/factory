@@ -85,14 +85,34 @@ func isStatus(err error, code int) bool {
 
 // Call makes one API request; in is sent as JSON and the answer is decoded into out, when both are given.
 func (c Client) Call(ctx context.Context, method, path string, in, out any) error {
-	req, err := c.newRequest(ctx, method, path, in)
+	raw, err := c.send(ctx, method, path, in)
 	if err != nil {
 		return err
 	}
 
+	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
+	}
+
+	return nil
+}
+
+// send is the one request path: it sends the request, bounds the answer's body and checks its status,
+// then returns the body. Call decodes that body as JSON and JobLog reads it as text, so every answer
+// is closed, capped and status-checked in this one place, whatever its content type.
+func (c Client) send(ctx context.Context, method, path string, in any) ([]byte, error) {
+	req, err := c.newRequest(ctx, method, path, in)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("github %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("github %s %s: %w", method, path, err)
 	}
 
 	defer func() {
@@ -104,20 +124,14 @@ func (c Client) Call(ctx context.Context, method, path string, in, out any) erro
 
 	switch {
 	case err != nil:
-		return fmt.Errorf("github %s %s: read: %w", method, path, err)
+		return nil, fmt.Errorf("github %s %s: read: %w", method, path, err)
 	case len(raw) > maxResponseBytes:
-		return fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
+		return nil, fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
 	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
-		return &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
-	case out == nil || len(bytes.TrimSpace(raw)) == 0:
-		return nil
+		return nil, &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
 	}
 
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
-	}
-
-	return nil
+	return raw, nil
 }
 
 // newRequest builds an authenticated request with in, when given, as its JSON body.
@@ -756,44 +770,12 @@ func (c Client) CommitStatuses(ctx context.Context, repo workflow.Repo, ref stri
 // JobLog reads the plain-text log of one Actions job. The endpoint redirects to a download at another
 // host, which the HTTP client follows without the token.
 func (c Client) JobLog(ctx context.Context, repo workflow.Repo, id int64) (string, error) {
-	raw, err := c.text(ctx, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repo, id))
+	raw, err := c.send(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repo, id), nil)
 	if err != nil {
 		return "", err
 	}
 
 	return string(raw), nil
-}
-
-// text makes one API request and returns its body, which is not JSON. The body is bounded like any
-// other answer.
-func (c Client) text(ctx context.Context, path string) ([]byte, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github GET %s: %w", path, err)
-	}
-
-	defer func() {
-		// The body is fully read or abandoned on error; a close failure changes nothing for the caller.
-		_ = resp.Body.Close()
-	}()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-
-	switch {
-	case err != nil:
-		return nil, fmt.Errorf("github GET %s: read: %w", path, err)
-	case len(raw) > maxResponseBytes:
-		return nil, fmt.Errorf("github GET %s: response over %d bytes", path, maxResponseBytes)
-	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
-		return nil, &HTTPError{Method: http.MethodGet, Path: path, Code: resp.StatusCode}
-	}
-
-	return raw, nil
 }
 
 // Reviews lists a pull request's reviews.
