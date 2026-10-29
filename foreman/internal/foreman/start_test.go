@@ -34,7 +34,7 @@ var _ = Describe("Start", func() {
 
 	Describe("the Implementer", func() {
 		BeforeEach(func() {
-			h.acceptWrites("5")
+			h.acceptWrites()
 		})
 
 		It("runs the factory half with the token in place, then queues the review", func() {
@@ -53,10 +53,14 @@ var _ = Describe("Start", func() {
 			expectTokenRemoved(workflow.Implementer)
 
 			labels, comments := h.outcome()
-			Expect(labels).To(ConsistOf(ContainSubstring(workflow.LabelReviewReady)))
-			Expect(comments[0]).To(ContainSubstring("The agent finished; see the linked pull request. Queued for review."))
+			Expect(labels).To(ConsistOf(ContainSubstring(workflow.LabelReview)))
+			Expect(comments[0]).To(ContainSubstring(
+				"The Implementer finished; see the linked pull request. Queued for review."))
+			Expect(comments[0]).To(ContainSubstring(
+				"<!-- factory:handoff role=implementer run=run-1 " +
+					"from=factory:implementing to=factory:review sha= -->"))
 			Expect(h.gh.Summary()).To(
-				ContainElement("DELETE /repos/o/r/issues/5/labels/agent-working"), "did not release the claim")
+				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:implementing"), "did not release the claim")
 			Expect(h.runner.find("github-app-token")).To(HaveLen(2), "want a fresh token after the run")
 			h.expectLeakFree("minted-token")
 		})
@@ -68,7 +72,8 @@ var _ = Describe("Start", func() {
 			labels, comments := h.outcome()
 			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
 			Expect(comments[0]).To(ContainSubstring(
-				"The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry."))
+				"The Implementer failed. Check the dagu run log, then comment to send it back to the Implementer."))
+			Expect(comments[0]).To(ContainSubstring("to=factory:failed"))
 			expectTokenRemoved(workflow.Implementer)
 		})
 
@@ -90,25 +95,26 @@ var _ = Describe("Start", func() {
 
 	DescribeTable("the Reviewer routes the issue by the factory half's exit code",
 		func(code int, label, text string, exit int) {
-			h.acceptWrites("5")
+			h.acceptWrites()
 			h.sudoExit(code)
 			Expect(start(workflow.Reviewer)).To(Equal(exit))
 
 			labels, comments := h.outcome()
 			Expect(labels[0]).To(ContainSubstring(label))
 			Expect(comments[0]).To(ContainSubstring(text))
+			Expect(comments[0]).To(ContainSubstring("from=factory:reviewing to=" + label))
 			Expect(h.gh.Summary()).To(
-				ContainElement("DELETE /repos/o/r/issues/5/labels/agent-reviewing"), "did not release the claim")
+				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:reviewing"), "did not release the claim")
 			Expect(joined(h.runner.find("sudo")[0])).To(ContainSubstring("run reviewer o/r 5"))
 		},
 		Entry("clean", workflow.ReviewClean, workflow.LabelDone,
 			"Review found no high or medium issues; see the pull request.", 0),
-		Entry("findings", workflow.ReviewFindings, workflow.LabelReady,
-			"Review found high or medium issues, posted on the pull request. Sent back to the agent.", 0),
+		Entry("findings", workflow.ReviewFindings, workflow.LabelImplement,
+			"Review found high or medium issues, posted on the pull request. Sent back to the Implementer.", 0),
 		Entry("exhausted", workflow.ReviewExhausted, workflow.LabelFailed,
 			"Review still found high or medium issues after 3 rounds. A person needs to look at the pull request.", 1),
 		Entry("failed", 2, workflow.LabelFailed,
-			"The review failed. Check the dagu run log, then re-apply `ready-for-agent-review` to retry.", 1),
+			"The Reviewer failed. Check the dagu run log, then comment to send it back to the Reviewer.", 1),
 	)
 
 	DescribeTable("refuses an agent role without behaviour, doing nothing",
@@ -124,7 +130,7 @@ var _ = Describe("Start", func() {
 	Describe("identity", func() {
 		DescribeTable("mints only the owning App's tokens: no App falls back to another's",
 			func(role workflow.Role) {
-				h.acceptWrites("5")
+				h.acceptWrites()
 				seen := h.sudoExit(0)
 
 				Expect(start(role)).Error().NotTo(HaveOccurred())
@@ -144,7 +150,7 @@ var _ = Describe("Start", func() {
 		)
 
 		It("fails a run whose App credential is missing, reported by an App still installed", func() {
-			h.acceptWrites("5")
+			h.acceptWrites()
 			h.failMint(workflow.Implementer, false)
 			Expect(start(workflow.Implementer)).To(Equal(1))
 			Expect(h.runner.find("sudo")).To(BeEmpty(), "ran the agent without its credential")

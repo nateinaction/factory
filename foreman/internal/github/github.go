@@ -33,6 +33,10 @@ const (
 	userAgent = "foreman"
 	// apiVersion pins GitHub's REST API version.
 	apiVersion = "2022-11-28"
+	// stateOpen is the query value that lists open issues only.
+	stateOpen = "open"
+	// stateParam is the query parameter that filters by issue state.
+	stateParam = "state"
 )
 
 // Client calls GitHub's REST API with one token.
@@ -143,6 +147,10 @@ type (
 	labelsRequest struct {
 		Labels []string `json:"labels"`
 	}
+	// labelRequest creates a label in a repository.
+	labelRequest struct {
+		Name string `json:"name"`
+	}
 	// issueRequest opens an issue.
 	issueRequest struct {
 		Title  string   `json:"title"`
@@ -193,7 +201,7 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 // ListLabeled lists the oldest open issues carrying label.
 func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
-		"state": {"open"}, "labels": {label}, "sort": {"created"},
+		stateParam: {stateOpen}, "labels": {label}, "sort": {"created"},
 		"direction": {"asc"}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
 
@@ -202,6 +210,100 @@ func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow
 	err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/issues?"+q.Encode(), nil, &issues)
 
 	return issues, err
+}
+
+// ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
+// the caller skips them.
+func (c Client) ListOpenIssues(ctx context.Context, repo string) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {stateOpen}, "sort": {"created"}, "direction": {"asc"}}
+
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// Label is the part of a repository label foreman reads.
+type Label struct {
+	// Name is the label's text.
+	Name string `json:"name"`
+}
+
+// EnsureLabels creates each label the repository lacks. A label another poll created between the
+// read and the write is already there, so its 422 is not an error.
+func (c Client) EnsureLabels(ctx context.Context, repo string, labels []string) error {
+	existing, err := Paged[Label](ctx, c, "/repos/"+repo+"/labels")
+	if err != nil {
+		return err
+	}
+
+	have := make(map[string]bool, len(existing))
+	for _, l := range existing {
+		have[l.Name] = true
+	}
+
+	for _, name := range labels {
+		if have[name] {
+			continue
+		}
+
+		err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/labels", labelRequest{Name: name}, nil)
+		if err != nil && !isStatus(err, http.StatusUnprocessableEntity) {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ListComments lists an issue's comments, oldest first.
+func (c Client) ListComments(ctx context.Context, repo string, number int) ([]workflow.Item, error) {
+	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number))
+}
+
+// CollaboratorPermission reads a user's permission on the repository. A user who is not a
+// collaborator has none; any other failure is returned, so the caller can fail closed.
+func (c Client) CollaboratorPermission(ctx context.Context, repo, login string) (string, error) {
+	var got struct {
+		Permission string `json:"permission"`
+	}
+
+	path := fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(login))
+
+	err := c.Call(ctx, http.MethodGet, path, nil, &got)
+	if isStatus(err, http.StatusNotFound) {
+		return "none", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return got.Permission, nil
+}
+
+// OpenBlockers lists the open issues blocking number. supported is false when the repository has no
+// issue dependencies, so the caller falls back to the issue's "Blocked by:" line.
+func (c Client) OpenBlockers(ctx context.Context, repo string, number int) ([]workflow.Issue, bool, error) {
+	var blocking []workflow.Issue
+
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, number)
+
+	err := c.Call(ctx, http.MethodGet, path, nil, &blocking)
+	if isStatus(err, http.StatusNotFound) {
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	open := make([]workflow.Issue, 0, len(blocking))
+
+	for _, b := range blocking {
+		if b.State != "closed" {
+			open = append(open, b)
+		}
+	}
+
+	return open, true, nil
 }
 
 // GetIssue reads one issue.
@@ -219,6 +321,11 @@ func (c Client) Comment(ctx context.Context, repo string, number int, text strin
 		bodyRequest{Body: text}, nil)
 }
 
+// AddLabel adds one label to an issue.
+func (c Client) AddLabel(ctx context.Context, repo string, number int, label string) error {
+	return c.addLabel(ctx, repo, number, label)
+}
+
 // addLabel adds one label to an issue.
 func (c Client) addLabel(ctx context.Context, repo string, number int, label string) error {
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", repo, number),
@@ -232,9 +339,20 @@ func (c Client) removeLabel(ctx context.Context, repo string, number int, label 
 	return c.Call(ctx, http.MethodDelete, path, nil, nil)
 }
 
-// Claim swaps src for dst. It is false when src is already gone: someone else claimed the issue.
-func (c Client) Claim(ctx context.Context, repo string, number int, src, dst string) (bool, error) {
-	if err := c.removeLabel(ctx, repo, number, src); err != nil {
+// Claim posts the transition marker, then takes the queued label off, adds the running label, and
+// reads the issue back to check the claim stuck. It is false when the queued label is already gone:
+// another poll got there first, so this claim fails closed.
+func (c Client) Claim(ctx context.Context, repo string, number int, t workflow.Transition) (bool, error) {
+	marker, err := workflow.RenderTransition(t)
+	if err != nil {
+		return false, err
+	}
+
+	if err := c.Comment(ctx, repo, number, marker); err != nil {
+		return false, err
+	}
+
+	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil {
 		if isStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
@@ -242,33 +360,63 @@ func (c Client) Claim(ctx context.Context, repo string, number int, src, dst str
 		return false, err
 	}
 
-	return true, c.addLabel(ctx, repo, number, dst)
+	if err := c.addLabel(ctx, repo, number, string(t.To)); err != nil {
+		return false, err
+	}
+
+	issue, err := c.GetIssue(ctx, repo, number)
+	if err != nil {
+		return false, err
+	}
+
+	if !workflow.HasLabel(issue, string(t.To)) {
+		return false, fmt.Errorf("claim of %s#%d did not stick", repo, number)
+	}
+
+	return true, nil
 }
 
-// Finish swaps src for dst and records the outcome in a comment.
-func (c Client) Finish(ctx context.Context, repo string, number int, src, dst, text string) error {
-	if err := c.removeLabel(ctx, repo, number, src); err != nil && !isStatus(err, http.StatusNotFound) {
+// Finish posts the transition marker and its outcome, swaps src for dst, and tolerates a label a
+// person already moved.
+func (c Client) Finish(ctx context.Context, repo string, number int, t workflow.Transition, text string) error {
+	marker, err := workflow.RenderTransition(t)
+	if err != nil {
+		return err
+	}
+
+	body := marker
+	if text != "" {
+		body += "\n\n" + text
+	}
+
+	if err := c.Comment(ctx, repo, number, body); err != nil {
+		return err
+	}
+
+	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
 		// A 404 means a person already removed it: fine, still record the outcome.
 		return err
 	}
 
-	if err := c.addLabel(ctx, repo, number, dst); err != nil {
-		return err
-	}
-
-	return c.Comment(ctx, repo, number, text)
+	return c.addLabel(ctx, repo, number, string(t.To))
 }
 
 // PullRequest is the part of a pull request foreman reads.
 type PullRequest struct {
-	Number  int    `json:"number"`
+	// Number is the pull request number.
+	Number int `json:"number"`
+	// HTMLURL is the advertised web URL.
 	HTMLURL string `json:"html_url"`
+	// Head is the branch the pull request comes from, including the commit a review judges.
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
 }
 
 // ExistingPR finds the open pull request for a branch, or nil.
 func (c Client) ExistingPR(ctx context.Context, repo, branch string) (*PullRequest, error) {
 	owner, _, _ := strings.Cut(repo, "/")
-	q := url.Values{"state": {"open"}, "head": {owner + ":" + branch}}
+	q := url.Values{stateParam: {stateOpen}, "head": {owner + ":" + branch}}
 
 	var pulls []PullRequest
 	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+q.Encode(), nil, &pulls); err != nil {

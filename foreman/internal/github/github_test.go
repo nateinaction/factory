@@ -99,58 +99,172 @@ var _ = Describe("Client", func() {
 
 	Describe("ListLabeled", func() {
 		It("asks for open issues with the label, oldest first", func() {
-			first := issue(workflow.LabelReady)
+			first := issue(workflow.LabelImplement)
 
-			issues, err := c.ListLabeled(ctx, "o/r", workflow.LabelReady)
+			issues, err := c.ListLabeled(ctx, "o/r", workflow.LabelImplement)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(issues).To(HaveLen(1))
 			Expect(issues[0].Number).To(Equal(first))
-			Expect(p.Calls()[0].Query).To(Equal("direction=asc&labels=ready-for-agent&per_page=20&sort=created&state=open"))
+			Expect(p.Calls()[0].Query).To(Equal(
+				"direction=asc&labels=factory%3Aimplement&per_page=20&sort=created&state=open"))
+		})
+	})
+
+	Describe("ListOpenIssues", func() {
+		It("lists every open issue with its author and labels", func() {
+			number := issue(workflow.LabelTask)
+
+			issues, err := c.ListOpenIssues(ctx, "o/r")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issues).To(HaveLen(1))
+			Expect(issues[0].Number).To(Equal(number))
+			Expect(issues[0].Author).To(Equal("o"))
+			Expect(issues[0].State).To(Equal("open"))
+			Expect(issues[0].Labels).To(ConsistOf(workflow.LabelTask))
+		})
+	})
+
+	Describe("EnsureLabels", func() {
+		It("creates only the labels the repository lacks, idempotently", func() {
+			Expect(c.EnsureLabels(ctx, "o/r", workflow.FactoryLabels())).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/labels")).To(HaveLen(len(workflow.FactoryLabels())))
+			Expect(p.Bodies("POST", "/repos/o/r/labels")[0]).To(ContainSubstring(`{"name":"factory:`))
+
+			p2 := ghtest.NewProxy(emulator.URL())
+			DeferCleanup(p2.Close)
+
+			again := github.NewClient(p2.URL(), "secret-token", p2.Client())
+			Expect(again.EnsureLabels(ctx, "o/r", workflow.FactoryLabels())).To(Succeed())
+			Expect(p2.Bodies("POST", "/repos/o/r/labels")).To(BeEmpty())
+		})
+	})
+
+	Describe("ListComments", func() {
+		It("lists a comment's author", func() {
+			number := issue()
+			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(number)+"/comments",
+				ghtest.AdminToken, map[string]string{"body": "hello"}, nil)).To(Succeed())
+
+			comments, err := c.ListComments(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(1))
+			Expect(comments[0].Body).To(Equal("hello"))
+			Expect(comments[0].Author).To(Equal("o"))
+		})
+	})
+
+	Describe("CollaboratorPermission", func() {
+		It("reads the owner's permission", func() {
+			permission, err := c.CollaboratorPermission(ctx, "o/r", "o")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(permission).To(Equal("admin"))
+		})
+
+		It("gives a non-collaborator no permission", func() {
+			permission, err := c.CollaboratorPermission(ctx, "o/r", "factory")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(permission).To(Equal("none"))
+		})
+
+		It("passes on an unreadable permission", func() {
+			p.Status("GET /repos/o/r/collaborators/o/permission", http.StatusInternalServerError)
+
+			_, err := c.CollaboratorPermission(ctx, "o/r", "o")
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("OpenBlockers", func() {
+		It("reports that dependencies are unavailable when the endpoint is missing", func() {
+			number := issue()
+
+			blockers, supported, err := c.OpenBlockers(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeFalse())
+			Expect(blockers).To(BeEmpty())
 		})
 	})
 
 	Describe("Claim", func() {
-		It("swaps the labels", func() {
-			number := issue("a")
+		transition := workflow.Transition{
+			Role: workflow.Implementer, RunID: "run-1",
+			From: workflow.Implement, To: workflow.Implementing, SHA: "abc",
+		}
 
-			Expect(c.Claim(ctx, "o/r", number, "a", "b")).To(BeTrue())
-			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/labels")).To(Equal([]string{`{"labels":["b"]}` + "\n"}))
+		It("posts the marker, swaps the labels and reads the claim back", func() {
+			number := issue(workflow.LabelImplement)
+
+			Expect(c.Claim(ctx, "o/r", number, transition)).To(BeTrue())
+			Expect(p.Summary()).To(Equal([]string{
+				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
+				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:implement",
+				"POST /repos/o/r/issues/" + itoa(number) + "/labels",
+				"GET /repos/o/r/issues/" + itoa(number),
+			}))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")[0]).To(
+				ContainSubstring("<!-- factory:handoff role=implementer run=run-1 " +
+					"from=factory:implement to=factory:implementing sha=abc -->"))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/labels")).To(
+				Equal([]string{`{"labels":["factory:implementing"]}` + "\n"}))
 		})
 
 		It("fails closed when someone else got there first", func() {
 			number := issue()
 
-			Expect(c.Claim(ctx, "o/r", number, "a", "b")).To(BeFalse())
-			Expect(p.Summary()).To(HaveLen(1), "added a label after losing the claim")
+			Expect(c.Claim(ctx, "o/r", number, transition)).To(BeFalse())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/labels")).To(BeEmpty(),
+				"added a label after losing the claim")
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(HaveLen(1),
+				"want the marker the claim posts first")
 		})
 
 		It("passes on any other error", func() {
-			number := issue("a")
-			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/a", http.StatusInternalServerError)
+			number := issue(workflow.LabelImplement)
+			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:implement",
+				http.StatusInternalServerError)
 
-			won, err := c.Claim(ctx, "o/r", number, "a", "b")
+			won, err := c.Claim(ctx, "o/r", number, transition)
 			Expect(err).To(HaveOccurred())
 			Expect(won).To(BeFalse())
 		})
 	})
 
 	Describe("Finish", func() {
-		It("tolerates a label already removed, then labels and comments", func() {
+		transition := workflow.Transition{
+			Role: workflow.Reviewer, RunID: "run-2",
+			From: workflow.Reviewing, To: workflow.Done, SHA: "abc",
+		}
+
+		It("posts the marker with its outcome, then swaps the labels", func() {
+			number := issue(workflow.LabelReviewing)
+
+			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
+			Expect(p.Summary()).To(Equal([]string{
+				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
+				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:reviewing",
+				"POST /repos/o/r/issues/" + itoa(number) + "/labels",
+			}))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")[0]).To(And(
+				ContainSubstring("<!-- factory:handoff role=reviewer run=run-2 "+
+					"from=factory:reviewing to=factory:done sha=abc -->"),
+				ContainSubstring(`\n\ndone`),
+			))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/labels")[0]).To(
+				ContainSubstring(workflow.LabelDone))
+		})
+
+		It("tolerates a label already removed", func() {
 			number := issue()
 
-			Expect(c.Finish(ctx, "o/r", number, "a", "b", "done")).To(Succeed())
-			Expect(p.Summary()).To(Equal([]string{
-				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/a",
-				"POST /repos/o/r/issues/" + itoa(number) + "/labels",
-				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
-			}))
+			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
 		})
 
 		It("passes on any other delete error", func() {
-			number := issue("a")
-			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/a", http.StatusBadGateway)
+			number := issue(workflow.LabelReviewing)
+			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:reviewing",
+				http.StatusBadGateway)
 
-			Expect(c.Finish(ctx, "o/r", number, "a", "b", "x")).NotTo(Succeed())
+			Expect(c.Finish(ctx, "o/r", number, transition, "x")).NotTo(Succeed())
 		})
 	})
 
@@ -160,7 +274,9 @@ var _ = Describe("Client", func() {
 
 			found, err := c.ExistingPR(ctx, "o/r", "agent/issue-1")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(Equal(&github.PullRequest{Number: pr.Number, HTMLURL: pr.HTMLURL}))
+			Expect(found.Number).To(Equal(pr.Number))
+			Expect(found.HTMLURL).To(Equal(pr.HTMLURL))
+			Expect(found.Head.SHA).NotTo(BeEmpty())
 			Expect(p.Calls()[0].Query).To(Equal("head=o%3Aagent%2Fissue-1&state=open"))
 		})
 
