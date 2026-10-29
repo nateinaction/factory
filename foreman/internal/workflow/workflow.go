@@ -307,19 +307,23 @@ type Issue struct {
 	Labels        []string
 	Comments      int
 	IsPullRequest bool
+	// CreatedAt is when the issue was opened, used to claim the oldest issue across repositories. A
+	// zero time means the answer carried no date.
+	CreatedAt time.Time
 }
 
 // UnmarshalJSON reads an issue; the issues endpoint marks pull requests with a pull_request key.
 func (i *Issue) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID       int64  `json:"id"`
-		Number   int    `json:"number"`
-		Title    string `json:"title"`
-		Body     string `json:"body"`
-		State    string `json:"state"`
-		HTMLURL  string `json:"html_url"`
-		Comments int    `json:"comments"`
-		User     *struct {
+		ID        int64  `json:"id"`
+		Number    int    `json:"number"`
+		Title     string `json:"title"`
+		Body      string `json:"body"`
+		State     string `json:"state"`
+		HTMLURL   string `json:"html_url"`
+		Comments  int    `json:"comments"`
+		CreatedAt string `json:"created_at"`
+		User      *struct {
 			Login string `json:"login"`
 		} `json:"user"`
 		Labels []struct {
@@ -341,9 +345,15 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 		labels = append(labels, l.Name)
 	}
 
+	created, err := parseOptionalTime(raw.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("decode issue: %w", err)
+	}
+
 	*i = Issue{
 		ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
 		HTMLURL: raw.HTMLURL, Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
+		CreatedAt: created,
 	}
 
 	return nil

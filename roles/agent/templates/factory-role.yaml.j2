@@ -1,12 +1,12 @@
-# The {{ agent_role }} agent role. Queued by factory-poll with the repository and
-# the claimed issue number; executed on a worker. Every role shares one queue
-# with one slot, which keeps agent runs to one at a time on the 8GB host until
-# the run cap and the sandbox land.
+# The {{ agent_role }} agent role. Queued by factory-poll with the repository and the claimed issue
+# number, and executed on a worker host that takes this agent role. Each agent role has its own DAG
+# and queue, so one role's slow run never holds another's work. The queue's capacity plus the
+# worker's --worker.max-active-runs is the per-host run cap. The retro is the last step of the same
+# run, so it keeps the host's run slot until it ends.
 type: graph
-queue: {{ factory_agent_queue }}
-max_active_runs: 1
+queue: factory-{{ agent_role }}
 worker_selector:
-  {{ dagu_worker_labels.split('=')[0] }}: {{ dagu_worker_labels.split('=')[1] }}
+  {{ agent_role }}: "true"
 params:
   - name: REPO
     type: string

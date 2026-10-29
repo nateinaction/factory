@@ -58,7 +58,8 @@ deadline is dropped, logged, and never fails the run.
 ## The retro epilogue
 
 After foreman has applied the run's output, the same dagu run resumes the model's session by its
-explicit id (`--session <id>`, never `--continue`) with the `retro` skill. The retro has its own
+explicit id (`--session <id>`, never `--continue`) with the `retro` skill. The retro is the run's
+last step, so the worker host's run slot stays taken until the retro ends. The retro has its own
 step cap and deadline (`factory_retro_steps`, `factory_retro_deadline_minutes`), and the same state
 database, so it sees the run as it happened.
 

@@ -13,6 +13,20 @@ var _ = Describe("the dagu CLI adapter", func() {
 			}))
 		})
 
+		It("asks only for the runs that keep an agent role busy", func() {
+			Expect(ActiveHistoryArgv("/usr/local/bin/dagu", 1000)).To(Equal([]string{
+				"/usr/local/bin/dagu", "history",
+				"--status", "queued,running,waiting,not_started",
+				"--format", "json", "--limit", "1000",
+			}))
+		})
+
+		It("lists exactly the statuses an active run carries", func() {
+			for _, status := range ActiveStatuses() {
+				Expect(Run{Status: status}.Active()).To(BeTrue(), status)
+			}
+		})
+
 		It("asks for one run's tree by its id", func() {
 			Expect(StatusArgv("/usr/local/bin/dagu", "factory-implementer", "run-1")).To(Equal([]string{
 				"/usr/local/bin/dagu", "status", "--run-id", "run-1", "factory-implementer",
