@@ -3,7 +3,7 @@ package foreman
 import (
 	"context"
 	"encoding/json"
-	"net"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -209,16 +209,32 @@ var _ = Describe("the sandbox", func() {
 	})
 
 	It("fails closed when the egress proxy cannot bind", func() {
-		taken, err := net.Listen("tcp", "127.0.0.1:0")
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(taken.Close)
-
-		h.deps.EgressAddr = taken.Addr().String()
+		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
+		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) {
+			return nil, errors.New("bind egress proxy: address already in use")
+		}
 
 		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).To(MatchError(ContainSubstring("bind")))
 		Expect(code).NotTo(BeZero())
 		Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran without an egress boundary")
+		Expect(p.closed).To(BeTrue(), "the key proxy outlived the failed run")
+	})
+
+	It("stops both proxies and removes the run's directories however the run ends", func() {
+		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
+		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9"}
+		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+		h.answerOpencode(errStream("ContextOverflowError", 0))
+
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(HaveOccurred())
+		Expect(code).NotTo(BeZero())
+		Expect(p.closed).To(BeTrue(), "the key proxy outlived the failed run")
+		Expect(e.closed).To(BeTrue(), "the egress proxy outlived the failed run")
+		Expect(h.runDir(workflow.Implementer, 5)).NotTo(BeAnExistingFile(), "the run's directory outlived the run")
 	})
 
 	It("gives the proxy the role's allowlist and logs the domains it saw", func() {

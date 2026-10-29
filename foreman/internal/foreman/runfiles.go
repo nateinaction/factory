@@ -141,31 +141,28 @@ func scratchOf(output string) string {
 	return filepath.Dir(output)
 }
 
-// sandboxedSession compiles the agent role's spec and puts s inside it. extra names any further
-// output files the agent role writes outside the clone, such as its output file and its retro.
-func (d Deps) sandboxedSession(
-	s session, files sandboxFiles, role workflow.Role, clone, output string, extra []string,
-	network sandbox.Network, toolchain, proxyAddr string,
-) (session, error) {
-	spec := sandbox.Plan(role, files.layout(d, clone, output, toolchainPaths(toolchain)))
-	spec.ReadWrite = append(spec.ReadWrite, extra...)
-	spec.Network = network
-
-	return s.sandboxed(files, spec, toolchain, proxyPort(proxyAddr))
-}
-
-// sandboxedWithToolchain resolves the default branch's dev environment and puts s inside the sandbox
-// that uses it.
-func (d Deps) sandboxedWithToolchain(
-	ctx context.Context, s session, j job, sec secrets, repo workflow.Repo, branch string, files sandboxFiles,
-	role workflow.Role, clone, output string, extra []string, network sandbox.Network, proxyAddr string,
-) (session, error) {
-	toolchain, err := d.toolchain(ctx, j.c, repo, sec.githubToken, branch, files)
+// sandboxed puts the run's clone inside its own sandbox: the default branch's dev environment, the
+// settings compiled from the agent role's spec, and the proxies the model may use. The agent role's
+// prepared output files join the run's own.
+func (rc runCtx) sandboxed(ctx context.Context, files sandboxFiles, env runEnv, prep prepared) (session, error) {
+	toolchain, err := rc.d.toolchain(
+		ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files,
+	)
 	if err != nil {
 		return session{}, err
 	}
 
-	return d.sandboxedSession(s, files, role, clone, output, extra, network, toolchain, proxyAddr)
+	spec := sandbox.Plan(rc.role, files.layout(rc.d, rc.paths.workdir, rc.paths.out, toolchainPaths(toolchain)))
+	spec.ReadWrite = append(spec.ReadWrite, rc.writes(prep)...)
+	spec.Network = env.network
+
+	return rc.s.sandboxed(files, spec, toolchain, env.egressPort)
+}
+
+// writes is every output file the run writes outside its clone: the agent role's own, and its retro's
+// when the agent role keeps one.
+func (rc runCtx) writes(prep prepared) []string {
+	return dedupe(append(slices.Clone(prep.extraWrite), rc.retroFile()))
 }
 
 // writeSettings compiles and writes the run's srt settings file.

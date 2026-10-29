@@ -32,9 +32,10 @@ func retroPath(root string, number int, role workflow.Role) string {
 	return filepath.Join(root, fmt.Sprintf("issue-%d-%s.retro.json", number, role))
 }
 
-// retroEpilogue runs a run's retro after its work, in the same session. It is best effort: a skipped,
-// dropped or invalid retro is logged and never changes the run's outcome. runErr is the run's own
-// failure, whose kind can exclude the retro.
+// retroEpilogue runs a run's retro after its work, in the same session. key is the run's retro key
+// and is never empty: a run without one has no retro, so its caller does not get here. It is best
+// effort: a skipped, dropped or invalid retro is logged and never changes the run's outcome. runErr
+// is the run's own failure, whose kind can exclude the retro.
 func (s session) retroEpilogue(
 	ctx context.Context, j job, repo workflow.Repo, number int, role workflow.Role, sessionID, key string, runErr error,
 	budget config.Budget,
@@ -51,13 +52,6 @@ func (s session) retroEpilogue(
 			s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role,
 				"error", errors.New("the run reported no session to resume"))
 		}
-
-		return opencode.Usage{}
-	}
-
-	if key == "" {
-		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role,
-			"error", errors.New("the run has no commit to key its retro by"))
 
 		return opencode.Usage{}
 	}

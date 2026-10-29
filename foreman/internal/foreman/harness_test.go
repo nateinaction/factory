@@ -645,10 +645,7 @@ func (h *harness) reviewPath() string {
 func (h *harness) rolePaths(role workflow.Role, number int) runPaths {
 	GinkgoHelper()
 
-	paths, err := runPathsFor(h.deps.Settings.WorkRoot, role, number)
-	Expect(err).NotTo(HaveOccurred())
-
-	return paths
+	return runPathsFor(h.deps.Settings.WorkRoot, agentRoles()[role].names, number)
 }
 
 // retroComments are the retro marker comments posted on o/r#5, oldest first.

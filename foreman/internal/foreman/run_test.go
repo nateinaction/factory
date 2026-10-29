@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -360,12 +359,31 @@ var _ = Describe("Run", func() {
 			Expect(h.retroComments()).To(BeEmpty())
 		})
 
-		It("fails closed when the proxy cannot bind", func() {
-			taken, err := net.Listen("tcp", "127.0.0.1:0")
-			Expect(err).NotTo(HaveOccurred())
-			DeferCleanup(taken.Close)
+		It("drops the retro and warns when it cannot read the run's commit", func() {
+			heads := 0
 
-			h.deps.ProxyAddr = taken.Addr().String()
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if strings.Contains(joined(c), "rev-parse HEAD") {
+					heads++
+					if heads > 1 {
+						return "", errors.New("no commit to read")
+					}
+				}
+
+				return base(c)
+			})
+			h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+			h.roleWritesRetro(workflow.Implementer, validRetro)
+
+			Expect(run(workflow.Implementer)).To(BeZero())
+			Expect(h.retroComments()).To(BeEmpty(), "filed a retro under no key")
+			Expect(h.logs.String()).To(ContainSubstring("cannot read the commit for the retro's run key"))
+		})
+
+		It("fails closed when the proxy cannot bind", func() {
+			h.deps.Proxy = func(string, string, string) (Forwarder, error) {
+				return nil, errors.New("bind openrouter proxy: address already in use")
+			}
 
 			code, err := run(workflow.Implementer)
 			Expect(err).To(MatchError(ContainSubstring("bind")))
@@ -953,5 +971,13 @@ var _ = Describe("Run", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(code).NotTo(BeZero())
 		Expect(h.gh.Calls()).To(BeEmpty())
+	})
+
+	It("refuses an agent role its table does not know, before touching anything", func() {
+		code, err := Run(context.Background(), h.deps, workflow.Role("janitor"), testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(MatchError(`unknown agent role "janitor"`))
+		Expect(code).To(Equal(1))
+		Expect(h.opencodeCalls()).To(BeEmpty(), "a model ran for an agent role with no pipeline")
+		Expect(h.gh.Calls()).To(BeEmpty(), "the run reached GitHub without an agent role")
 	})
 })

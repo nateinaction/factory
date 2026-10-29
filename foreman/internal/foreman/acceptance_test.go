@@ -166,10 +166,7 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 
 		// pathsOf is where the Implementer's run of an issue keeps its directories.
 		pathsOf := func(number int) runPaths {
-			paths, pathsErr := runPathsFor(work, workflow.Implementer, number)
-			Expect(pathsErr).NotTo(HaveOccurred())
-
-			return paths
+			return runPathsFor(work, agentRoles()[workflow.Implementer].names, number)
 		}
 
 		type run struct{ runDir, scratch string }
