@@ -8,8 +8,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - name: go fix, go mod tidy and golangci-lint
+      - name: go fix, go mod tidy, golangci-lint and tests
         run: nix develop --command scripts/check-go
+      # Needs the vulnerability database, so it runs in CI rather than the hook.
+      - name: govulncheck
+        working-directory: foreman
+        run: nix develop --command govulncheck ./...
   ansible:
     runs-on: ubuntu-latest
     steps:

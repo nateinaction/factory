@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run go fix, go mod tidy and golangci-lint on the foreman module. Fail if any
-# of them changes a file or reports a problem. Used by the pre-commit hook and CI.
+# Run go fix, go mod tidy, golangci-lint and the tests on the foreman module.
+# Fail if any of them changes a file or reports a problem. Used by the
+# pre-commit hook and CI.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
@@ -16,6 +17,7 @@ before="$(fingerprint)"
 go fix ./...
 go mod tidy
 golangci-lint run ./...
+go test -race -shuffle=on ./...
 
 after="$(fingerprint)"
 if [ "$before" != "$after" ]; then

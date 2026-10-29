@@ -10,7 +10,7 @@
     in {
       # foreman is a static Go binary, so hosts need no Go toolchain.
       packages = forAll (pkgs: rec {
-        foreman = pkgs.buildGoModule {
+        foreman = pkgs.buildGo127Module {
           pname = "foreman";
           version = "0.1.0";
           src = ./foreman;
@@ -28,8 +28,9 @@
             pkgs.ansible
             pkgs.ansible-lint
             pkgs.yamllint
-            pkgs.go
+            pkgs.go_1_27
             pkgs.golangci-lint
+            pkgs.govulncheck
           ];
           # Install the pre-commit hook by pointing git at the tracked hooks.
           shellHook = ''
