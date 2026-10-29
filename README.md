@@ -64,6 +64,14 @@ live in this repo.
    the factory. Installing any App assigns it; uninstalling all of them unassigns
    it. The factory works only the agent roles whose Apps are installed there,
    and other agent roles' issues wait in their queue.
+5. On each assigned repository, require code-owner review in branch protection
+   (or a ruleset) with a human in `CODEOWNERS`, so no factory App's approval can
+   merge a pull request alone. No App can satisfy code-owner review. For example:
+
+   ```
+   # .github/CODEOWNERS
+   * @your-github-login
+   ```
 
 Skip the Ansible role with `-e factory_github_app=false`. If the Ansible role runs and the
 secrets file is missing, the play fails rather than skipping.
