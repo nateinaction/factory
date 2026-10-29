@@ -696,6 +696,20 @@ var _ = Describe("Proxy", func() {
 			Expect(address).To(Equal(publicAddress + ":443"))
 		})
 
+		It("bounds how many addresses one DNS answer can name", func() {
+			addrs := make(staticResolver, 0, 50)
+			for i := range 50 {
+				addrs = append(addrs, netip.AddrFrom4([4]byte{93, 184, 216, byte(34 + i)}))
+			}
+
+			g := gateway{resolve: addrs, dial: (&net.Dialer{}).DialContext}
+
+			checked, err := g.lookup(context.Background(), "many.example")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(checked).To(HaveLen(maxResolvedAddresses),
+				"a long DNS answer grew the dial list without bound")
+		})
+
 		It("answers bad gateway when the name cannot be resolved", func() {
 			p := startWith(policy(), gateway{
 				resolve: staticResolver{}, dial: (&net.Dialer{}).DialContext,

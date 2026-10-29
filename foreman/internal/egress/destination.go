@@ -36,6 +36,10 @@ func (e refusedDestination) Error() string {
 	return fmt.Sprintf("egress proxy: %q is not publicly routable: it resolves to %s", e.host, e.addr)
 }
 
+// maxResolvedAddresses caps how many addresses one untrusted DNS answer may name for a dial. A
+// long answer only makes the proxy check and try more destinations, so the first few are enough.
+const maxResolvedAddresses = 8
+
 // nonPublicPrefixes are ranges a routability test alone admits but the proxy must not reach:
 // RFC 6598's shared space, where a tailnet lives, and 0.0.0.0/8, which a host reads as itself.
 var nonPublicPrefixes = []netip.Prefix{ //nolint:gochecknoglobals // a read-only set
@@ -97,9 +101,10 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 		return nil, fmt.Errorf("egress proxy: resolve %q: no addresses", host)
 	}
 
-	checked := make([]netip.Addr, 0, len(addrs))
+	checked := make([]netip.Addr, 0, min(len(addrs), maxResolvedAddresses))
 
-	for _, addr := range addrs {
+	// The DNS answer is untrusted input: check and keep at most maxResolvedAddresses of it.
+	for _, addr := range addrs[:min(len(addrs), maxResolvedAddresses)] {
 		addr = addr.Unmap()
 		if !publiclyRoutable(addr) {
 			return nil, refusedDestination{host: host, addr: addr}
