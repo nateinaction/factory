@@ -205,14 +205,78 @@ var _ = Describe("storing a final round's proposal", func() {
 	)
 })
 
+var _ = Describe("the spec a final round stores", func() {
+	// stored renders a factory comment carrying p's hidden proposal block.
+	stored := func(p workflow.PlannerProposal) workflow.Item {
+		GinkgoHelper()
+
+		block, err := workflow.ProposalBlock(p)
+		Expect(err).NotTo(HaveOccurred())
+
+		return workflow.Item{ID: 1, Author: "o-factory-planner[bot]", Body: "The round.\n\n" + block}
+	}
+
+	single := workflow.PlannerProposal{
+		Shape: workflow.ShapeSingle,
+		Spec:  "## The spec\n\nx\n\n## Domain changes\n\nNone.",
+	}
+
+	It("returns a single proposal's spec", func() {
+		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(Equal(single.Spec))
+	})
+
+	It("keeps another shape's spec out of the final-round comment", func() {
+		slices := workflow.PlannerProposal{
+			Shape: workflow.ShapeSlices, Spec: single.Spec,
+			Issues: []workflow.PlannedIssue{{Key: "first", Title: "First", Body: "A"}},
+		}
+
+		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("reads the latest stored proposal, not an earlier one", func() {
+		const newerSpec = "## The newer spec\n\ny\n\n## Domain changes\n\nNone."
+
+		older := stored(single)
+		newer := stored(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: newerSpec})
+		newer.ID = 2
+
+		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(Equal(newerSpec))
+	})
+
+	It("ignores a proposal another author forged", func() {
+		forged := stored(single)
+		forged.Author = "o"
+
+		_, found, err := workflow.StoredSpec([]workflow.Item{forged})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+})
+
 var _ = Describe("the human gate", func() {
-	DescribeTable("accepts a writer's approval",
+	DescribeTable("accepts a writer's explicit approval",
 		func(text string) { Expect(workflow.Approves(text)).To(BeTrue()) },
 		Entry(nil, "yes"),
 		Entry(nil, "Yes!"),
 		Entry(nil, "  yes.  "),
+		Entry(nil, "Yes, please."),
+		Entry(nil, "lgtm"),
 		Entry(nil, "ready to build"),
 		Entry(nil, "Looks good — ready to build."),
+		Entry(nil, "I'm ready to build"),
+		Entry(nil, "ready to build now"),
+		Entry(nil, "build it"),
+		Entry(nil, "go ahead and build it"),
+		Entry(nil, "let's build it"),
 	)
 
 	DescribeTable("does not accept anything else",
@@ -221,6 +285,43 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "not yet"),
 		Entry(nil, "yes, but change the title"),
 		Entry(nil, "yesterday"),
+		Entry(nil, ""),
+		Entry(nil, "not ready to build"),
+		Entry(nil, "Not ready to build."),
+		Entry(nil, "not yet ready to build"),
+		Entry(nil, "I'm not ready to build"),
+		Entry(nil, "don't build it"),
+		Entry(nil, "do not build"),
+		Entry(nil, "no changes, ready to build"),
+		Entry(nil, "ready to build, but split the storage change"),
+		Entry(nil, "yes, no changes needed"),
+		Entry(nil, "ready to build?"),
+		Entry(nil, "Is this ready to build?"),
+		Entry(nil, "should we build it?"),
+		Entry(nil, "maybe ready to build"),
+		Entry(nil, "I think it is ready to build"),
+	)
+
+	DescribeTable("accepts a writer's explicit request to build",
+		func(text string) { Expect(workflow.RequestsBuild(text)).To(BeTrue()) },
+		Entry(nil, "ready to build"),
+		Entry(nil, "Ready to build!"),
+		Entry(nil, "Looks good — ready to build."),
+		Entry(nil, "build it"),
+		Entry(nil, "go ahead and build it"),
+		Entry(nil, "let's build it"),
+		Entry(nil, "please build it"),
+	)
+
+	DescribeTable("does not take a plain answer as a request to build",
+		func(text string) { Expect(workflow.RequestsBuild(text)).To(BeFalse()) },
+		Entry(nil, "yes"),
+		Entry(nil, "ok"),
+		Entry(nil, "lgtm"),
+		Entry(nil, "looks good"),
+		Entry(nil, "not ready to build"),
+		Entry(nil, "do not build"),
+		Entry(nil, "ready to build?"),
 		Entry(nil, ""),
 	)
 })

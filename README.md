@@ -101,12 +101,15 @@ path; the Reviewer takes over from `factory:review`.
    It creates any missing `factory:` labels, repairs a stranded issue from its
    latest marker, and routes a new issue to its first queue: a
    `wayfinder:research` ticket to `factory:research`, and everything else to
-   `factory:plan`. It then takes the oldest unblocked `factory:review` issue, or
-   failing that the oldest `factory:implement` one, posts the claim marker,
-   swaps the label to `factory:reviewing` or `factory:implementing`, and queues
-   the `factory-<role>` DAG with `REPO` and `ISSUE`. Nothing ready means it
-   exits. Only a writer's issues and comments count, and a paused issue is
-   skipped.
+   `factory:plan`. It then works the queues in order (Reviewer, Implementer,
+   Planner, Researcher, oldest issue first): for the first agent role with runs
+   to spare, it claims up to that role's free run capacity, posts each claim
+   marker, swaps the label, and queues the `factory-<role>` DAG with `REPO` and
+   `ISSUE`. An agent role's capacity is each host's run cap
+   (`factory_agent_run_cap`) times the worker hosts that take it, less its runs
+   in progress; a run waiting in dagu blocks new claims for its role. Nothing
+   ready means it exits. Only a writer's issues and comments count, and a paused
+   issue is skipped.
 2. `factory-<agent role>` runs on a worker host that takes that agent role,
    up to the host's run cap (`factory_agent_run_cap`, one at a time by default).
    It mints a one-hour token of that agent role's App scoped to the repo

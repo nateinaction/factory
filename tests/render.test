@@ -47,6 +47,12 @@ check "a worker runs at most the run cap at once" grep -Fq -- '--worker.max-acti
 check "a worker labelled every agent role" grep -Fq -- '--worker.labels runner=agent,planner=true,researcher=true,implementer=true,reviewer=true,curator=true' "$out/dagu-worker.service"
 check "foreman's config names the unhosted roles" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); assert "unhosted_roles" in d, d' "$out/config.json"
+check "each agent role's run capacity is the run cap times its hosts" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":1,"researcher":1,"implementer":1,"reviewer":1,"curator":1}; assert d["role_capacity"] == want, d' \
+  "$out/scheduling.json"
+check "foreman's config gives each agent role its run capacity" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":1,"researcher":1,"implementer":1,"reviewer":1,"curator":1}; assert d["role_capacity"] == want, d' \
+  "$out/config.json"
 check "no old name in any rendered file" bash -c '! grep -rq finances-agent "$1"' _ "$out"
 
 check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$out/dagu-agent.sudoers"
@@ -80,6 +86,12 @@ check "a raised run cap lets a worker run two at once" grep -Fq -- '--worker.max
 check "a raised run cap raises the queue capacity" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); assert int(d["run_cap"]) == 2, d; assert int(d["queue_capacity"]) == 2, d' \
   "$narrow/scheduling.json"
+check "a raised run cap raises only the hosted role's capacity" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":0,"researcher":0,"implementer":0,"reviewer":2,"curator":0}; assert d["role_capacity"] == want, d' \
+  "$narrow/scheduling.json"
+check "foreman's config gives the hosted role its raised capacity" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":0,"researcher":0,"implementer":0,"reviewer":2,"curator":0}; assert d["role_capacity"] == want, d' \
+  "$narrow/config.json"
 
 # The harness adapter's config: one named opencode agent per agent role, each with its own model alias.
 check "opencode.json and config.json agree with factory_models" python3 -I "$root/tests/models_check.py" "$out"

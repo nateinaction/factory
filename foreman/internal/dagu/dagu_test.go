@@ -63,6 +63,18 @@ var _ = Describe("the dagu CLI adapter", func() {
 		})
 	})
 
+	DescribeTable("a run is waiting for a worker while no worker has started it",
+		func(status string, waiting bool) {
+			Expect(Run{Status: status}.Waiting()).To(Equal(waiting))
+		},
+		Entry("queued", StatusQueued, true),
+		Entry("not started", StatusNotStarted, true),
+		Entry("running", StatusRunning, false),
+		Entry("waiting on a human", StatusWaiting, false),
+		Entry("succeeded", "succeeded", false),
+		Entry("failed", "failed", false),
+	)
+
 	DescribeTable("a run is active while dagu can still move it",
 		func(status string, active bool) {
 			Expect(Run{Status: status}.Active()).To(Equal(active))

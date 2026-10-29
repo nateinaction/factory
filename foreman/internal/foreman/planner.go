@@ -37,9 +37,10 @@ func applyPlannerRound(
 	return id, final, err
 }
 
-// approvePending applies the proposal stored in the latest final round when the last writer's reply
-// approves it. It returns false when the latest round is not a stored final round or the reply is not
-// approval, so the ordinary wake rule runs instead.
+// approvePending acts on a writer's reply to the latest Planner round. A pending final round's
+// proposal is applied when the writer approves it; with no final round pending, an explicit request
+// to build opens the gate. It returns false when the latest round is not a waiting Planner round or
+// the reply does not approve, so the ordinary wake rule runs instead.
 func approvePending(
 	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	thread []workflow.Item, latest workflow.Marker,
@@ -49,12 +50,25 @@ func approvePending(
 	}
 
 	proposal, found, err := workflow.StoredProposal(latest.Body)
-	if err != nil || !found {
+	if err != nil {
 		return false, err
 	}
 
 	reply, ok := lastWriterComment(ctx, d, perms, c, repo, thread, latest)
-	if !ok || !workflow.Approves(reply.Body) {
+	if !ok {
+		return false, nil
+	}
+
+	// A plain yes answers a gate question; it cannot open the gate when none was asked.
+	if !found {
+		if !workflow.RequestsBuild(reply.Body) {
+			return false, nil
+		}
+
+		return openGate(ctx, d, repo, issue)
+	}
+
+	if !workflow.Approves(reply.Body) {
 		return false, nil
 	}
 
@@ -70,6 +84,43 @@ func approvePending(
 		"shape", proposal.Shape)
 
 	return true, applyProposal(ctx, d, d.client(token), repo, issue.Number, latest.ID, proposal)
+}
+
+// openGate moves a waiting issue to the Implementer when a writer asks to build with no final round
+// pending. It uses the Planner's token, which owns the transition, and is keyed by the applied
+// marker, so a repeated poll moves nothing twice.
+func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue) (bool, error) {
+	token, err := d.mintToken(ctx, workflow.Planner, repo)
+	if err != nil {
+		d.log().Warn("cannot mint the Planner's token; leaving the gate closed",
+			"repo", repo, "issue", issue.Number, "error", err)
+
+		return false, nil
+	}
+
+	d.log().Info("opening the gate on a writer's build request", "repo", repo, "issue", issue.Number)
+
+	c := d.client(token)
+
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
+	if err != nil {
+		return false, err
+	}
+
+	if hasMarker(comments, workflow.AppliedMarker(issue.Number)) {
+		return true, nil
+	}
+
+	t := workflow.Transition{
+		Role: workflow.Planner, RunID: d.runID(), From: workflow.Waiting, To: workflow.Implement,
+	}
+
+	text := workflow.AppliedMarker(issue.Number) +
+		"\n\nThe gate is open: a writer asked to build. Queued for the Implementer."
+
+	_, err = c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
+
+	return true, err
 }
 
 // lastWriterComment is the latest comment by a writer after marker, which the human gate reads.

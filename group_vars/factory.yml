@@ -30,6 +30,26 @@ factory_agent_hosted_roles: >-
   {%- endfor -%}
   {{ hosted | unique | list }}
 factory_agent_unhosted_roles: "{{ factory_agent_roles | difference(factory_agent_hosted_roles) }}"
+# How many runs of each agent role the fleet may run at once: the per-host run cap times the worker
+# hosts that take the agent role. Foreman's poll claims for a role only while dagu has fewer active
+# runs than this, so one poll fills a run cap above one. A role no host takes has no capacity.
+factory_agent_role_capacity: >-
+  {%- set cap = factory_agent_run_cap | int -%}
+  {%- set counts = {} -%}
+  {%- for agent_role in factory_agent_roles -%}
+  {%- set _ = counts.update({agent_role: 0}) -%}
+  {%- endfor -%}
+  {%- for host in groups['dagu_worker'] | default([]) -%}
+  {%- set roles = hostvars[host]['factory_worker_agent_roles'] | default(factory_worker_agent_roles) -%}
+  {%- for agent_role in roles -%}
+  {%- set _ = counts.update({agent_role: counts.get(agent_role, 0) + 1}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {%- set capacity = {} -%}
+  {%- for agent_role in factory_agent_roles -%}
+  {%- set _ = capacity.update({agent_role: cap * counts.get(agent_role, 0)}) -%}
+  {%- endfor -%}
+  {{ capacity }}
 # Proxy the UI to the tailnet over HTTPS via `tailscale serve`. dagu itself
 # stays on localhost. Anyone on the tailnet can then run workflows: restrict with ACLs.
 dagu_tailscale_serve: true

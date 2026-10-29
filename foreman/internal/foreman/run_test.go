@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,33 @@ var _ = Describe("Run", func() {
 			Expect(retro).To(HaveLen(1))
 			Expect(retro[0].Timeout).To(beNear(testRetro().Deadline()))
 			h.expectLeakFree("repo-token", "or-key")
+		})
+
+		It("shows the retro the groups other issues reported on the same target", func() {
+			h.implementerWrites(firstRunOutput)
+			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+
+			earlier := h.createAs("o", nil, "An earlier issue")
+
+			body, err := workflow.RenderRetro(
+				workflow.RetroMarker(earlier, workflow.Implementer, "sha-earlier"),
+				[]workflow.RetroFinding{{
+					Target:   workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Group:    "guide-misses-tests",
+					Severity: workflow.SeverityLow,
+					Claim:    "the guide never mentions tests",
+					Evidence: "an earlier issue's evidence",
+				}})
+			Expect(err).NotTo(HaveOccurred())
+			h.comment(earlier, appLogin(workflow.Implementer), body)
+
+			Expect(run(workflow.Implementer)).To(BeZero())
+
+			retro := h.runner.find("--session")
+			Expect(retro).To(HaveLen(1))
+			Expect(joined(retro[0])).To(ContainSubstring("`guide-misses-tests`: the guide never mentions tests"))
+			Expect(joined(retro[0])).NotTo(ContainSubstring("an earlier issue's evidence"),
+				"the retro read another retro's evidence")
 		})
 
 		It("keys the retro by the commit the run produced, not the one it started from", func() {
@@ -380,6 +408,36 @@ var _ = Describe("Run", func() {
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
+		It("reads the spec a single proposal stored in its final-round comment", func() {
+			h.reviewerGH(nil)
+
+			block, err := workflow.ProposalBlock(workflow.PlannerProposal{
+				Shape: workflow.ShapeSingle,
+				Spec:  "## Plan\n\nDo the thing.\n\n## Domain changes\n\nNone.\n",
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			h.comment(5, appLogin(workflow.Planner),
+				"The plan.\n\nIs this ready to build?\n\n"+block)
+			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+
+			var spec []byte
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) {
+					var readErr error
+
+					spec, readErr = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
+					Expect(readErr).NotTo(HaveOccurred())
+				}
+
+				return base(c)
+			})
+			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
+			Expect(string(spec)).To(ContainSubstring("## Plan\n\nDo the thing.\n\n## Domain changes\n\nNone."))
+		})
+
 		It("asks the latest human writer to merge when the issue was authored by a bot", func() {
 			h.reviewerGH(nil)
 			h.comment(5, "o", "Let's take this one")
@@ -407,6 +465,49 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+		})
+
+		It("does not ask an author without write access to review", func() {
+			h.reviewerGH(nil)
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty(),
+				"an outsider was asked to merge")
+			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+		})
+
+		It("asks the latest human writer when the issue's author cannot write", func() {
+			h.reviewerGH(nil)
+			h.comment(5, "o", "Let's take this one")
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(
+				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "a non-writer author was not backed by a writer")
+		})
+
+		It("fails closed when the author's permission cannot be read", func() {
+			h.reviewerGH(nil)
+			h.gh.Status("GET /repos/o/r/collaborators/factory/permission", http.StatusInternalServerError)
+			pr, _ := h.pullRequest()
+
+			_, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 		})
 
 		It("keys the retro by the PR head SHA it reviewed", func() {

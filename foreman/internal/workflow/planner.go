@@ -445,13 +445,174 @@ func StoredProposal(body string) (PlannerProposal, bool, error) {
 	return p, true, nil
 }
 
-// Approves reports whether a writer's reply is approval of the latest final round: "yes", or a
-// comment asking to build.
-func Approves(text string) bool {
-	reply := strings.ToLower(strings.TrimSpace(text))
-	reply = strings.TrimRight(reply, " \t\r\n.!?")
+// Approval words that recur in more than one rule.
+const (
+	wordThis  = "this"
+	wordBuild = "build"
+)
 
-	return reply == "yes" || strings.Contains(reply, "ready to build")
+// StoredSpec returns the spec of the latest stored proposal, when that proposal is a single. The
+// latest stored proposal wins: another shape keeps its spec where that shape puts it, not in the
+// final-round comment.
+func StoredSpec(comments []Item) (string, bool, error) {
+	var (
+		spec  string
+		final bool
+	)
+
+	for _, c := range comments {
+		if !FactoryAuthored(c.Author) {
+			continue
+		}
+
+		p, found, err := StoredProposal(c.Body)
+		if err != nil {
+			return "", false, err
+		}
+
+		if found {
+			spec, final = p.Spec, p.Shape == ShapeSingle
+		}
+	}
+
+	return spec, final, nil
+}
+
+// Approves reports whether text is a writer's explicit approval of a pending gate: a plain yes or a
+// request to build. A negated, questioning or conditional reply is not approval.
+func Approves(text string) bool {
+	return approval(text, true)
+}
+
+// RequestsBuild reports whether text explicitly asks to build. It opens the gate even when the
+// Planner asked no final-round question; a plain yes is not a request to build.
+func RequestsBuild(text string) bool {
+	return approval(text, false)
+}
+
+// approvalWords lower-cases text and splits it into words, dropping markdown emphasis and
+// punctuation. A question mark is kept as a word so a question can never pass as approval.
+func approvalWords(text string) []string {
+	reply := strings.ToLower(text)
+	reply = strings.ReplaceAll(reply, "’", "'")
+	reply = strings.ReplaceAll(reply, "n't", " not")
+	reply = strings.ReplaceAll(reply, "i'm", "i am")
+	reply = strings.ReplaceAll(reply, "let's", "lets")
+
+	var b strings.Builder
+
+	for _, r := range reply {
+		switch {
+		case r == '?':
+			b.WriteString(" ? ")
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune(' ')
+		}
+	}
+
+	return strings.Fields(b.String())
+}
+
+// questionOpener reports whether word starts a question rather than an answer.
+func questionOpener(word string) bool {
+	switch word {
+	case "is", "are", "am", "was", "were", "do", "does", "did", "should", "could",
+		"would", "will", "can", "may", "might", "must", "what", "why", "how", "when",
+		"where", "who", "which", "whom", "whose":
+		return true
+	default:
+		return false
+	}
+}
+
+// plainYesWord reports whether word is an explicit affirmative, with no clause added.
+func plainYesWord(word string) bool {
+	switch word {
+	case "yes", "yep", "yeah", "ok", "okay", "lgtm":
+		return true
+	default:
+		return false
+	}
+}
+
+// approvalFiller reports whether word is a trailing word that does not change an approval.
+func approvalFiller(word string) bool {
+	switch word {
+	case "please", "now", "thanks", "thank", "you":
+		return true
+	default:
+		return false
+	}
+}
+
+// approvalPrefixWord reports whether word may precede a build request. Anything else is a condition,
+// a negation or an unrelated sentence, and is not approval.
+func approvalPrefixWord(word string) bool {
+	switch word {
+	case "i", "am", "we", wordThis, "it", "is", "are", "looks", "look", "good", "great",
+		"all", "fine", "yes", "yep", "yeah", "ok", "okay", "definitely", "absolutely",
+		"so", "then", "lets", "the", "spec", "plan", "everything", "and", "go", "ahead",
+		"please":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildPhraseSuffix returns the length of the build phrase that ends words, if one does.
+func buildPhraseSuffix(words []string) (int, bool) {
+	phrases := [][]string{
+		{"ready", "to", wordBuild},
+		{wordBuild, "it"},
+		{wordBuild, wordThis},
+		{wordBuild, "that"},
+		{"implement", "it"},
+		{"implement", wordThis},
+		{"start", "building"},
+		{"begin", "building"},
+		{"go", "ahead", "and", wordBuild},
+		{"proceed", "to", wordBuild},
+	}
+
+	for _, phrase := range phrases {
+		if len(words) >= len(phrase) && slices.Equal(words[len(words)-len(phrase):], phrase) {
+			return len(phrase), true
+		}
+	}
+
+	return 0, false
+}
+
+// approval reports whether text approves, counting a plain yes only when yesCounts.
+func approval(text string, yesCounts bool) bool {
+	words := trimApprovalFillers(approvalWords(text))
+	if len(words) == 0 || slices.Contains(words, "?") || questionOpener(words[0]) {
+		return false
+	}
+
+	if yesCounts && len(words) == 1 && plainYesWord(words[0]) {
+		return true
+	}
+
+	length, ok := buildPhraseSuffix(words)
+	if !ok {
+		return false
+	}
+
+	return !slices.ContainsFunc(words[:len(words)-length], func(word string) bool {
+		return !approvalPrefixWord(word)
+	})
+}
+
+// trimApprovalFillers drops trailing words that do not change an approval.
+func trimApprovalFillers(words []string) []string {
+	for len(words) > 0 && approvalFiller(words[len(words)-1]) {
+		words = words[:len(words)-1]
+	}
+
+	return words
 }
 
 // plannedMarkerPrefix starts the marker on an issue a proposal created.
