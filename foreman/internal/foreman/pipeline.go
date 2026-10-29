@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -64,22 +65,113 @@ type roleRun struct {
 	prepare func(ctx context.Context, rc runCtx) (prepared, error)
 }
 
-// roleRunFor is the pipeline parameters of an agent role.
-func roleRunFor(role workflow.Role) (roleRun, bool) {
+// agentRole is everything dispatch knows about an agent role, so a new role is one entry in
+// agentRoleFor: how `run` runs it, and how `start` routes its exit code.
+type agentRole struct {
+	// run is the pipeline `foreman run` executes.
+	run roleRun
+	// route is what `start` records for the exit code of the role's run.
+	route func(cfg config.Config, ref workflow.IssueRef, code int) route
+}
+
+// route is what `start` does with a run's exit code.
+type route struct {
+	// dst is the state the issue moves to from the role's running label; empty records no transition.
+	dst workflow.State
+	// text is the transition's comment, or the line printed when dst is empty.
+	text string
+	// exit is the code `start` returns.
+	exit int
+	// err fails `start` instead of recording anything.
+	err error
+}
+
+// agentRoleFor is the one lookup by agent role that both `run` and `start` dispatch through.
+func agentRoleFor(role workflow.Role) (agentRole, bool) {
 	switch role {
 	case workflow.Planner:
-		return roleRun{retro: true, prepare: preparePlanner}, true
+		return agentRole{run: roleRun{retro: true, prepare: preparePlanner}, route: routePlanner}, true
 	case workflow.Implementer:
-		return roleRun{identity: committerIdentity(), retro: true, prepare: prepareImplementer}, true
+		return agentRole{
+			run:   roleRun{identity: committerIdentity(), retro: true, prepare: prepareImplementer},
+			route: routeImplementer,
+		}, true
 	case workflow.Researcher:
-		return roleRun{identity: committerIdentity(), retro: true, prepare: prepareResearcher}, true
+		return agentRole{
+			run:   roleRun{identity: committerIdentity(), retro: true, prepare: prepareResearcher},
+			route: routeResearcher,
+		}, true
 	case workflow.Reviewer:
-		return roleRun{retro: true, prepare: prepareReviewer}, true
+		return agentRole{run: roleRun{retro: true, prepare: prepareReviewer}, route: routeReviewer}, true
 	case workflow.Curator:
-		return roleRun{prepare: prepareCurator}, true
+		return agentRole{run: roleRun{prepare: prepareCurator}, route: routeCurator}, true
 	}
 
-	return roleRun{}, false
+	return agentRole{}, false
+}
+
+// failed is the route of a run that failed: the issue moves to failed with the role's message.
+func failed(role workflow.Role, code int) route {
+	return route{dst: workflow.Failed, text: failureText(role, code), exit: 1}
+}
+
+// routePlanner records nothing for a posted round: the factory half already moved the issue to waiting.
+func routePlanner(_ config.Config, _ workflow.IssueRef, code int) route {
+	if code == 0 {
+		return route{text: "The Planner posted a round; see the issue."}
+	}
+
+	return failed(workflow.Planner, code)
+}
+
+// routeImplementer queues a finished implementation for review.
+func routeImplementer(_ config.Config, _ workflow.IssueRef, code int) route {
+	if code == 0 {
+		return route{
+			dst:  workflow.Review,
+			text: "The Implementer finished; see the linked pull request. Queued for review.",
+		}
+	}
+
+	return failed(workflow.Implementer, code)
+}
+
+// routeResearcher closes a resolved ticket, with no label replacing the claim.
+func routeResearcher(_ config.Config, _ workflow.IssueRef, code int) route {
+	if code == 0 {
+		return route{dst: workflow.Closed}
+	}
+
+	return failed(workflow.Researcher, code)
+}
+
+// routeReviewer routes the issue by what the review found.
+func routeReviewer(cfg config.Config, _ workflow.IssueRef, code int) route {
+	switch code {
+	case workflow.ReviewClean:
+		return route{dst: workflow.Done, text: "Review found no high or medium issues; see the pull request."}
+	case workflow.ReviewFindings:
+		return route{
+			dst:  workflow.Implement,
+			text: "Review found high or medium issues, posted on the pull request. Sent back to the Implementer.",
+		}
+	case workflow.ReviewExhausted:
+		return route{dst: workflow.Failed, exit: 1, text: fmt.Sprintf(
+			"Review still found high or medium issues after %d rounds. A person needs to look at the pull request.",
+			cfg.ReviewRoundLimit)}
+	}
+
+	return failed(workflow.Reviewer, code)
+}
+
+// routeCurator records nothing on GitHub: the dashboard carries no factory label, and a finished run's
+// output was already applied to its body.
+func routeCurator(_ config.Config, ref workflow.IssueRef, code int) route {
+	if code != 0 {
+		return route{exit: 1, err: fmt.Errorf("the Curator failed on %s (exit %d); see the dagu run log", ref, code)}
+	}
+
+	return route{text: "The Curator finished; see the retro dashboard."}
 }
 
 // committerIdentity is the git committer of every run that commits: the Implementer and the

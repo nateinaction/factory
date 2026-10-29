@@ -39,12 +39,12 @@ func Run(
 
 	spec := runSpec{repo: ref.Repo, number: ref.Number, agent: agent, retro: retro, limit: limit}
 
-	rr, ok := roleRunFor(role)
+	ar, ok := agentRoleFor(role)
 	if !ok {
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	code, err := runRole(ctx, d, spec, role, rr)
+	code, err := runRole(ctx, d, spec, role, ar.run)
 
 	return exitCode(err, code)
 }

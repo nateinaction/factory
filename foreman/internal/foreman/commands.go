@@ -990,55 +990,26 @@ func claimAndEnqueue(
 
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
 func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) (int, error) {
-	switch role {
-	case workflow.Planner:
-		return startPlanner(ctx, d, cfg, ref)
-	case workflow.Implementer:
-		return startImplementer(ctx, d, cfg, ref)
-	case workflow.Researcher:
-		return startResearcher(ctx, d, cfg, ref)
-	case workflow.Reviewer:
-		return startReviewer(ctx, d, cfg, ref)
-	case workflow.Curator:
-		return startCurator(ctx, d, cfg, ref)
+	ar, ok := agentRoleFor(role)
+	if !ok {
+		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	return 1, fmt.Errorf("unknown agent role %q", role)
-}
+	r := ar.route(cfg, ref, factoryExit(ctx, d, cfg, role, ref))
 
-// startCurator runs the Curator on a repository's dashboard. The dashboard carries no factory label,
-// so a finished run records nothing on GitHub: its output was already applied to the dashboard body.
-func startCurator(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Curator, ref)
-	if code != 0 {
-		return 1, fmt.Errorf("the Curator failed on %s (exit %d); see the dagu run log", ref, code)
+	switch {
+	case r.err != nil:
+		return r.exit, r.err
+	case r.dst == "":
+		return r.exit, writeLine(d.Out, r.text)
 	}
 
-	return 0, writeLine(d.Out, "The Curator finished; see the retro dashboard.")
-}
-
-// startPlanner posts the Planner's round, which the factory half records and moves to waiting. A
-// failed run moves planning to failed, with one comment saying why.
-func startPlanner(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Planner, ref)
-	if code == 0 {
-		return 0, writeLine(d.Out, "The Planner posted a round; see the issue.")
+	q, ok := workflow.QueueOf(role)
+	if !ok {
+		return 1, fmt.Errorf("agent role %q has no queue to finish", role)
 	}
 
-	return 1, finishAs(ctx, d, workflow.Planner, ref, workflow.Planning, workflow.Failed,
-		failureText(workflow.Planner, code))
-}
-
-// startImplementer implements the issue, then queues it for review or fails it.
-func startImplementer(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Implementer, ref)
-	if code == 0 {
-		return 0, finishAs(ctx, d, workflow.Implementer, ref, workflow.Implementing, workflow.Review,
-			"The Implementer finished; see the linked pull request. Queued for review.")
-	}
-
-	return 1, finishAs(ctx, d, workflow.Implementer, ref, workflow.Implementing, workflow.Failed,
-		failureText(workflow.Implementer, code))
+	return r.exit, finishRun(ctx, d, role, ref, q.Running, r.dst, r.text)
 }
 
 // failureText is what start says about a failed run. A factory half that already posted its errors in
@@ -1052,53 +1023,6 @@ func failureText(role workflow.Role, code int) string {
 
 	return fmt.Sprintf("The %s failed. Check the dagu run log, then comment to send it back to the %s.",
 		name, name)
-}
-
-// startResearcher closes a resolved ticket, with no label replacing the claim, or fails it.
-func startResearcher(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Researcher, ref)
-	if code == 0 {
-		return 0, finishRun(ctx, d, workflow.Researcher, ref,
-			workflow.Researching, workflow.Closed, "")
-	}
-
-	return 1, finishAs(ctx, d, workflow.Researcher, ref, workflow.Researching, workflow.Failed,
-		failureText(workflow.Researcher, code))
-}
-
-// startReviewer reviews the issue's pull request and routes the issue by what the review found.
-func startReviewer(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Reviewer, ref)
-	dst := workflow.Failed
-	text := failureText(workflow.Reviewer, code)
-
-	switch code {
-	case workflow.ReviewClean:
-		dst, text = workflow.Done, "Review found no high or medium issues; see the pull request."
-	case workflow.ReviewFindings:
-		dst = workflow.Implement
-		text = "Review found high or medium issues, posted on the pull request. Sent back to the Implementer."
-	case workflow.ReviewExhausted:
-		dst, text = workflow.Failed, fmt.Sprintf("Review still found high or medium issues after %d rounds. "+
-			"A person needs to look at the pull request.", cfg.ReviewRoundLimit)
-	}
-
-	exit := 1
-	if code == workflow.ReviewClean || code == workflow.ReviewFindings {
-		exit = 0
-	}
-
-	return exit, finishAs(ctx, d, workflow.Reviewer, ref, workflow.Reviewing, dst, text)
-}
-
-// finishAs records the outcome with the owning agent role's own token (fresh: the run may have outlived
-// the first one). If that App can't mint, because its credential is missing or it was removed, the run
-// fails closed: an App that is still installed moves the issue to failed and says why. No other App ever
-// makes the owning agent role's transition.
-func finishAs(
-	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
-) error {
-	return finishRun(ctx, d, role, ref, src, dst, text)
 }
 
 // finishRun records a run's outcome. A closed destination closes the ticket instead of labelling it; a

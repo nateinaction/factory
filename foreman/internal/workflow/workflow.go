@@ -168,15 +168,22 @@ func Queues() []Queue {
 	}
 }
 
-// Queued returns the state that queues an issue for role.
-func Queued(role Role) (State, bool) {
+// QueueOf returns the queue an agent role takes; the Curator takes none.
+func QueueOf(role Role) (Queue, bool) {
 	for _, q := range Queues() {
 		if q.Role == role {
-			return q.State, true
+			return q, true
 		}
 	}
 
-	return "", false
+	return Queue{}, false
+}
+
+// Queued returns the state that queues an issue for role.
+func Queued(role Role) (State, bool) {
+	q, ok := QueueOf(role)
+
+	return q.State, ok
 }
 
 // RoleOf names the agent role that owns a handoff state.
