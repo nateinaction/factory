@@ -49,6 +49,31 @@ var _ = Describe("Implementer", func() {
 	})
 })
 
+var _ = Describe("Researcher", func() {
+	issue := workflow.Issue{Number: 4, Title: "Can we use emulate?", Body: "Investigate it."}
+
+	It("asks for the research skill and the output file's shape", func() {
+		got := Researcher([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", issue, nil, "/w/out.json")
+		Expect(got).To(Equal(researcherRolePrompt + "\n\n# Repository docs\n\n## AGENTS.md\n\nRULES\n" +
+			IssueMaterialHeading + "Repository: o/r\nIssue: #4\nTitle: Can we use emulate?\n\n" +
+			"Investigate it.\n\nWrite the JSON to /w/out.json."))
+	})
+
+	It("carries every comment since the marker, oldest first", func() {
+		got := Researcher(nil, "o/r", issue, []workflow.Item{
+			{ID: 3, Body: "first", Author: "o"},
+			{ID: 4, Body: "second", Author: "o"},
+		}, "/w/out.json")
+		Expect(got).To(ContainSubstring(ThreadHeading + "\n\n**o:** first\n\n**o:** second"))
+	})
+
+	It("cuts the ticket to the body limit, by character", func() {
+		long := strings.Repeat("é", workflow.BodyLimitChars+50)
+		got := Researcher(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, nil, "/w/out.json")
+		Expect(strings.Count(got, "é")).To(Equal(workflow.BodyLimitChars))
+	})
+})
+
 var _ = Describe("Retro and Reviewer", func() {
 	It("names the issue, the output file and the JSON shape", func() {
 		r := Retro(RetroRequest{Role: workflow.Implementer, Repo: "o/r", Issue: 9, OutPath: "/w/retro.json"})

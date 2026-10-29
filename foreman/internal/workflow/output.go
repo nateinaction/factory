@@ -18,6 +18,8 @@ const OutputFileVersion = 1
 const (
 	// ImplementerOutputFile holds the Implementer's commit, pull request and replies.
 	ImplementerOutputFile = "implementer-output.json"
+	// ResearcherOutputFile holds the Researcher's branch, resolution and decision line.
+	ResearcherOutputFile = "researcher-output.json"
 	// ReviewerOutputFile holds the Reviewer's verdict.
 	ReviewerOutputFile = "reviewer-output.json"
 )

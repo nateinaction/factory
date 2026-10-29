@@ -541,6 +541,134 @@ var _ = Describe("Run", func() {
 		})
 	})
 
+	Describe("the Researcher", func() {
+		BeforeEach(func() {
+			h.installed[workflow.Researcher] = []string{"o/r"}
+			h.writeToken(workflow.Researcher, "repo-token\n")
+			h.researchTicket()
+		})
+
+		It("commits the findings, pushes research/<name>, posts the resolution and appends the decision", func() {
+			h.researcherWrites(researcherRun)
+			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+
+			Expect(run(workflow.Researcher)).To(BeZero())
+
+			work := filepath.Join(h.deps.Settings.WorkRoot, "research-5")
+			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
+			Expect(h.runner.find("checkout -B research/emulate")).To(HaveLen(1))
+			Expect(h.runner.find("fetch origin research/emulate")).To(BeEmpty())
+
+			oc := h.runner.find("opencode run --agent researcher --format json Use the `research` skill")
+			Expect(oc).To(HaveLen(1))
+			Expect(oc[0].Dir).To(Equal(work))
+			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-researcher"))
+			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
+			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.researchOut()))
+			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
+
+			Expect(h.runner.find("add -A")).To(HaveLen(1))
+			Expect(joined(h.runner.find("commit -m")[0])).To(ContainSubstring("core.hooksPath=/dev/null"))
+
+			push := h.runner.find("noreply.github.com push")
+			Expect(push).To(HaveLen(1))
+			Expect(joined(push[0])).To(HaveSuffix("push --force origin research/emulate"))
+			Expect(push[0].Env).To(HaveKeyWithValue("GIT_CONFIG_VALUE_0", Not(BeEmpty())))
+
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ContainElement(And(
+				ContainSubstring(workflow.ResearchMarker("research/emulate")),
+				ContainSubstring("Findings are in the file."),
+				ContainSubstring("https://github.com/o/r/tree/research/emulate"),
+			)))
+			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty(), "opened a pull request")
+			Expect(h.gh.Bodies("PATCH", "/repos/o/r/issues/6")).To(ConsistOf(
+				ContainSubstring(`- [Add x](https://github.com/o/r/issues/5): Use emulate.`)),
+				"the map did not gain the decision line")
+			Expect(h.bodyOf(6)).To(ContainSubstring(
+				"## Decisions so far\n\n- [Add x](https://github.com/o/r/issues/5): Use emulate.\n\n## Not yet"))
+
+			Expect(h.retroComments()).To(ConsistOf(
+				ContainSubstring("<!-- factory:retro issue=5 role=researcher key=sha-head -->")))
+			h.expectLeakFree("repo-token", "read-only-token", "or-key")
+		})
+
+		It("runs the retro after the push, keyed by the branch's commit", func() {
+			h.researcherWrites(researcherRun)
+			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+			Expect(run(workflow.Researcher)).To(BeZero())
+
+			push, retro := -1, -1
+
+			for i, c := range h.runner.cmds {
+				switch {
+				case strings.Contains(joined(c), "push --force origin research/emulate"):
+					push = i
+				case strings.Contains(joined(c), "--session") && strings.Contains(joined(c), "researcher"):
+					retro = i
+				}
+			}
+
+			Expect(push).To(BeNumerically(">=", 0))
+			Expect(retro).To(BeNumerically(">", push), "the retro ran before the push")
+		})
+
+		It("reuses the branch and the resolution comment on a re-run", func() {
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if strings.Contains(joined(c), "ls-remote --heads origin research/emulate") {
+					return "sha-branch\trefs/heads/research/emulate\n", nil
+				}
+
+				return base(c)
+			})
+			h.researcherWrites(researcherRun)
+
+			Expect(run(workflow.Researcher)).Error().NotTo(HaveOccurred())
+			Expect(run(workflow.Researcher)).Error().NotTo(HaveOccurred())
+
+			Expect(h.runner.find("fetch origin research/emulate")).To(HaveLen(2))
+			Expect(h.runner.find("checkout -B research/emulate")).To(HaveLen(2))
+			Expect(h.runner.find("reset --soft FETCH_HEAD")).To(HaveLen(2))
+			Expect(h.runner.find("noreply.github.com push")).To(HaveLen(2))
+			Expect(h.runner.find("--force")).To(BeEmpty(), "forced over an existing findings branch")
+
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(HaveLen(1), "posted twice")
+			Expect(h.gh.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
+			Expect(h.gh.Bodies("PATCH", "/repos/o/r/issues/6")).To(HaveLen(1), "appended the decision twice")
+		})
+
+		It("rejects a file with no branch, applying nothing", func() {
+			h.researcherWrites(`{"version":1,"resolution":"r","decision_line":"d"}`)
+
+			code, err := run(workflow.Researcher)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+				ContainSubstring("output file was rejected")))
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+		})
+
+		It("fails without a parent map, pushing nothing", func() {
+			h.setBody(5, "## Question\n\nWhich?")
+			h.researcherWrites(researcherRun)
+
+			code, err := run(workflow.Researcher)
+			Expect(err).To(MatchError(ContainSubstring("parent")))
+			Expect(code).NotTo(BeZero())
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+		})
+
+		It("gives a run that failed at the model its retro", func() {
+			h.answerOpencode(errStream("APIError", 500))
+			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+
+			code, err := run(workflow.Researcher)
+			Expect(err).To(HaveOccurred())
+			Expect(code).NotTo(BeZero())
+			Expect(h.retroComments()).To(ConsistOf(
+				ContainSubstring("<!-- factory:retro issue=5 role=researcher key=sha-head -->")))
+		})
+	})
+
 	DescribeTable("refuses an agent role without behaviour, doing nothing",
 		func(role workflow.Role) {
 			code, err := run(role)
@@ -548,7 +676,7 @@ var _ = Describe("Run", func() {
 			Expect(code).NotTo(BeZero())
 			h.expectNoWork()
 		},
-		Entry(nil, workflow.Planner), Entry(nil, workflow.Researcher), Entry(nil, workflow.Curator),
+		Entry(nil, workflow.Planner), Entry(nil, workflow.Curator),
 	)
 
 	It("fails without a token file, never calling GitHub", func() {
