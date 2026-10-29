@@ -32,3 +32,11 @@ var _ = Describe("IssueRef", func() {
 		Expect(workflow.IssueRef{Repo: repo, Number: 61}.String()).To(Equal("nateinaction/factory#61"))
 	})
 })
+
+// mustRepo parses a repository name the test knows is valid.
+func mustRepo(s string) workflow.Repo {
+	repo, err := workflow.ParseRepo(s)
+	Expect(err).NotTo(HaveOccurred())
+
+	return repo
+}

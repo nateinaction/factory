@@ -596,7 +596,7 @@ func renderCuratorPublic(b *strings.Builder, d CuratorIssueDraft) error {
 // CuratorBrief is the material the Curator reads: the retro log with evidence, the dashboard state
 // with what writers have done, and the proposals and links already shown. It is deterministic.
 func CuratorBrief(
-	repo string, number int, private bool, reports []DashboardReport, view DashboardView,
+	ref IssueRef, private bool, reports []DashboardReport, view DashboardView,
 ) string {
 	visibility := "public"
 	if private {
@@ -605,7 +605,7 @@ func CuratorBrief(
 
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Repository: %s (%s)\nDashboard: #%d\n", repo, visibility, number)
+	fmt.Fprintf(&b, "Repository: %s (%s)\nDashboard: #%d\n", ref.Repo, visibility, ref.Number)
 	b.WriteString("\n# Retro log\n")
 
 	for _, g := range curatorBriefGroups(reports) {

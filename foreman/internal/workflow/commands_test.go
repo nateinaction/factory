@@ -229,24 +229,24 @@ var _ = Describe("promotion", func() {
 	}}
 
 	It("files a document group in the repository it is about", func() {
-		repo, err := workflow.PromotionRepo(docs, "o/r", false, "nateinaction/factory")
+		repo, err := workflow.PromotionRepo(docs, mustRepo("o/r"), false, mustRepo("nateinaction/factory"))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(repo).To(Equal("o/r"))
+		Expect(repo.String()).To(Equal("o/r"))
 	})
 
 	It("files a public skill group in the factory repo", func() {
-		repo, err := workflow.PromotionRepo(skill, "o/r", false, "nateinaction/factory")
+		repo, err := workflow.PromotionRepo(skill, mustRepo("o/r"), false, mustRepo("nateinaction/factory"))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(repo).To(Equal("nateinaction/factory"))
+		Expect(repo.String()).To(Equal("nateinaction/factory"))
 
-		_, err = workflow.PromotionRepo(skill, "o/r", false, "")
+		_, err = workflow.PromotionRepo(skill, mustRepo("o/r"), false, workflow.Repo{})
 		Expect(err).To(HaveOccurred(), "promoted to a factory repo that is not configured")
 	})
 
 	It("keeps a private repository's group there", func() {
-		repo, err := workflow.PromotionRepo(skill, "o/r", true, "nateinaction/factory")
+		repo, err := workflow.PromotionRepo(skill, mustRepo("o/r"), true, mustRepo("nateinaction/factory"))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(repo).To(Equal("o/r"))
+		Expect(repo.String()).To(Equal("o/r"))
 	})
 
 	It("keys the issue to its group and draws the lesson apart from the evidence", func() {

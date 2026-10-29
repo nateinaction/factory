@@ -80,11 +80,7 @@ func curateRun(
 		return opencode.Usage{}, err
 	}
 
-	res, err := s.agent(ctx, opencode.Run{
-		Role:    workflow.Curator,
-		Prompt:  prompt.Curator(docs, spec.repo, spec.number, private, reports, view, paths.out),
-		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
-	})
+	res, err := s.curatorAgent(ctx, spec, docs, private, reports, view, paths.out)
 	if err != nil {
 		return res.Usage, err
 	}
@@ -243,11 +239,61 @@ func (s session) fileCuratorIssues(
 	return filed, errors.Join(errs...)
 }
 
+// curatorAgent runs the model on the Curator's prompt, built for the run's repository and dashboard
+// number as a checked IssueRef.
+func (s session) curatorAgent(
+	ctx context.Context, spec runSpec, docs []prompt.Doc, private bool,
+	reports []workflow.DashboardReport, view workflow.DashboardView, out string,
+) (opencode.Result, error) {
+	ref, err := issueRef(spec.repo, spec.number)
+	if err != nil {
+		return opencode.Result{}, err
+	}
+
+	return s.agent(ctx, opencode.Run{
+		Role:    workflow.Curator,
+		Prompt:  prompt.Curator(docs, ref, private, reports, view, out),
+		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
+	})
+}
+
+// issueRef checks a configured repository name at the edge and pairs it with an issue number.
+func issueRef(repo string, number int) (workflow.IssueRef, error) {
+	parsed, err := workflow.ParseRepo(repo)
+	if err != nil {
+		return workflow.IssueRef{}, err
+	}
+
+	return workflow.IssueRef{Repo: parsed, Number: number}, nil
+}
+
+// promotionRepo checks the configured names at the edge and asks workflow where a group is filed. An
+// unset factory repo stays the zero Repo, which PromotionRepo refuses for a group that would leave a
+// public repository.
+func promotionRepo(g workflow.GroupID, repo string, private bool, factoryRepo string) (string, error) {
+	here, err := workflow.ParseRepo(repo)
+	if err != nil {
+		return "", err
+	}
+
+	var factory workflow.Repo
+
+	if factoryRepo != "" {
+		if factory, err = workflow.ParseRepo(factoryRepo); err != nil {
+			return "", err
+		}
+	}
+
+	dest, err := workflow.PromotionRepo(g, here, private, factory)
+
+	return dest.String(), err
+}
+
 // fileCuratorIssue files one draft in the repository its group belongs to.
 func (s session) fileCuratorIssue(
 	ctx context.Context, j job, repo string, draft workflow.CuratorIssueDraft, private bool,
 ) (workflow.Issue, error) {
-	dest, err := workflow.PromotionRepo(draft.Group, repo, private, s.d.Settings.FactoryRepo)
+	dest, err := promotionRepo(draft.Group, repo, private, s.d.Settings.FactoryRepo)
 	if err != nil {
 		return workflow.Issue{}, fmt.Errorf("file %s: %w", draft.Group, err)
 	}

@@ -241,7 +241,7 @@ func (r *commandRun) promote(
 		return state, false
 	}
 
-	dest, err := workflow.PromotionRepo(group.ID, r.repo, private, r.cfg.FactoryRepo)
+	dest, err := promotionRepo(group.ID, r.repo, private, r.cfg.FactoryRepo)
 	if err != nil {
 		r.d.log().Warn("cannot file a promoted group", "repo", r.repo, "group", group.ID, "error", err)
 

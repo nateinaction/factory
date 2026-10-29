@@ -293,11 +293,11 @@ func Researcher(
 // Curator is the Curator's prompt: the retro log with evidence and the dashboard state under the
 // repository docs, and the output file's path.
 func Curator(
-	docs []Doc, repo string, number int, private bool, reports []workflow.DashboardReport,
+	docs []Doc, ref workflow.IssueRef, private bool, reports []workflow.DashboardReport,
 	view workflow.DashboardView, outPath string,
 ) string {
 	return Build(curatorRolePrompt, docs, fmt.Sprintf("%s\n\nWrite the JSON to %s.",
-		workflow.CuratorBrief(repo, number, private, reports, view), outPath))
+		workflow.CuratorBrief(ref, private, reports, view), outPath))
 }
 
 // retroJSONShape tells the model the exact file foreman validates.
