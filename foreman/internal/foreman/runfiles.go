@@ -25,7 +25,8 @@ const nixDaemonSocket = "/nix/var/nix/daemon-socket"
 // sandboxFiles are one run's private sandbox directories. Everything here is deleted after the run and its
 // retro, and nothing here is shared with another run.
 type sandboxFiles struct {
-	// dir holds HOME, XDG directories, scratch, state and the settings file.
+	// dir holds the run's HOME, XDG directories, TMPDIR, state and the settings file. The run's
+	// scratch is not here: it sits in the work root beside the output file (see runPaths).
 	dir string
 	// home is the run's HOME and the parent of its XDG directories.
 	home string

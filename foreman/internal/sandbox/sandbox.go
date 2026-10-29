@@ -146,8 +146,11 @@ func Settings(spec Spec, proxyPort int) ([]byte, error) {
 
 	// The host is hidden by default: srt's read model is deny-then-allow, and denying `/` denies
 	// every directory in it. allowRead then binds back the OS paths in hostRead and the paths of
-	// this run alone. The named hidden paths stay denied even though they sit under an allowed
-	// region, which is the defence srt provides for a more specific deny.
+	// this run alone. The rule is decided by the more specific path, whichever way it points. A deny
+	// more specific than an allow wins, which is why the named hidden paths stay denied even though
+	// they sit under an allowed region. An allow more specific than a deny wins too, which is why
+	// this run's directory is readable although it sits under the work root hidden here: only this
+	// run's paths are named in allowRead, so every other run's directory stays unreachable.
 	denyRead := append([]string{"/"}, spec.Hidden...)
 	allowRead := append(append(slices.Clone(hostRead), spec.ReadOnly...), spec.ReadWrite...)
 
@@ -210,7 +213,8 @@ func Argv(srtBinary, settingsPath string, command []string) []string {
 	return append(argv, command...)
 }
 
-// supportedOS is the set srt serves: Seatbelt on macOS and bubblewrap on Linux.
+// supportedOS is the set srt serves: Seatbelt on macOS and bubblewrap on Linux. Ansible enrolls Linux
+// worker hosts only; macOS is the development host the specs run on.
 var supportedOS = []string{"linux", "darwin"} //nolint:gochecknoglobals // a read-only set
 
 // Supported admits a worker host the adapter can serve and refuses every other OS. It runs before
@@ -220,7 +224,7 @@ func Supported(goos string) error {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox backend cannot serve %s: only Linux and macOS worker hosts can enroll", goos)
+	return fmt.Errorf("sandbox backend cannot serve %s: it serves Linux and macOS worker hosts", goos)
 }
 
 // Network is the run's egress policy. An empty allowlist is open egress, the default; a non-empty

@@ -37,11 +37,11 @@ func applyPlannerRound(
 	return id, final, err
 }
 
-// approvePending acts on a writer's reply to the latest Planner round. A pending final round's
-// proposal is applied when the writer approves it; with no final round pending, an explicit request
-// to build opens the gate. It returns false when the latest round is not a waiting Planner round or
-// the reply does not approve, so the ordinary wake rule runs instead.
-func approvePending(
+// applyGateReply acts on a writer's reply to the latest Planner round. A pending final round's
+// proposal is applied when the writer's reply opens the gate; with no final round pending, an
+// explicit request to build opens the gate. It returns false when the latest round is not a waiting
+// Planner round or the reply does not open the gate, so the ordinary wake rule runs instead.
+func applyGateReply(
 	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	thread []workflow.Item, latest workflow.Marker,
 ) (bool, error) {
@@ -68,19 +68,19 @@ func approvePending(
 		return openGate(ctx, d, repo, issue)
 	}
 
-	if !workflow.Approves(reply.Body) {
+	if !workflow.OpensGate(reply.Body) {
 		return false, nil
 	}
 
 	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
-		d.log().Warn("cannot mint the Planner's token; leaving the approved proposal unapplied",
+		d.log().Warn("cannot mint the Planner's token; leaving the gate's proposal unapplied",
 			"repo", repo, "issue", issue.Number, "error", err)
 
 		return false, nil
 	}
 
-	d.log().Info("applying an approved proposal", "repo", repo, "issue", issue.Number,
+	d.log().Info("applying a proposal a writer opened the gate on", "repo", repo, "issue", issue.Number,
 		"shape", proposal.Shape)
 
 	return true, applyProposal(ctx, d, d.client(token), repo, issue.Number, latest.ID, proposal)
@@ -143,7 +143,7 @@ func lastWriterComment(
 	return last, ok
 }
 
-// applyProposal makes an approved proposal true. Every step is idempotent: applying the same
+// applyProposal makes a proposal the gate opened on true. Every step is idempotent: applying the same
 // proposal again reuses the issues it created and adds only what is missing.
 func applyProposal(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, from int, specComment int64,
@@ -176,7 +176,8 @@ func applySingle(ctx context.Context, c github.Client, repo workflow.Repo, from 
 	}
 
 	text := workflow.AppliedMarker(from) +
-		"\n\nThe proposal is approved. The spec is in the final-round comment above; queued for the Implementer."
+		"\n\nThe gate is open: a writer confirmed the proposal. The spec is in the final-round comment " +
+		"above; queued for the Implementer."
 
 	t := workflow.Transition{
 		Role: workflow.Planner, RunID: runID, From: workflow.Waiting, To: workflow.Implement,
@@ -215,7 +216,7 @@ func applySlices(
 	return finishSlices(ctx, c, repo, from, runID, refs)
 }
 
-// applyMap rewrites an approved map's issue in the wayfinder layout, routes its tickets under it and
+// applyMap rewrites a map the gate opened on in the wayfinder layout, routes its tickets under it and
 // moves the issue to factory:done. A repeat reuses every issue, link and comment it made.
 func applyMap(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string, p workflow.PlannerProposal,
@@ -277,7 +278,7 @@ func finishMap(ctx context.Context, c github.Client, repo workflow.Repo, from in
 	}
 
 	text := workflow.AppliedMarker(from) +
-		"\n\nThe map is approved. Its tickets are sub-issues of this map."
+		"\n\nThe gate is open: the map is applied. Its tickets are sub-issues of this map."
 
 	_, err = c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: from}, t, text)
 
@@ -290,7 +291,7 @@ func isMapBody(issue workflow.Issue) bool {
 	return workflow.HasLabel(issue, workflow.LabelMap) || strings.Contains(issue.Body, "## Original request")
 }
 
-// applyResolution records an approved decision ticket: its tickets go under the ticket's map, its
+// applyResolution records a decision ticket the gate opened on: its tickets go under the ticket's map, its
 // decision line joins the map's Decisions so far, and the ticket is closed. Every step is keyed, so
 // applying the same resolution again changes nothing.
 func applyResolution(
@@ -385,7 +386,7 @@ func implementLabels(workflow.PlannedIssue) ([]string, error) {
 	return []string{workflow.LabelImplement}, nil
 }
 
-// planTicketTree creates an approved proposal's tickets, each carrying its type's labels, and links
+// planTicketTree creates a confirmed proposal's tickets, each carrying its type's labels, and links
 // every one under parent: a map and a resolution plan their tickets the same way. from is the issue
 // the proposal was planned from; body and labels are the shape's rules for a ticket. Every step is
 // keyed, so applying the same proposal again changes nothing.
@@ -496,7 +497,7 @@ func linkTickets(
 	return nil
 }
 
-// sliceBody is a slice's body: its idempotency marker, a link to the approved spec comment, then the
+// sliceBody is a slice's body: its idempotency marker, a link to the proposal's spec comment, then the
 // slice the Planner wrote.
 func sliceBody(repo workflow.Repo, from int, specComment int64, planned workflow.PlannedIssue) string {
 	body := workflow.PlannedMarker(from, planned.Key)

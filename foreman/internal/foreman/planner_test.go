@@ -157,7 +157,7 @@ var _ = Describe("the Planner", func() {
 	})
 })
 
-var _ = Describe("applying an approved proposal", func() {
+var _ = Describe("applying a proposal a writer opened the gate on", func() {
 	var h *harness
 
 	BeforeEach(func() {
@@ -218,7 +218,7 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelWaiting))
 		Expect(h.markerComments(1)).To(ContainElement(ContainSubstring(
 			"role=planner run=run-1 from=factory:waiting to=factory:implement")))
-		Expect(h.runner.find("opencode")).To(BeEmpty(), "approval must not run the model")
+		Expect(h.runner.find("opencode")).To(BeEmpty(), "the gate must not run the model")
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
 
@@ -482,7 +482,7 @@ var _ = Describe("applying an approved proposal", func() {
 			"an outsider's applied marker blocked the proposal")
 	})
 
-	It("rewrites an approved map, routes its tickets and creates nothing twice", func() {
+	It("rewrites a map the gate opened on, routes its tickets and creates nothing twice", func() {
 		h.queue(map[string][]map[string]any{
 			workflow.LabelWaiting: {{"number": 1, "body": "Make exports work."}},
 		})
@@ -535,7 +535,7 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelWaiting))
 		Expect(h.markerComments(1)).To(ContainElement(ContainSubstring(
 			"role=planner run=run-1 from=factory:waiting to=factory:done")))
-		Expect(h.runner.find("opencode")).To(BeEmpty(), "approval must not run the model")
+		Expect(h.runner.find("opencode")).To(BeEmpty(), "the gate must not run the model")
 
 		all, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
@@ -591,7 +591,7 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(h.markerComments(1)).To(HaveLen(1), "the map moved to done more than once")
 	})
 
-	It("records an approved resolution, adds its tickets and closes the ticket", func() {
+	It("records a resolution the gate opened on, adds its tickets and closes the ticket", func() {
 		h.researchTicket()
 
 		resolution := workflow.PlannerProposal{

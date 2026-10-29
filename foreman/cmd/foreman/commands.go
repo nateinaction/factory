@@ -89,6 +89,10 @@ const sudoRunArgs = roleArgCount + 1
 // exactly three positional arguments, with no flag anywhere. Nothing else is a run, so no flag can
 // point the factory half at another sandbox binary, key file, skills directory, config or foreman
 // itself, and no other verb or an extra positional can run as the factory user.
+//
+// Refusing every flag is enough only because the settings a flag names also come from FACTORY_*
+// environment variables, and sudo's env_reset drops them: the sudoers file keeps DAG_RUN_ID and
+// nothing else, so a caller cannot pass an override in the environment instead.
 func sudoRun(args []string) bool {
 	if len(args) != sudoRunArgs || args[0] != "run" {
 		return false
@@ -142,11 +146,11 @@ func addSettingsFlags(fs *pflag.FlagSet) {
 	fs.String("dag-prefix", "", "prefix of an agent role's dagu DAG")
 }
 
-// pollCommand is `foreman poll`: claim one issue and queue its run.
+// pollCommand is `foreman poll`: claim up to each agent role's free run capacity and queue the runs.
 func pollCommand(d *foreman.Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "poll",
-		Short: "claim one issue and queue its run",
+		Short: "claim what each agent role's free capacity allows and queue the runs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(d.Settings.ConfigFile)

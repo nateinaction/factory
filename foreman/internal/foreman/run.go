@@ -44,12 +44,12 @@ func Run(
 	}
 
 	// The agent role's entry is resolved here, once: every step of the run reads it from the run.
-	ar, ok := agentRoleFor(role)
+	entry, ok := dispatchEntryFor(role)
 	if !ok {
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	r := run{d: d, role: role, ar: ar, spec: runSpec{ref: ref, agent: agent, retro: retro, limit: limit}}
+	r := run{d: d, role: role, entry: entry, spec: runSpec{ref: ref, agent: agent, retro: retro, limit: limit}}
 
 	result, err := r.pipeline(ctx)
 
@@ -946,16 +946,16 @@ func postVerdict(
 	}
 
 	if out.Verdict == workflow.Approve {
-		// An approval asks a human writer to review and merge. A bot-authored issue, such as a
+		// A clean verdict asks a human writer to review and merge. A bot-authored issue, such as a
 		// promoted retro group, names no human itself, so the latest human writer who commented is
 		// asked instead.
-		reviewer, err := approvalReviewer(ctx, d, c, repo, issue, comments)
+		reviewer, err := mergeReviewer(ctx, d, c, repo, issue, comments)
 		if err != nil {
 			return 1, err
 		}
 
 		if reviewer == "" {
-			d.log().Warn("no human writer to ask for an approval review", "repo", repo, "issue", issue.Number,
+			d.log().Warn("no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
 				"pr", pr, "author", issue.Author)
 
 			return workflow.ReviewClean, nil
@@ -971,9 +971,10 @@ func postVerdict(
 	return workflow.ReviewFindings, nil
 }
 
-// approvalReviewer is the human writer an approval asks to merge: the issue's author when a writer
-// wrote it, otherwise the latest human writer who commented. Empty means no human writer was found.
-func approvalReviewer(
+// mergeReviewer is the human writer a clean verdict asks to review and merge: the issue's author
+// when a writer wrote it, otherwise the latest human writer who commented. Empty means no human
+// writer was found.
+func mergeReviewer(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item,
 ) (string, error) {
@@ -1002,7 +1003,7 @@ func approvalReviewer(
 		}
 
 		if workflow.WriterPermission(permission) {
-			d.log().Info("asking the latest human writer to review an approval", "repo", repo,
+			d.log().Info("asking the latest human writer to review and merge", "repo", repo,
 				"issue", issue.Number, "reviewer", login)
 
 			return login, nil

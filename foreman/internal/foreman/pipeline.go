@@ -24,9 +24,10 @@ type run struct {
 	d Deps
 	// role is the agent role, as the command edge named it.
 	role workflow.Role
-	// ar is the agent role's entry, resolved once when the run started. No step looks it up again.
-	ar   agentRole
-	spec runSpec
+	// entry is the agent role's dispatch entry, resolved once when the run started. No step looks it
+	// up again.
+	entry dispatchEntry
+	spec  runSpec
 }
 
 // runEnv is what the run's proxies hand the rest of the run: the secrets read at the edge, the
@@ -90,10 +91,10 @@ type roleRun struct {
 	prepare func(ctx context.Context, rc runCtx) (prepared, error)
 }
 
-// agentRole is everything dispatch knows about an agent role, so a new role is one entry in
+// dispatchEntry is everything dispatch knows about an agent role, so a new role is one entry in
 // the agentRoles table: how `run` runs it, how `start` routes its exit code, and what its run
 // paths are called.
-type agentRole struct {
+type dispatchEntry struct {
 	// run is the pipeline `foreman run` executes.
 	run roleRun
 	// route is the outcome both halves record for a run's exit code: the factory half before the
@@ -118,16 +119,16 @@ type route struct {
 	err error
 }
 
-// agentRoleFor is the one lookup by agent role that both `run` and `start` dispatch through.
-func agentRoleFor(role workflow.Role) (agentRole, bool) {
-	ar, ok := agentRoles()[role]
+// dispatchEntryFor is the one lookup by agent role that both `run` and `start` dispatch through.
+func dispatchEntryFor(role workflow.Role) (dispatchEntry, bool) {
+	entry, ok := agentRoles()[role]
 
-	return ar, ok
+	return entry, ok
 }
 
 // agentRoles is the table of agent roles: a new role is one entry here.
-func agentRoles() map[workflow.Role]agentRole {
-	return map[workflow.Role]agentRole{
+func agentRoles() map[workflow.Role]dispatchEntry {
+	return map[workflow.Role]dispatchEntry{
 		workflow.Planner: {
 			run:   roleRun{retro: true, prepare: preparePlanner},
 			route: routePlanner,
@@ -294,7 +295,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 // sandboxed model, the agent role's post-agent step, the outcome the run settles before its retro,
 // and the retro itself.
 func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResult, error) {
-	paths, err := newRunPaths(r.d.Settings.WorkRoot, r.ar.names, r.spec.ref.Number)
+	paths, err := newRunPaths(r.d.Settings.WorkRoot, r.entry.names, r.spec.ref.Number)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -307,9 +308,9 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 		return runResult{}, err
 	}
 
-	rc := runCtx{run: r, j: j, s: newSession(r.d, j, paths.workdir, r.ar.run.identity), paths: paths}
+	rc := runCtx{run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity), paths: paths}
 
-	prep, err := r.ar.run.prepare(ctx, rc)
+	prep, err := r.entry.run.prepare(ctx, rc)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -348,7 +349,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 // retroFile is where the run's retro writes its findings, outside the clone and the run's own
 // directories. An agent role that keeps no retro has no file, so the model may not write one.
 func (r run) retroFile() string {
-	if !r.ar.run.retro {
+	if !r.entry.run.retro {
 		return ""
 	}
 
@@ -360,7 +361,7 @@ func (r run) retroFile() string {
 // transition it cannot record is logged and `start` applies the same one from the run's exit code
 // afterwards.
 func (r run) settle(ctx context.Context, code int, runErr error) {
-	rt := r.ar.route(r.spec.limit, r.spec.ref, startCode(runErr, code))
+	rt := r.entry.route(r.spec.limit, r.spec.ref, startCode(runErr, code))
 	if rt.dst == "" {
 		return
 	}
