@@ -1,18 +1,25 @@
 {#- Each agent role is a named opencode agent. Its model is an alias whose limit.input is the context
-    cap; compaction is set per run by foreman, which knows the agent role. -#}
+    cap; its step cap, skill allowlist and permissions come from group_vars, and compaction is set per
+    run by foreman, which knows the agent role. Permission is deny by default and never ask. -#}
 {%- set aliases = {} -%}
 {%- set agents = {} -%}
 {%- for role, m in factory_models.items() -%}
 {%- set cap = m.context_cap | default(factory_context_cap) | int -%}
 {%- set alias = role ~ '-' ~ (cap // 1000) ~ 'k' -%}
 {%- set _ = aliases.update({alias: {'id': m.model, 'limit': {'context': cap + factory_max_output | int, 'input': cap, 'output': factory_max_output | int}}}) -%}
-{%- set _ = agents.update({role: {'description': 'The factory ' ~ role ~ ' agent role', 'mode': 'primary', 'model': 'openrouter/' ~ alias}}) -%}
+{%- set skills = {'*': 'deny'} -%}
+{%- for name in factory_agent_skills[role] -%}
+{%- set _ = skills.update({name: 'allow'}) -%}
+{%- endfor -%}
+{%- set permission = factory_agent_permissions_common | combine(factory_agent_permissions[role]) -%}
+{%- set _ = permission.update({'skill': skills}) -%}
+{%- set _ = agents.update({role: {'description': 'The factory ' ~ role ~ ' agent role', 'mode': 'primary', 'model': 'openrouter/' ~ alias, 'steps': factory_agent_limits[role].steps | int, 'permission': permission}}) -%}
 {%- endfor -%}
 {{ {
   '$schema': 'https://opencode.ai/config.json',
   'provider': {'openrouter': {'models': aliases}},
   'agent': agents,
-  'permission': 'allow',
+  'permission': {'*': 'deny'},
   'share': 'disabled',
   'autoupdate': false
 } | to_nice_json }}

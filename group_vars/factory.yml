@@ -56,12 +56,113 @@ opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
   amd64: "sha256:13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b"
-# https://github.com/mattpocock/skills, pinned. implement calls tdd and code-review; the
-# agent runs retro after each implementation, which calls writing-for-agents.
-mattpocock_skills_ref: 49dd158d1076134a641b33efb035946536778336
-mattpocock_skills:
-  - { name: implement, path: skills/engineering/implement }
-  - { name: tdd, path: skills/engineering/tdd }
-  - { name: code-review, path: skills/engineering/code-review }
-  - { name: retro, path: skills/engineering/retro }
-  - { name: writing-for-agents, path: skills/productivity/writing-for-agents }
+# The factory's own skills, forked from https://github.com/mattpocock/skills at
+# 49dd158d1076134a641b33efb035946536778336 into roles/agent/files/skills/. Each fork's SKILL.md
+# carries a one-line provenance header naming its upstream path and that ref. Ansible no longer
+# clones upstream. A skill changes only through a PR a human starts.
+#
+# Each agent role loads exactly the skills listed for it; opencode denies every other skill, and
+# OPENCODE_DISABLE_EXTERNAL_SKILLS keeps a repository's own skills out entirely.
+factory_agent_skills:
+  planner: [grilling, domain-modeling, wayfinder, to-spec, to-tickets, writing-for-agents, retro]
+  researcher: [research, retro]
+  implementer:
+    [implement, tdd, code-review, diagnosing-bugs, domain-modeling, pr, retro, writing-for-agents]
+  reviewer: [code-review, retro]
+  curator: [curate]
+
+# The opencode permissions every agent role shares: deny by default, never `ask`. A role may read,
+# glob, grep and list inside the clone, fetch and search the web, and write only inside the run's
+# scratch tree (outside the clone); external_directory denies every other path. The sandbox is the
+# first layer and narrows this to the run's own directory; these rules are the second.
+factory_agent_permissions_common:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
+  webfetch: allow
+  websearch: allow
+  question: deny
+  task: deny
+  doom_loop: deny
+  external_directory:
+    "*": deny
+    "~/work/**": allow # foreman's work-root default; it holds each run's clones and scratch files
+
+# A Planner, Researcher or Curator inspects the repository and the tracker, and changes neither.
+factory_agent_shell_readonly_git: &agent_shell_readonly_git
+  "*": deny
+  "git status*": allow
+  "git log*": allow
+  "git show*": allow
+  "git diff*": allow
+  "git rev-parse*": allow
+  "git ls-files*": allow
+  "git branch --show-current*": allow
+  "git remote -v*": allow
+
+factory_agent_shell_readonly_gh: &agent_shell_readonly_gh
+  <<: *agent_shell_readonly_git
+  "gh issue view*": allow
+  "gh issue list*": allow
+  "gh pr view*": allow
+  "gh pr list*": allow
+  "gh api --method GET *": allow
+
+# The Implementer and the Reviewer run the repository's toolchain, so bash is open apart from the
+# writes foreman owns: a push, and opening, editing or commenting through gh.
+factory_agent_shell_readwrite: &agent_shell_readwrite
+  "*": allow
+  "git push*": deny
+  "gh pr create*": deny
+  "gh pr merge*": deny
+  "gh pr edit*": deny
+  "gh issue create*": deny
+  "gh issue edit*": deny
+  "gh issue comment*": deny
+  "gh issue close*": deny
+  "gh api --method POST *": deny
+  "gh api --method PATCH *": deny
+  "gh api --method PUT *": deny
+  "gh api --method DELETE *": deny
+
+# Per agent role: what it may edit, and its bash. Every other permission comes from the shared set
+# above, and its skill allowlist from factory_agent_skills. Only its output file may be written
+# outside the clone (an output file matched by name inside the scratch tree).
+factory_agent_permissions:
+  planner:
+    edit:
+      "*": deny
+      "**/planner-output.json": allow
+    bash: *agent_shell_readonly_gh
+  researcher:
+    edit:
+      "*": deny
+      "docs/research/**": allow
+      "**/researcher-output.json": allow
+    bash: *agent_shell_readonly_git
+  implementer:
+    edit: allow
+    bash: *agent_shell_readwrite
+  reviewer:
+    edit: allow # its throwaway copy of the clone, plus its output file
+    bash: *agent_shell_readwrite
+  curator:
+    edit:
+      "*": deny
+      "**/curator-output.json": allow
+    bash: *agent_shell_readonly_gh
+
+# Per agent role: opencode's step cap, and the wall-clock deadline foreman enforces. Hitting either
+# fails the run to factory:failed. Tunable here only; a repository cannot set them.
+factory_agent_limits:
+  planner: { steps: 40, deadline_minutes: 20 }
+  researcher: { steps: 80, deadline_minutes: 45 }
+  implementer: { steps: 200, deadline_minutes: 90 }
+  reviewer: { steps: 60, deadline_minutes: 30 }
+  curator: { steps: 60, deadline_minutes: 30 }
+# A retro has its own budget, shared by every agent role: hitting either drops the retro and never
+# fails the run.
+factory_retro_steps: 20
+factory_retro_deadline_minutes: 15
