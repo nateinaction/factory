@@ -5,7 +5,6 @@ package openrouter
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,9 +12,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/nateinaction/factory/foreman/internal/proxyauth"
 )
 
 // The proxy's fixed destination and default address.
@@ -178,7 +178,7 @@ func (p *Proxy) Close() error {
 // serve forwards one authenticated request, or refuses it when it names anything but OpenRouter's
 // API.
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
-	if !p.authorized(r) {
+	if !proxyauth.Authorized(r, p.token) {
 		http.Error(w, "openrouter proxy: run token required", http.StatusUnauthorized)
 
 		return
@@ -193,17 +193,6 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	p.reverse.ServeHTTP(w, r)
 }
 
-// authorized reports whether r carries the run's token in its Authorization header. The comparison
-// is constant time, and the token never reaches a log.
-func (p *Proxy) authorized(r *http.Request) bool {
-	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		return false
-	}
-
-	return subtle.ConstantTimeCompare([]byte(got), []byte(p.token)) == 1
-}
-
 // permits reports whether r names OpenRouter's API. The proxy has one fixed upstream, so no request
 // can choose where the key goes.
 func (p *Proxy) permits(r *http.Request) bool {
@@ -211,7 +200,7 @@ func (p *Proxy) permits(r *http.Request) bool {
 		return false
 	}
 
-	return underAPIPrefix(r.URL.Path)
+	return proxyauth.UnderPrefix(r.URL.Path, APIPrefix)
 }
 
 // forwardURL is the OpenRouter URL for r, which permits has already checked.
@@ -221,13 +210,6 @@ func (p *Proxy) forwardURL(r *http.Request) *url.URL {
 	dest.RawQuery = r.URL.RawQuery
 
 	return &dest
-}
-
-// underAPIPrefix reports whether p is the API or a path beneath it.
-func underAPIPrefix(p string) bool {
-	clean := path.Clean(p)
-
-	return clean == APIPrefix || strings.HasPrefix(clean, APIPrefix+"/")
 }
 
 // recordUsage wraps the response body so the usage it reports is recorded as the body streams, or
