@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -151,6 +152,13 @@ type harness struct {
 	// pr and prURL are the open pull request the setup created or the run opened.
 	pr    int
 	prURL string
+	// ciChecks and ciStatuses are what the commits endpoint answers with; empty means no checks, which
+	// the CI gate treats as passed. ciError makes every CI read fail. ciHandler, when set, answers the
+	// CI reads itself and reports whether it did.
+	ciChecks   []map[string]any
+	ciStatuses []map[string]any
+	ciError    bool
+	ciHandler  func(http.ResponseWriter, *http.Request) bool
 }
 
 // testAgent() is the agent role settings tests run with.
@@ -172,6 +180,7 @@ func testConfig() config.Config {
 
 	return config.Config{
 		Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro(), DeadRunMarginMinutes: 10,
+		ReviewRoundLimit: 3, CIPendingDeadlineMinutes: 60,
 	}
 }
 
@@ -223,6 +232,7 @@ func newHarness() *harness {
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
+	h.gh.Handle("GET /repos/o/r/commits/", h.serveCI)
 	h.deps = Deps{
 		Settings: config.Settings{
 			API: gh.URL(), TokenDir: dir, KeyFile: key,
@@ -234,6 +244,30 @@ func newHarness() *harness {
 	}
 
 	return h
+}
+
+// serveCI answers a commit's check runs and statuses: no checks unless a spec sets some, or the
+// spec's own handler. The emulator has no CI state, so this is the proxy's job.
+func (h *harness) serveCI(w http.ResponseWriter, r *http.Request) {
+	if h.ciHandler != nil && h.ciHandler(w, r) {
+		return
+	}
+
+	if h.ciError {
+		w.WriteHeader(http.StatusInternalServerError)
+
+		return
+	}
+
+	if strings.HasSuffix(r.URL.Path, "/statuses") {
+		ghtest.WriteJSON(w, append([]map[string]any{}, h.ciStatuses...))
+
+		return
+	}
+
+	ghtest.WriteJSON(w, map[string]any{
+		"total_count": len(h.ciChecks), "check_runs": append([]map[string]any{}, h.ciChecks...),
+	})
 }
 
 // tokenFor is the seeded token of a test user.
@@ -439,7 +473,8 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
 	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
 	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10,` +
+	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
 // writeToken leaves a token for the factory half of role.
 func (h *harness) writeToken(role workflow.Role, token string) {
@@ -583,13 +618,13 @@ func (h *harness) retroComments() []string {
 	return out
 }
 
-// seedComment posts a comment as the repository's admin and returns its id.
-func (h *harness) seedComment(number int, text string) int64 {
+// seedComment posts a comment on issue 5 as the repository's admin and returns its id.
+func (h *harness) seedComment(text string) int64 {
 	GinkgoHelper()
 
-	h.comment(number, "o", text)
+	h.comment(5, "o", text)
 
-	comments, err := emulator.Comments(context.Background(), "o/r", number)
+	comments, err := emulator.Comments(context.Background(), "o/r", 5)
 	Expect(err).NotTo(HaveOccurred())
 
 	for _, c := range slices.Backward(comments) {
@@ -831,7 +866,10 @@ func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.writeToken(workflow.Implementer, "repo-token\n")
 	h.implementerWrites(firstRunOutput)
 
-	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
+	cfg := testConfig()
+	cfg.Agents[string(workflow.Implementer)] = agent
+
+	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", cfg, 5)
 }
 
 // implementerWrites makes the Implementer's run write text as its output file, leaving the retro

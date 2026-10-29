@@ -169,3 +169,9 @@ factory_retro_deadline_minutes: 15
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
 # moves the issue to factory:failed. Nothing retries a dead run automatically.
 factory_dead_run_margin_minutes: 10
+# The CI gate before review. An issue in factory:review waits this long for its pull request's checks:
+# any failure sends it back to the Implementer without a model run, and pending CI past this deadline
+# fails it. Neither a CI failure nor a Reviewer's REQUEST_CHANGES may take an issue past the review
+# round limit; at the limit the issue goes to factory:failed instead.
+factory_ci_pending_deadline_minutes: 60
+factory_review_round_limit: 3

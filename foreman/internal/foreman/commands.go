@@ -152,7 +152,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 				continue // that agent role isn't here: its issues wait in the queue
 			}
 
-			code, done, err := pollQueue(ctx, d, perms, repo, q)
+			code, done, err := pollQueue(ctx, d, cfg, perms, repo, q)
 			if done || err != nil {
 				return code, err
 			}
@@ -509,10 +509,10 @@ func blocked(ctx context.Context, c github.Client, repo string, issue workflow.I
 }
 
 // pollQueue looks at one queue of one repository with the owning agent role's token. done is true when
-// the poll is over: an issue was claimed or lost. A token that can't be minted makes the repository
-// unassigned for this role.
+// the poll is over: an issue was claimed or lost, or the CI gate moved one. A token that can't be
+// minted makes the repository unassigned for this role.
 func pollQueue(
-	ctx context.Context, d Deps, perms *permissions, repo string, q queueStep,
+	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo string, q queueStep,
 ) (code int, done bool, err error) {
 	token, err := d.mintToken(ctx, q.role, repo)
 	if err != nil {
@@ -529,8 +529,12 @@ func pollQueue(
 		return 1, true, err
 	}
 
-	issue, ok := claimable(ctx, d, c, perms, repo, issues)
-	if !ok {
+	issue, claim, acted := claimable(ctx, d, cfg, c, perms, repo, q, issues)
+	if acted {
+		return 0, true, nil
+	}
+
+	if !claim {
 		return 0, false, nil
 	}
 
@@ -539,43 +543,242 @@ func pollQueue(
 	return code, true, err
 }
 
-// claimable is the oldest issue in the queue that is counted, not already claimed, and unblocked.
+// claimable is the oldest issue in the queue that is eligible, and through the review queue's CI
+// gate. claim is false when nothing may be claimed. acted is true when the CI gate moved the issue
+// without a run, which ends the poll.
 func claimable(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string, issues []workflow.Issue,
-) (workflow.Issue, bool) {
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions, repo string,
+	q queueStep, issues []workflow.Issue,
+) (issue workflow.Issue, claim, acted bool) {
 	for _, issue := range issues {
-		if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) || claimed(issue) {
+		if !eligible(ctx, d, c, perms, repo, issue) {
 			continue
 		}
 
-		comments, err := issueComments(ctx, c, repo, issue)
+		if q.role != workflow.Reviewer {
+			return issue, true, false
+		}
+
+		claim, moved, err := ciGate(ctx, d, cfg, c, repo, issue)
 		if err != nil {
-			d.log().Warn("skipping an issue whose comments cannot be read",
+			d.log().Warn("skipping an issue whose CI cannot be read",
 				"repo", repo, "issue", issue.Number, "error", err)
 
 			continue
 		}
 
-		if !counted(ctx, d, c, perms, repo, issue, comments) {
-			continue
+		if moved {
+			return workflow.Issue{}, false, true
 		}
 
-		isBlocked, err := blocked(ctx, c, repo, issue)
-		if err != nil {
-			d.log().Warn("skipping an issue whose blockers cannot be read",
-				"repo", repo, "issue", issue.Number, "error", err)
-
-			continue
+		if claim {
+			return issue, true, false
 		}
-
-		if isBlocked {
-			continue
-		}
-
-		return issue, true
+		// Pending CI leaves the issue queued; a later issue may still be claimable.
 	}
 
-	return workflow.Issue{}, false
+	return workflow.Issue{}, false, false
+}
+
+// eligible reports whether the poll may work an issue at all: not a pull request, not paused, not
+// already claimed, counted, and unblocked. A read it cannot make leaves the issue alone, never claims it.
+func eligible(
+	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string, issue workflow.Issue,
+) bool {
+	if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) || claimed(issue) {
+		return false
+	}
+
+	comments, err := issueComments(ctx, c, repo, issue)
+	if err != nil {
+		d.log().Warn("skipping an issue whose comments cannot be read",
+			"repo", repo, "issue", issue.Number, "error", err)
+
+		return false
+	}
+
+	if !counted(ctx, d, c, perms, repo, issue, comments) {
+		return false
+	}
+
+	isBlocked, err := blocked(ctx, c, repo, issue)
+	if err != nil {
+		d.log().Warn("skipping an issue whose blockers cannot be read",
+			"repo", repo, "issue", issue.Number, "error", err)
+
+		return false
+	}
+
+	return !isBlocked
+}
+
+// readCI reads what GitHub reports about sha: its check runs, its commit statuses, and the tail of
+// each failed Actions job's log. A log that cannot be read is logged and left out; the failure
+// itself still reaches the Implementer.
+func readCI(ctx context.Context, d Deps, c github.Client, repo, sha string) (workflow.CIReport, error) {
+	report := workflow.CIReport{SHA: sha}
+
+	checks, err := c.CheckRuns(ctx, repo, sha)
+	if err != nil {
+		return report, fmt.Errorf("read check runs: %w", err)
+	}
+
+	statuses, err := c.CommitStatuses(ctx, repo, sha)
+	if err != nil {
+		return report, fmt.Errorf("read commit statuses: %w", err)
+	}
+
+	report.Checks, report.Statuses = checks, statuses
+
+	for _, check := range workflow.FailedChecks(report) {
+		if check.ID == 0 || check.App.Slug != "github-actions" {
+			continue // only an Actions check run has an Actions job log
+		}
+
+		log, err := c.JobLog(ctx, repo, check.ID)
+		if err != nil {
+			d.log().Warn("cannot read a failed job's log; reporting the check without it",
+				"repo", repo, "check", check.Name, "error", err)
+
+			continue
+		}
+
+		report.Logs = append(report.Logs, workflow.JobLog{
+			Name: check.Name, Tail: workflow.Tail(log, workflow.JobLogTailChars),
+		})
+	}
+
+	return report, nil
+}
+
+// ciGate decides what the review queue does with an issue: claim it, leave it queued while CI is
+// pending, send it back to the Implementer on failed CI, or fail it when pending CI outlived its
+// deadline. Neither of the latter starts a model run. The reads and writes use the Reviewer's client,
+// so every transition is made by the agent role that owns the review queue.
+func ciGate(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+) (claim, moved bool, err error) {
+	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
+	if err != nil {
+		return false, false, err
+	}
+
+	if pr == nil {
+		return true, false, nil // there is nothing to gate; the run fails on its own
+	}
+
+	report, err := readCI(ctx, d, c, repo, pr.Head.SHA)
+	if err != nil {
+		return false, false, err
+	}
+
+	state := workflow.Classify(report)
+	expired := false
+
+	if state == workflow.CIPending {
+		expired, err = ciPendingExpired(ctx, d, cfg, c, repo, issue)
+		if err != nil {
+			return false, false, err
+		}
+	}
+
+	switch workflow.DecideCI(state, expired) {
+	case workflow.CIClaim:
+		return true, false, nil
+	case workflow.CIWait:
+		d.log().Info("leaving an issue queued while its CI is pending",
+			"repo", repo, "issue", issue.Number, "sha", report.SHA)
+
+		return false, false, nil
+	case workflow.CIFail:
+		d.log().Info("failing an issue whose CI stayed pending past its deadline",
+			"repo", repo, "issue", issue.Number, "sha", report.SHA)
+
+		return false, true, ciPendingFailure(ctx, d, cfg, c, repo, issue, report)
+	case workflow.CIBack:
+		return false, true, ciFailureBack(ctx, d, cfg, c, repo, issue, pr.Number, report)
+	}
+
+	return false, false, nil
+}
+
+// ciPendingExpired reports whether the issue has waited in factory:review past the CI pending
+// deadline. An age it cannot date leaves the issue queued, like a run it cannot date is not dead.
+func ciPendingExpired(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+) (bool, error) {
+	events, err := c.Timeline(ctx, repo, issue.Number)
+	if err != nil {
+		return false, err
+	}
+
+	since, found := workflow.LabeledAt(events, workflow.LabelReview)
+	if !found {
+		d.log().Warn("cannot date pending CI without the review label's timeline event",
+			"repo", repo, "issue", issue.Number)
+
+		return false, nil
+	}
+
+	return workflow.PendingExpired(since, d.now(), cfg.CIPendingDeadline()), nil
+}
+
+// ciPendingFailure fails an issue whose CI stayed pending past its deadline.
+func ciPendingFailure(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string,
+	issue workflow.Issue, report workflow.CIReport,
+) error {
+	t := workflow.Transition{
+		Role: workflow.Reviewer, RunID: d.runID(), From: workflow.Review, To: workflow.Failed, SHA: report.SHA,
+	}
+	text := fmt.Sprintf("CI was still pending after the %s CI pending deadline. "+
+		"A person needs to look at the pull request; comment to send it back to the Reviewer.",
+		cfg.CIPendingDeadline())
+
+	return c.Finish(ctx, repo, issue.Number, t, text)
+}
+
+// ciFailureBack reports failed CI on the issue, then sends the issue back to the Implementer with no
+// model run. At the review round limit it fails the issue instead. The report comes before the
+// transition, so the Implementer's run reads it as the reason it was sent back.
+func ciFailureBack(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string,
+	issue workflow.Issue, pr int, report workflow.CIReport,
+) error {
+	reviews, err := c.Reviews(ctx, repo, pr)
+	if err != nil {
+		return err
+	}
+
+	comments, err := c.ListComments(ctx, repo, issue.Number)
+	if err != nil {
+		return err
+	}
+
+	rounds := workflow.ReviewRounds(reviews, comments, report.SHA)
+
+	dst := workflow.Implement
+	text := "CI failed on the pull request. Sent back to the Implementer with the failure report above; " +
+		"no model run was needed."
+
+	if workflow.RoundLimitReached(rounds, cfg.ReviewRoundLimit) {
+		dst = workflow.Failed
+		text = fmt.Sprintf("CI failed and this is review round %d of %d. "+
+			"A person needs to look at the pull request.", rounds, cfg.ReviewRoundLimit)
+	}
+
+	// The report is keyed by the commit, so a retried poll never posts it twice.
+	if !workflow.HasCIFailure(comments, report.SHA) {
+		if err := c.Comment(ctx, repo, issue.Number, workflow.RenderCIFailure(report)); err != nil {
+			return err
+		}
+	}
+
+	t := workflow.Transition{
+		Role: workflow.Reviewer, RunID: d.runID(), From: workflow.Review, To: dst, SHA: report.SHA,
+	}
+
+	return c.Finish(ctx, repo, issue.Number, t, text)
 }
 
 // claimed reports whether the issue already carries a running label: a run is happening.
@@ -695,7 +898,7 @@ func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, 
 		text = "Review found high or medium issues, posted on the pull request. Sent back to the Implementer."
 	case workflow.ReviewExhausted:
 		dst, text = workflow.Failed, fmt.Sprintf("Review still found high or medium issues after %d rounds. "+
-			"A person needs to look at the pull request.", workflow.MaxReviewRounds)
+			"A person needs to look at the pull request.", cfg.ReviewRoundLimit)
 	}
 
 	exit := 1

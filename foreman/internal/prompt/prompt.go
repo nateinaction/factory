@@ -23,6 +23,9 @@ const IssueMaterialHeading = "\n# Issue material\n\n"
 // ThreadHeading starts the comments a woken run reads.
 const ThreadHeading = "\n\n# Comments since the marker"
 
+// CIFailureHeading starts the CI failure report an Implementer run was sent back for.
+const CIFailureHeading = "\n\n# CI failure report"
+
 // Doc is one repository document put into a prompt.
 type Doc struct {
 	// Path is relative to the repository root.
@@ -107,10 +110,11 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 	"A high or medium finding requires REQUEST_CHANGES, and REQUEST_CHANGES needs at least one finding."
 
 // Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run; thread
-// is every comment since the marker when a writer's comment woke the issue; and outPath is where the
-// model writes implementer-output.json.
+// is every comment since the marker when a writer's comment woke the issue; ci is the CI failure
+// report the run was sent back for, empty when CI did not fail; and outPath is where the model writes
+// implementer-output.json.
 func Implementer(
-	docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item, outPath string,
+	docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item, ci, outPath string,
 ) string {
 	rework := ""
 	if feedback != "" {
@@ -118,6 +122,11 @@ func Implementer(
 			"problems. Fix every high and medium finding below on top of the existing " +
 			"commits and answer each one in \"replies\".\n\nReview:\n" +
 			workflow.Truncate(feedback, workflow.BodyLimitChars)
+	}
+
+	if ci != "" {
+		rework += CIFailureHeading + "\n\nThe pull request's CI failed. Fix every failed check " +
+			"below on top of the existing commits.\n\n" + workflow.Truncate(ci, workflow.BodyLimitChars)
 	}
 
 	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s%s"+

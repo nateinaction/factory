@@ -464,6 +464,82 @@ func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) 
 	return r.DefaultBranch, nil
 }
 
+// CheckRuns lists the check runs GitHub reports for a commit, across up to MaxPages pages. The list
+// endpoint wraps its items in an envelope, so it is paged by hand rather than by Paged.
+func (c Client) CheckRuns(ctx context.Context, repo, ref string) ([]workflow.CheckRun, error) {
+	var out []workflow.CheckRun
+
+	for page := 1; page <= MaxPages; page++ {
+		var got struct {
+			CheckRuns []workflow.CheckRun `json:"check_runs"`
+		}
+
+		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=%d&page=%d",
+			repo, url.PathEscape(ref), PageSize, page)
+
+		if err := c.Call(ctx, http.MethodGet, path, nil, &got); err != nil {
+			return nil, err
+		}
+
+		out = append(out, got.CheckRuns...)
+		if len(got.CheckRuns) < PageSize {
+			break
+		}
+	}
+
+	return out, nil
+}
+
+// CommitStatuses lists the commit statuses GitHub reports for a commit.
+func (c Client) CommitStatuses(ctx context.Context, repo, ref string) ([]workflow.CommitStatus, error) {
+	path := fmt.Sprintf("/repos/%s/commits/%s/statuses", repo, url.PathEscape(ref))
+
+	return Paged[workflow.CommitStatus](ctx, c, path)
+}
+
+// JobLog reads the plain-text log of one Actions job. The endpoint redirects to a download at another
+// host, which the HTTP client follows without the token.
+func (c Client) JobLog(ctx context.Context, repo string, id int64) (string, error) {
+	raw, err := c.text(ctx, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repo, id))
+	if err != nil {
+		return "", err
+	}
+
+	return string(raw), nil
+}
+
+// text makes one API request and returns its body, which is not JSON. The body is bounded like any
+// other answer.
+func (c Client) text(ctx context.Context, path string) ([]byte, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github GET %s: %w", path, err)
+	}
+
+	defer func() {
+		// The body is fully read or abandoned on error; a close failure changes nothing for the caller.
+		_ = resp.Body.Close()
+	}()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("github GET %s: read: %w", path, err)
+	case len(raw) > maxResponseBytes:
+		return nil, fmt.Errorf("github GET %s: response over %d bytes", path, maxResponseBytes)
+	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
+		return nil, &HTTPError{Method: http.MethodGet, Path: path, Code: resp.StatusCode}
+	}
+
+	return raw, nil
+}
+
 // Reviews lists a pull request's reviews.
 func (c Client) Reviews(ctx context.Context, repo string, pr int) ([]workflow.Item, error) {
 	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr))

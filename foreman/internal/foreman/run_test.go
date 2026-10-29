@@ -26,7 +26,7 @@ var _ = Describe("Run", func() {
 
 	// run runs role on issue 5 of o/r.
 	run := func(role workflow.Role) (int, error) {
-		return Run(context.Background(), h.deps, role, "o/r", testAgent(), testRetro(), 5)
+		return Run(context.Background(), h.deps, role, "o/r", testConfig(), 5)
 	}
 
 	Describe("the Implementer", func() {
@@ -273,7 +273,10 @@ var _ = Describe("Run", func() {
 
 			short := config.Budget{Steps: testRetro().Steps}
 
-			code, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), short, 5)
+			cfg := testConfig()
+			cfg.Retro = short
+
+			code, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", cfg, 5)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(code).To(BeZero())
 			Expect(h.logs.String()).To(And(
@@ -388,12 +391,12 @@ var _ = Describe("Run", func() {
 
 		It("never shows the Reviewer the Implementer's retro, but does show its own groups", func() {
 			h.reviewerGH(nil)
-			h.seedComment(5, retroBody(workflow.Implementer, "commit-1", workflow.RetroFinding{
+			h.seedComment(retroBody(workflow.Implementer, "commit-1", workflow.RetroFinding{
 				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
 				Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
 				Claim: "IMPL CLAIM", Evidence: "IMPL EVIDENCE",
 			}))
-			h.seedComment(5, retroBody(workflow.Reviewer, "older-head", workflow.RetroFinding{
+			h.seedComment(retroBody(workflow.Reviewer, "older-head", workflow.RetroFinding{
 				Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
 				Group:  "slow-retro", Severity: workflow.SeverityLow,
 				Claim: "review retros run long", Evidence: "REVIEW EVIDENCE",
@@ -430,7 +433,7 @@ var _ = Describe("Run", func() {
 
 		It("updates the retro comment for a run key rather than adding another", func() {
 			h.reviewerGH(nil)
-			existing := h.seedComment(5, retroBody(workflow.Reviewer, "sha-head", workflow.RetroFinding{
+			existing := h.seedComment(retroBody(workflow.Reviewer, "sha-head", workflow.RetroFinding{
 				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
 				Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
 				Claim: "an earlier wording", Evidence: "e",

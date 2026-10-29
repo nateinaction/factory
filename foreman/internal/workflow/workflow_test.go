@@ -133,10 +133,10 @@ var _ = Describe("ReviewRounds", func() {
 	}
 
 	It("counts distinct reviewed commits, a repeat of one counting once", func() {
-		Expect(workflow.ReviewRounds(reviews, "a")).To(Equal(2))
+		Expect(workflow.ReviewRounds(reviews, nil, "a")).To(Equal(2))
 	})
 
 	It("counts the current commit before its review is posted", func() {
-		Expect(workflow.ReviewRounds(reviews, "c")).To(Equal(3))
+		Expect(workflow.ReviewRounds(reviews, nil, "c")).To(Equal(3))
 	})
 })

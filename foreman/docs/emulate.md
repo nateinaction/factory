@@ -43,6 +43,7 @@ for built-in services. `internal/ghtest` fills both gaps, and the tests keep the
 | No reset for built-in services | One process per package; `newHarness` deletes and recreates `o/r` for every spec. |
 | The issues list omits pull requests | GitHub includes pull requests in `GET /issues`; emulate filters them out. `PickIssue`'s "skip a pull request" branch is therefore not exercised against emulate. The old spec that faked a pull request in the issue list was removed; the behaviour remains covered by `workflow`'s unit tests. |
 | No "an App cannot approve its own pull request" rule | The approval → comment-review fallback is still covered by forcing the 422 in the proxy, not by emulator state. |
+| No check runs, commit statuses or Actions job logs | The CI gate's reads have no emulator state to answer from, so the specs register the `GET /repos/o/r/commits/…` subtree and the job-log path on the proxy and answer with the check runs, statuses or log text the case needs. `Proxy.Handle` on a trailing-slash pattern covers every commit SHA. |
 | Seed numbering starts at 1 per repository | Where a fixed number matters (issue #5), the harness creates filler issues below it. Pull request and retro numbers are read back rather than hard-coded. |
 
 ## Authentication

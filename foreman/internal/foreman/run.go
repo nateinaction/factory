@@ -23,15 +23,14 @@ import (
 // Run is the factory half, run as the factory user: it works the issue as the agent role. For the
 // Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted); a run
 // that already reported its failure on the issue returns workflow.ExitReported.
-func Run(
-	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
-	number int,
-) (int, error) {
+func Run(ctx context.Context, d Deps, role workflow.Role, repo string, cfg config.Config, number int) (int, error) {
+	agent, retro := cfg.Agents[string(role)], cfg.Retro
+
 	switch role {
 	case workflow.Implementer:
 		return exitCode(runImplementer(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Reviewer:
-		code, err := runReviewer(ctx, d, repo, agent, retro, number)
+		code, err := runReviewer(ctx, d, repo, agent, retro, cfg.ReviewRoundLimit, number)
 
 		return exitCode(err, code)
 	case workflow.Planner, workflow.Researcher, workflow.Curator:
@@ -320,13 +319,13 @@ func implementRun(
 		return opencode.Usage{}, err
 	}
 
-	thread, err := guidance(ctx, j.c, repo, number)
+	thread, ci, err := rework(ctx, j.c, repo, number)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread, paths.out),
+		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread, ci, paths.out),
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
@@ -349,6 +348,19 @@ func implementRun(
 	return res.Usage.Add(s.retroEpilogue(
 		ctx, j, repo, number, workflow.Implementer, res.Session, s.headKey(ctx), nil, retro,
 	)), nil
+}
+
+// rework reads what a run that was sent back must answer: every comment since the marker that woke
+// the issue, and the CI failure report when that is why it came back.
+func rework(ctx context.Context, c github.Client, repo string, number int) ([]workflow.Item, string, error) {
+	thread, err := guidance(ctx, c, repo, number)
+	if err != nil {
+		return nil, "", err
+	}
+
+	ci, err := ciFeedback(ctx, c, repo, number)
+
+	return thread, ci, err
 }
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
@@ -378,6 +390,22 @@ func guidance(ctx context.Context, c github.Client, repo string, number int) ([]
 	})
 
 	return workflow.Guidance(comments), nil
+}
+
+// ciFeedback is the CI failure report that sent this run back, when the report comes after the
+// handoff that sent the pull request to review. A report from an earlier round is stale and left out.
+func ciFeedback(ctx context.Context, c github.Client, repo string, number int) (string, error) {
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return "", err
+	}
+
+	report, ok, err := workflow.LatestCIFailure(comments)
+	if err != nil || !ok {
+		return "", err
+	}
+
+	return workflow.CIFailureText(report.Body), nil
 }
 
 // implementerPaths clears and returns an Implementer run's clone and scratch paths. The output file
@@ -647,7 +675,7 @@ func openPR(
 
 // runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
 func runReviewer(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, limit, number int,
 ) (int, error) {
 	var (
 		usage opencode.Usage
@@ -657,7 +685,7 @@ func runReviewer(
 	err := withState(d.Settings.WorkRoot, workflow.Reviewer, number, func(db string) error {
 		var err error
 
-		code, usage, err = review(ctx, d, repo, agent, retro, number, db)
+		code, usage, err = review(ctx, d, repo, agent, retro, limit, number, db)
 
 		return err
 	})
@@ -672,7 +700,8 @@ func runReviewer(
 
 // review clones the pull request's branch, runs the review, posts it, and returns the verdict code.
 func review(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, limit, number int,
+	db string,
 ) (int, opencode.Usage, error) {
 	sec, err := readSecrets(d.Settings, workflow.Reviewer)
 	if err != nil {
@@ -682,7 +711,7 @@ func review(
 	var code int
 
 	usage, err := d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, retro, limit, number, db)
 		code = runCode
 
 		return u, e
@@ -694,7 +723,7 @@ func review(
 // reviewRun is the Reviewer's work, with its proxy already up.
 func reviewRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	agent config.AgentConfig, retro config.Budget, limit, number int, db string,
 ) (int, opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number, db)
 	if err != nil {
@@ -739,7 +768,7 @@ func reviewRun(
 		return 1, res.Usage, rejectOutput(ctx, j.c, repo, number, workflow.Reviewer, err)
 	}
 
-	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue)
+	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue, limit)
 
 	return code, res.Usage.Add(s.retroEpilogue(
 		ctx, j, repo, number, workflow.Reviewer, res.Session, sha, err, retro,
@@ -829,9 +858,14 @@ func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
 // verdict leaves only through the output file, so nothing else can decide it.
 func postVerdict(
 	ctx context.Context, c github.Client, repo string, pr int, sha string, out workflow.ReviewerOutput,
-	issue workflow.Issue,
+	issue workflow.Issue, limit int,
 ) (int, error) {
 	reviews, err := c.Reviews(ctx, repo, pr)
+	if err != nil {
+		return 1, err
+	}
+
+	comments, err := c.ListComments(ctx, repo, issue.Number)
 	if err != nil {
 		return 1, err
 	}
@@ -849,7 +883,7 @@ func postVerdict(
 		return workflow.ReviewClean, c.RequestReviewers(ctx, repo, pr, humans(issue.Author))
 	}
 
-	if workflow.ReviewRounds(reviews, sha) >= workflow.MaxReviewRounds {
+	if workflow.RoundLimitReached(workflow.ReviewRounds(reviews, comments, sha), limit) {
 		return workflow.ReviewExhausted, nil
 	}
 
