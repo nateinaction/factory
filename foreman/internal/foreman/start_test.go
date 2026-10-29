@@ -130,6 +130,49 @@ var _ = Describe("Start", func() {
 			"The Reviewer failed. Check the dagu run log, then comment to send it back to the Reviewer.", 1),
 	)
 
+	Describe("the Researcher", func() {
+		BeforeEach(func() {
+			h.installed[workflow.Researcher] = []string{"o/r"}
+			h.acceptWrites()
+		})
+
+		It("closes the ticket, releasing the claim", func() {
+			h.sudoExit(0)
+
+			Expect(start(workflow.Researcher)).To(BeZero())
+
+			labels, comments := h.outcome()
+			Expect(labels).To(BeEmpty(), "a closed ticket carries no factory label")
+			Expect(comments[0]).To(ContainSubstring(
+				"<!-- factory:handoff role=researcher run=run-1 " +
+					"from=factory:researching to=closed sha= -->"))
+			Expect(h.gh.Summary()).To(
+				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:researching"), "did not release the claim")
+			Expect(h.gh.Summary()).To(ContainElement("PATCH /repos/o/r/issues/5"), "did not close the ticket")
+
+			issue, err := emulator.Issue(context.Background(), "o/r", 5)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issue.State).To(Equal("closed"))
+			expectTokenRemoved(workflow.Researcher)
+			h.expectLeakFree("minted-token")
+		})
+
+		It("marks the ticket failed when the factory half fails", func() {
+			h.sudoExit(1)
+
+			Expect(start(workflow.Researcher)).To(Equal(1))
+
+			labels, comments := h.outcome()
+			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
+			Expect(comments[0]).To(ContainSubstring(
+				"The Researcher failed. Check the dagu run log, then comment to send it back to the Researcher."))
+
+			issue, err := emulator.Issue(context.Background(), "o/r", 5)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(issue.State).To(Equal("open"))
+		})
+	})
+
 	DescribeTable("refuses an agent role without behaviour, doing nothing",
 		func(role workflow.Role) {
 			code, err := start(role)
@@ -137,12 +180,13 @@ var _ = Describe("Start", func() {
 			Expect(code).NotTo(BeZero())
 			h.expectNoWork()
 		},
-		Entry(nil, workflow.Planner), Entry(nil, workflow.Researcher), Entry(nil, workflow.Curator),
+		Entry(nil, workflow.Planner), Entry(nil, workflow.Curator),
 	)
 
 	Describe("identity", func() {
 		DescribeTable("mints only the owning App's tokens: no App falls back to another's",
 			func(role workflow.Role) {
+				h.installed[role] = []string{"o/r"}
 				h.acceptWrites()
 				seen := h.sudoExit(0)
 
@@ -159,7 +203,7 @@ var _ = Describe("Start", func() {
 				h.expectAuthorizedAs(role)
 				Expect(seen.token).To(Equal("minted-token-" + string(role)))
 			},
-			Entry(nil, workflow.Implementer), Entry(nil, workflow.Reviewer),
+			Entry(nil, workflow.Researcher), Entry(nil, workflow.Implementer), Entry(nil, workflow.Reviewer),
 		)
 
 		It("fails a run whose App credential is missing, reported by an App still installed", func() {
