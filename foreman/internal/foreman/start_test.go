@@ -19,7 +19,7 @@ var _ = Describe("Start", func() {
 		h = newHarness()
 	})
 
-	// start starts role on issue 5 of o/r.
+	// start starts the agent role on issue 5 of o/r.
 	start := func(role workflow.Role) (int, error) {
 		return Start(context.Background(), h.deps, testConfig(), role, testRef(5))
 	}

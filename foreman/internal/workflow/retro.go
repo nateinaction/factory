@@ -374,9 +374,10 @@ type RetroGroup struct {
 	Claim string
 }
 
-// RetroGroups collects the existing groups role reported on this issue, one per target and key, in a
-// stable order. exceptKey is the current run, whose own earlier attempt is not "existing". Another
-// agent role's groups are left out: the Reviewer's context never contains the Implementer's retro.
+// RetroGroups collects the existing groups the agent role reported on this issue, one per target and
+// key, in a stable order. exceptKey is the current run, whose own earlier attempt is not "existing".
+// Another agent role's groups are left out: the Reviewer's context never contains the Implementer's
+// retro.
 func RetroGroups(comments []Item, role Role, exceptKey string) ([]RetroGroup, error) {
 	seen := map[string]RetroGroup{}
 

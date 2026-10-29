@@ -85,14 +85,17 @@ func echoServer() (string, func()) {
 			}
 
 			go func() {
+				// test cleanup: a close error changes no assertion
 				defer func() { _ = conn.Close() }()
 
+				// the loop ends when the connection does
 				_, _ = io.Copy(conn, conn)
 			}()
 		}
 	}()
 
 	return ln.Addr().String(), func() {
+		// test cleanup: a close error changes no assertion
 		_ = ln.Close()
 
 		<-done
@@ -102,6 +105,7 @@ func echoServer() (string, func()) {
 // apiServer is a stand-in OpenRouter API at /api/v1 that reports the path it saw.
 func apiServer() *httptest.Server {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// writing to a test ResponseWriter cannot change the assertion
 		_, _ = fmt.Fprintf(w, "api %s %s", r.Method, r.URL.Path)
 	}))
 
@@ -136,6 +140,7 @@ var _ = Describe("Proxy", func() {
 
 		resp, conn := connect(p.Address(), echo)
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -155,6 +160,7 @@ var _ = Describe("Proxy", func() {
 
 		resp, conn := connect(p.Address(), "blocked.example:443")
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
@@ -163,6 +169,7 @@ var _ = Describe("Proxy", func() {
 
 	It("forwards an absolute-form request through the same policy", func() {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "upstream "+r.URL.Path)
 		}))
 		DeferCleanup(upstream.Close)
@@ -173,6 +180,7 @@ var _ = Describe("Proxy", func() {
 		conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", p.Address())
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = conn.Close() }()
 
 		_, err = fmt.Fprintf(conn, "GET %s/thing HTTP/1.1\r\nHost: %s\r\n\r\n", upstream.URL, upstream.URL[7:])
@@ -181,6 +189,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		body, err := io.ReadAll(resp.Body)
@@ -195,6 +204,7 @@ var _ = Describe("Proxy", func() {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			headers <- r.Header.Clone()
 
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "ok")
 		}))
 		DeferCleanup(upstream.Close)
@@ -205,6 +215,7 @@ var _ = Describe("Proxy", func() {
 		conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", p.Address())
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = conn.Close() }()
 
 		_, err = fmt.Fprintf(conn, "GET %s/thing HTTP/1.1\r\nHost: %s\r\n"+
@@ -215,6 +226,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		_, err = io.ReadAll(resp.Body)
@@ -235,11 +247,14 @@ var _ = Describe("Proxy", func() {
 		unblock := func() { once.Do(func() { close(release) }) }
 
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "first\n")
+			// the test reads the stream regardless of a flush error
 			_ = http.NewResponseController(w).Flush()
 
 			<-release
 
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "second\n")
 		}))
 		DeferCleanup(upstream.Close)
@@ -258,6 +273,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := client.Do(req)
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		reader := bufio.NewReader(resp.Body)
@@ -295,6 +311,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.Get(p.URL() + "/chat/completions?x=1")
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		body, err := io.ReadAll(resp.Body)
@@ -312,6 +329,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.Get(p.URL() + "/chat/completions")
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
@@ -324,6 +342,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.Get(p.URL() + "/elsewhere")
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
@@ -340,6 +359,7 @@ var _ = Describe("Proxy", func() {
 			resp, conn := connect(p.Address(), echo)
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
+			// test cleanup: a close error changes no assertion
 			_ = conn.Close()
 		}
 
@@ -364,6 +384,7 @@ var _ = Describe("Proxy", func() {
 		DeferCleanup(stop)
 
 		resp, conn := connect(p.Address(), echo)
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
@@ -390,6 +411,7 @@ var _ = Describe("Proxy", func() {
 		resp, err := http.Get(strings.TrimSuffix(p.URL(), "/api/v1") + "/api/v1/models")
 		Expect(err).NotTo(HaveOccurred())
 
+		// test cleanup: a close error changes no assertion
 		defer func() { _ = resp.Body.Close() }()
 
 		body, err := io.ReadAll(resp.Body)

@@ -107,11 +107,12 @@ path; the Reviewer takes over from `factory:review`.
    the `factory-<role>` DAG with `REPO` and `ISSUE`. Nothing ready means it
    exits. Only a writer's issues and comments count, and a paused issue is
    skipped.
-2. `factory-<role>` runs on a worker labelled `runner=agent`, one at a time. It
-   mints a one-hour token of that agent role's App scoped to the repo
+2. `factory-<agent role>` runs on a worker host that takes that agent role,
+   up to the host's run cap (`factory_agent_run_cap`, one at a time by default).
+   It mints a one-hour token of that agent role's App scoped to the repo
    (`github-app-token token --app <agent role> --repo`), writes it to
    `/run/factory/gh-token-<agent role>`, and runs
-   `foreman run <role> <owner/repo> <issue>` as `factory` through a
+   `foreman run <agent role> <owner/repo> <issue>` as `factory` through a
    single-purpose sudoers rule.
 3. Research (`run`): clones the repo, runs `opencode run` with the `research`
    skill, commits the findings under `docs/research/`, and pushes them to
@@ -157,8 +158,11 @@ Things to know:
 - GitHub does not let a PR's author approve it, and the App opens the PRs, so the
   review agent's approval is rejected. It then posts a comment review saying so;
   `factory:done` is the real signal. Approving needs a second identity.
-- opencode runs with all permissions allowed. Only a writer's issues and
-  comments move the factory, so only people you trust should have write access.
+- Each agent role runs opencode under the sandbox, with permission denied by
+  default: the agent role allows only the edits, shell commands and skills its
+  work needs, and the sandbox bounds what it may read, write and reach. Only a
+  writer's issues and comments move the factory, so only people you trust should
+  have write access.
 - After a failed play, handlers (service restarts) did not run. Rerun the play
   or restart `dagu` on the hosts.
 

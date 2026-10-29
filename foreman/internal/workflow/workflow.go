@@ -151,7 +151,7 @@ func ParseState(name string) (State, error) {
 type Queue struct {
 	// Role is the agent role that takes the queue.
 	Role Role
-	// State queues the issue for the role.
+	// State queues the issue for the agent role.
 	State State
 	// Running is the label a claim adds.
 	Running State
@@ -179,7 +179,7 @@ func QueueOf(role Role) (Queue, bool) {
 	return Queue{}, false
 }
 
-// Queued returns the state that queues an issue for role.
+// Queued returns the state that queues an issue for the agent role.
 func Queued(role Role) (State, bool) {
 	q, ok := QueueOf(role)
 

@@ -197,13 +197,18 @@ var _ = Describe("the OpenRouter proxy", func() {
 		up = newUpstream(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
+			// the test reads the stream regardless of a flush error
 			_ = http.NewResponseController(w).Flush()
 
 			<-release
 
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n")
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			// the test reads the stream regardless of a flush error
 			_ = http.NewResponseController(w).Flush()
 		})
 		p, err := start("sk-or-test", Loopback, up.URL)

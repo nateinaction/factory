@@ -82,8 +82,8 @@ func ReadRepoDocs(dir string) ([]Doc, error) {
 	return docs, nil
 }
 
-// docFiles lists the Markdown files under the repository's doc directories, sorted, at most
-// MaxDocFiles. A missing directory holds no documents.
+// docFiles lists the Markdown files under the repository's doc directories, one directory after
+// another and each in lexical order, at most MaxDocFiles. A missing directory holds no documents.
 func docFiles(root *os.Root) ([]string, error) {
 	var out []string
 

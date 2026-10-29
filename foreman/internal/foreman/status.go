@@ -45,7 +45,7 @@ const (
 	noValue = "-"
 	// noRows is a section with nothing to show.
 	noRows = "(none)\n"
-	// headerRole is the role column shared by the queue and usage tables.
+	// headerRole is the agent role column shared by the queue and usage tables.
 	headerRole = "ROLE"
 	// tablePadding is the gap between a table's columns.
 	tablePadding = 2
@@ -135,8 +135,8 @@ func runIssue(run dagu.Run) int {
 }
 
 // Status is `foreman status`: a read-only report of active runs, the queues, agent roles with no
-// host, and recent usage. It reads dagu's state and logs plus the config's per-role deadlines, and
-// talks to nothing else.
+// host, and recent usage. It reads dagu's state and logs plus the config's deadlines for each agent
+// role, and talks to nothing else.
 func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	runs, err := readHistory(ctx, d)
 	if err != nil {
@@ -400,7 +400,7 @@ func table(rows [][]string) string {
 
 	w := tabwriter.NewWriter(&b, 0, 0, tablePadding, ' ', 0)
 	for _, row := range rows {
-		_, _ = fmt.Fprintln(w, strings.Join(row, "\t"))
+		_, _ = fmt.Fprintln(w, strings.Join(row, "\t")) // cannot fail: the builder's writes succeed
 	}
 
 	// Flushing a tabwriter over a strings.Builder cannot fail: the builder's writes always succeed.

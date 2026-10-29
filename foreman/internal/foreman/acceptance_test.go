@@ -49,9 +49,11 @@ func fakeProvider() *httptest.Server {
 		switch r.URL.Path {
 		case "/api/v1/models":
 			w.Header().Set("Content-Type", "application/json")
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, `{"data":[{"id":"acceptance/model","object":"model"}]}`)
 		case "/api/v1/chat/completions":
 			w.Header().Set("Content-Type", "text/event-stream")
+			// writing to a test ResponseWriter cannot change the assertion
 			_, _ = io.WriteString(w, completion)
 
 			if flusher, ok := w.(http.Flusher); ok {

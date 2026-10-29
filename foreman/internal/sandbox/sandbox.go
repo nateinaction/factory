@@ -17,11 +17,12 @@ import (
 
 // Layout is every path one run's sandbox is built from, resolved by foreman outside the sandbox.
 type Layout struct {
-	// RunDir holds the run's HOME, XDG directories, scratch and output. Deleted after the run.
+	// RunDir holds the run's HOME, XDG directories, TMPDIR, state and settings file. Deleted after
+	// the run.
 	RunDir string
 	// Clone is the repository clone the model works in.
 	Clone string
-	// Output is the one result file the run may write. Empty when the role writes none.
+	// Output is the one result file the run may write. Empty when the agent role writes none.
 	Output string
 	// Skills is the factory's forked skills, read-only.
 	Skills string
@@ -47,8 +48,9 @@ type Spec struct {
 }
 
 // Plan is one agent role's sandbox. The Implementer and the Reviewer may write their clone; the
-// Planner, Researcher and Curator only read theirs. Every role writes its run directory and its one
-// output file. A clone's .git is never writable inside the sandbox: foreman owns every commit.
+// Planner, Researcher and Curator only read theirs. Every agent role writes its run directory and
+// its one output file. A clone's .git is never writable inside the sandbox: foreman owns every
+// commit.
 func Plan(role workflow.Role, layout Layout) Spec {
 	writableClone := role == workflow.Implementer || role == workflow.Reviewer
 
@@ -64,8 +66,8 @@ func Plan(role workflow.Role, layout Layout) Spec {
 	readOnly := append([]string{layout.Skills}, layout.Toolchain...)
 	denyWrite := []string{}
 
-	// A role without a clone leaves the path empty; an empty path would otherwise become a stray
-	// root-level entry.
+	// An agent role without a clone leaves the path empty; an empty path would otherwise become a
+	// stray root-level entry.
 	if layout.Clone != "" {
 		if writableClone {
 			denyWrite = append(denyWrite, filepath.Join(layout.Clone, ".git"))
@@ -176,8 +178,8 @@ type Network struct {
 	allowed []string
 }
 
-// ParseNetwork validates an allowlist from the role's configuration. An invalid entry fails the run:
-// a typo must never widen egress.
+// ParseNetwork validates an allowlist from the agent role's configuration. An invalid entry fails
+// the run: a typo must never widen egress.
 func ParseNetwork(allowed []string) (Network, error) {
 	seen := make([]string, 0, len(allowed))
 

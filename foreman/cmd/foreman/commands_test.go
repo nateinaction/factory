@@ -63,7 +63,7 @@ type cliHarness struct {
 	dir    string
 }
 
-// newCLIHarness builds a command whose role config lives in a temp directory.
+// newCLIHarness builds a command whose Ansible role config lives in a temp directory.
 func newCLIHarness() *cliHarness {
 	dir := GinkgoT().TempDir()
 
@@ -99,7 +99,7 @@ func (h *cliHarness) execute(args ...string) int {
 	return exit(h.logger, cmd, err)
 }
 
-// writeConfig writes text as the role config and returns its path.
+// writeConfig writes text as the Ansible role config and returns its path.
 func (h *cliHarness) writeConfig(text string) string {
 	GinkgoHelper()
 

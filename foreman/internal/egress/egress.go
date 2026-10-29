@@ -293,6 +293,7 @@ func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string)
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
+		// Nothing was tunneled; the close error has no response left to change.
 		_ = upstream.Close()
 
 		http.Error(w, "egress proxy: cannot tunnel", http.StatusInternalServerError)
@@ -302,19 +303,24 @@ func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string)
 
 	client, buf, err := hijacker.Hijack()
 	if err != nil {
+		// The tunnel never opened; the close error has no response left to change.
 		_ = upstream.Close()
 		return
 	}
 
 	if _, err := buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		// The tunnel is abandoned; its close errors have no reader.
 		_ = client.Close()
+		// The upstream is abandoned with it, so its close error has no reader either.
 		_ = upstream.Close()
 
 		return
 	}
 
 	if err := buf.Flush(); err != nil {
+		// The tunnel is abandoned; its close errors have no reader.
 		_ = client.Close()
+		// The upstream is abandoned with it, so its close error has no reader either.
 		_ = upstream.Close()
 
 		return
@@ -360,14 +366,16 @@ func (p *Proxy) copyTunnel(client, upstream net.Conn) {
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(client, upstream)
+		_, _ = io.Copy(client, upstream) // the peer's close ends the loop
 
 		done <- struct{}{}
 	}()
 
 	<-done
 
+	// Both directions have ended, so a close error has nowhere left to go.
 	_ = client.Close()
+	// The upstream is closed with it, for the same reason.
 	_ = upstream.Close()
 
 	<-done

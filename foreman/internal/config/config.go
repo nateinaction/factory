@@ -35,7 +35,7 @@ type Settings struct {
 	Skills string `mapstructure:"skills"`
 	// Self is foreman's installed path, re-run as the factory user.
 	Self string `mapstructure:"self"`
-	// ConfigFile is the role-written JSON config.
+	// ConfigFile is the JSON config the Ansible role writes.
 	ConfigFile string `mapstructure:"config"`
 	// TokenHelper mints GitHub App tokens.
 	TokenHelper string `mapstructure:"token-helper"`
@@ -43,8 +43,8 @@ type Settings struct {
 	Dagu string `mapstructure:"dagu"`
 	// DAGPrefix is prepended to an agent role to name the dagu DAG a poll enqueues.
 	DAGPrefix string `mapstructure:"dag-prefix"`
-	// FactoryRepo is the role config's factory repository, where a public repository's ready skill or
-	// factory group is filed. The edge copies it here so a run can file a promoted issue.
+	// FactoryRepo is the Ansible role config's factory repository, where a public repository's ready
+	// skill or factory group is filed. The edge copies it here so a run can file a promoted issue.
 	FactoryRepo string `mapstructure:"-"`
 }
 
@@ -56,7 +56,7 @@ func SettingsViper(home string) *viper.Viper {
 	v.SetEnvPrefix("FACTORY")
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	v.AutomaticEnv()
-	// The role config's environment name predates the FACTORY_* settings and keeps working.
+	// The Ansible role config's environment name predates the FACTORY_* settings and keeps working.
 	v.MustBindEnv("config", "FACTORY_AGENT_CONFIG")
 
 	// The host layout. Config stays under /etc/factory-agent and ~/.config/factory-agent.
@@ -114,7 +114,7 @@ type AgentConfig struct {
 	ContextCap int `json:"context_cap" mapstructure:"context_cap"`
 	// Compaction is whether opencode compacts instead of overflowing.
 	Compaction bool `json:"compaction" mapstructure:"compaction"`
-	// Egress is the role's network policy; an empty allowlist is open egress.
+	// Egress is the agent role's network policy; an empty allowlist is open egress.
 	Egress EgressConfig `json:"egress" mapstructure:"egress"`
 	// Budget is the agent role's step cap and wall-clock deadline.
 	Budget `mapstructure:",squash"`
@@ -150,12 +150,13 @@ type Config struct {
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
 }
 
-// Unhosted reports whether no worker host takes role. Its issues stay queued.
+// Unhosted reports whether no worker host takes the agent role. Its issues stay queued.
 func (c Config) Unhosted(role workflow.Role) bool {
 	return slices.Contains(c.UnhostedRoles, role)
 }
 
-// RetroBudget is the retro budget of role's config entry. Load has checked every known role has one.
+// RetroBudget is the retro budget of the agent role's config entry. Load has checked every known
+// agent role has one.
 func (c Config) RetroBudget(role workflow.Role) Budget {
 	return c.Agents[string(role)].Retro
 }
@@ -171,7 +172,7 @@ func (c Config) DeadRunMargin() time.Duration {
 	return time.Duration(c.DeadRunMarginMinutes) * time.Minute
 }
 
-// Load reads and validates the role config through viper. An unknown key is an error, never ignored:
+// Load reads and validates the Ansible role config through viper. An unknown key is an error, never ignored:
 // a typo must not silently fall back to a default. Every agent role needs a model and a context cap.
 func Load(path string) (Config, error) {
 	v := viper.New()
@@ -236,7 +237,7 @@ func validateLimits(path string, c Config) error {
 	return validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes)
 }
 
-// validateUnhosted rejects an unhosted role the workflow does not know.
+// validateUnhosted rejects an unhosted agent role the workflow does not know.
 func validateUnhosted(path string, roles []workflow.Role) error {
 	for _, r := range roles {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
@@ -308,7 +309,7 @@ func validateCIPendingDeadline(path string, minutes int) error {
 	return nil
 }
 
-// validateRoles rejects a role the workflow does not know.
+// validateRoles rejects an agent role the workflow does not know.
 func validateRoles(path string, roles []workflow.Role) error {
 	for _, r := range roles {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
