@@ -10,9 +10,9 @@ work="$(mktemp -d)"
 server=""
 trap '[ -z "$server" ] || kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
 
-# Apps with their own keys. "implementer" is App 1 and "reviewer" is App 2; "planner" has no
+# Apps with their own keys. "implementer" is App 1 and "reviewer" is App 2; "researcher" has no
 # credentials. "paged", "wide" and "crowded" stand past a ceiling of the listing the tool reads.
-for pair in implementer:1 reviewer:2 paged:3 wide:4 crowded:5; do
+for pair in implementer:1 reviewer:2 paged:3 wide:4 crowded:5 planner:6 curator:7; do
   app="${pair%%:*}"
   mkdir -p "$work/conf/$app"
   echo "${pair##*:}" >"$work/conf/$app/app-id"
@@ -45,19 +45,25 @@ expect() {
 
 expect "implementer mints its own repo-scoped token" 0 "tok-1-7-r" token --app implementer --repo o/r
 expect "reviewer mints its own repo-scoped token" 0 "tok-2-7-r" token --app reviewer --repo o/r
-expect "a read-only token is restricted to read permissions" 0 "tok-1-7-r-ro" \
+expect "a read-only token is restricted to read permissions" 0 "tok-1-7-r-ro-contents+issues+metadata+pull_requests" \
   token --app implementer --repo o/r --read-only
-expect "a read-only token is still one repository" 0 "tok-2-7-r-ro" \
+expect "a read-only token is still one repository" 0 "tok-2-7-r-ro-contents+issues+metadata+pull_requests" \
   token --app reviewer --repo o/r --read-only
+expect "a Planner read-only token asks for no Pull requests, which its App lacks" 0 \
+  "tok-6-7-r-ro-contents+issues+metadata" token --app planner --repo o/r --read-only
+expect "a Curator read-only token asks for no Contents or Pull requests, which its App lacks" 0 \
+  "tok-7-7-r-ro-issues+metadata" token --app curator --repo o/r --read-only
+expect "a read-only token for an unknown agent role is refused" 1 "" \
+  token --app paged --repo o/paged --read-only
 expect "an App not installed on the repo mints nothing" 1 "" token --app implementer --repo o/q
-expect "an App without credentials mints nothing, and takes no other App's" 1 "" token --app planner --repo o/r
+expect "an App without credentials mints nothing, and takes no other App's" 1 "" token --app researcher --repo o/r
 expect "an app name cannot climb out of the config dir" 1 "" token --app ../implementer --repo o/r
 expect "a repo must be owner/name" 1 "" token --app implementer --repo r
 expect "a repo cannot traverse" 1 "" token --app implementer --repo ../r
 expect "token needs --app" 1 "" token --repo o/r
 expect "implementer lists its repositories" 0 "o/r" repositories --app implementer
 expect "reviewer lists its repositories across installations" 0 "$(printf 'o/r\no/q')" repositories --app reviewer
-expect "an App without credentials lists nothing" 1 "" repositories --app planner
+expect "an App without credentials lists nothing" 1 "" repositories --app researcher
 expect "unknown command" 1 "" frobnicate --app implementer
 
 # expect_error <name> <want-stderr> <args...>

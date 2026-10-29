@@ -3,8 +3,10 @@
 
 `token` prints a fresh, uncached token of an App, limited to one repository and
 carrying the permissions the App was granted; with --read-only it is restricted
-to read Contents, Issues, Pull requests and Metadata: what the model inside a run
-gets as GH_TOKEN, so it can read the issue and the pull request but never write.
+to the reads the agent role's App holds (Contents, Issues, Pull requests and Metadata,
+less any the App lacks): what the model inside a run gets as GH_TOKEN, so it can read
+the issue and the pull request but never write. GitHub refuses a token that asks for
+more than its App holds, so a role not listed here gets no read-only token.
 
 `repositories` prints OWNER/NAME for every repository the App is installed on. A listing
 longer than the tool reads, or an App installed on more installations than it lists, is a
@@ -35,13 +37,22 @@ REPO_RE = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 PAGE_SIZE = 100
 MAX_PAGES = 10
 MAX_INSTALLATIONS = 50
-# The model reads the issue, its comments and the pull request; it never writes.
+# The model reads what its agent role's App holds and never writes. These are the reads of the
+# spec's permission table: Planner has no Pull requests, Curator no Contents or Pull requests.
 READ_ONLY = {
-    "contents": "read",
-    "issues": "read",
-    "metadata": "read",
-    "pull_requests": "read",
+    "planner": ("contents", "issues", "metadata"),
+    "researcher": ("contents", "issues", "metadata"),
+    "implementer": ("contents", "issues", "metadata", "pull_requests"),
+    "reviewer": ("contents", "issues", "metadata", "pull_requests"),
+    "curator": ("issues", "metadata"),
 }
+
+
+def read_only_permissions(app):
+    """The read-only permissions an App's token may ask for; an unlisted role fails closed."""
+    if app not in READ_ONLY:
+        raise ValueError(f"no read-only permissions are set for agent role {app!r}")
+    return {name: "read" for name in READ_ONLY[app]}
 
 
 class Once(argparse.Action):
@@ -81,7 +92,7 @@ def build_parser():
     token.add_argument("--repo", action=Once, required=True, metavar="OWNER/NAME",
                        help="the only repository the token may touch")
     token.add_argument("--read-only", action=OnceSwitch,
-                       help="restrict the token to read Contents, Issues, Pull requests and Metadata")
+                       help="restrict the token to the reads the agent role's App holds")
     repositories = cmds.add_parser(
         "repositories", help="list where the App is installed", allow_abbrev=False,
         description="Print OWNER/NAME for every repository an App is installed on.",
@@ -131,7 +142,7 @@ def call(method, path, bearer, body=None):
 def installation_token(app, installation_id, repo_name=None, read_only=False):
     body = {} if repo_name is None else {"repositories": [repo_name]}
     if read_only:
-        body["permissions"] = READ_ONLY
+        body["permissions"] = read_only_permissions(app)
     r = call("POST", f"/app/installations/{installation_id}/access_tokens", jwt(app), body or None)
     return r["token"]
 
