@@ -52,6 +52,10 @@ _Avoid_: retro ticket, findings log
 The factory's program: it claims issues, starts each agent role's run and makes every change on GitHub, while the model only writes files.
 _Avoid_: factory script, orchestrator, finances-agent
 
+**Scheduler**:
+The program that decides when foreman runs and where: cron, per-agent-role queues, run caps and dispatch to worker hosts. Dagu today.
+_Avoid_: orchestrator, coordinator, workflow engine
+
 **Worker host**:
 A host that runs agent role runs for the factory; it takes the agent roles it lists, or all of them.
 _Avoid_: runner, node, slot
