@@ -139,6 +139,9 @@ type Config struct {
 	ReviewRoundLimit int `json:"review_round_limit" mapstructure:"review_round_limit"`
 	// CIPendingDeadlineMinutes is how long an issue waits in factory:review with pending CI before it fails.
 	CIPendingDeadlineMinutes int `json:"ci_pending_deadline_minutes" mapstructure:"ci_pending_deadline_minutes"`
+	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
+	// Empty means no repository is configured, so such a promotion fails closed.
+	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
 }
 
 // CIPendingDeadline is how long pending CI may keep an issue queued before it fails.
@@ -205,7 +208,24 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes)
+	if err := validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes); err != nil {
+		return err
+	}
+
+	return validateFactoryRepo(path, c.FactoryRepo)
+}
+
+// validateFactoryRepo checks the configured factory repository, when there is one, is owner/name.
+func validateFactoryRepo(path, repo string) error {
+	if repo == "" {
+		return nil
+	}
+
+	if err := workflow.ValidateRepo(repo); err != nil {
+		return fmt.Errorf("config %s: factory repo: %w", path, err)
+	}
+
+	return nil
 }
 
 // validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
