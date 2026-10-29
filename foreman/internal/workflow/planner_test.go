@@ -206,13 +206,20 @@ var _ = Describe("storing a final round's proposal", func() {
 })
 
 var _ = Describe("the human gate", func() {
-	DescribeTable("accepts a writer's approval",
+	DescribeTable("accepts a writer's explicit approval",
 		func(text string) { Expect(workflow.Approves(text)).To(BeTrue()) },
 		Entry(nil, "yes"),
 		Entry(nil, "Yes!"),
 		Entry(nil, "  yes.  "),
+		Entry(nil, "Yes, please."),
+		Entry(nil, "lgtm"),
 		Entry(nil, "ready to build"),
 		Entry(nil, "Looks good — ready to build."),
+		Entry(nil, "I'm ready to build"),
+		Entry(nil, "ready to build now"),
+		Entry(nil, "build it"),
+		Entry(nil, "go ahead and build it"),
+		Entry(nil, "let's build it"),
 	)
 
 	DescribeTable("does not accept anything else",
@@ -221,6 +228,43 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "not yet"),
 		Entry(nil, "yes, but change the title"),
 		Entry(nil, "yesterday"),
+		Entry(nil, ""),
+		Entry(nil, "not ready to build"),
+		Entry(nil, "Not ready to build."),
+		Entry(nil, "not yet ready to build"),
+		Entry(nil, "I'm not ready to build"),
+		Entry(nil, "don't build it"),
+		Entry(nil, "do not build"),
+		Entry(nil, "no changes, ready to build"),
+		Entry(nil, "ready to build, but split the storage change"),
+		Entry(nil, "yes, no changes needed"),
+		Entry(nil, "ready to build?"),
+		Entry(nil, "Is this ready to build?"),
+		Entry(nil, "should we build it?"),
+		Entry(nil, "maybe ready to build"),
+		Entry(nil, "I think it is ready to build"),
+	)
+
+	DescribeTable("accepts a writer's explicit request to build",
+		func(text string) { Expect(workflow.RequestsBuild(text)).To(BeTrue()) },
+		Entry(nil, "ready to build"),
+		Entry(nil, "Ready to build!"),
+		Entry(nil, "Looks good — ready to build."),
+		Entry(nil, "build it"),
+		Entry(nil, "go ahead and build it"),
+		Entry(nil, "let's build it"),
+		Entry(nil, "please build it"),
+	)
+
+	DescribeTable("does not take a plain answer as a request to build",
+		func(text string) { Expect(workflow.RequestsBuild(text)).To(BeFalse()) },
+		Entry(nil, "yes"),
+		Entry(nil, "ok"),
+		Entry(nil, "lgtm"),
+		Entry(nil, "looks good"),
+		Entry(nil, "not ready to build"),
+		Entry(nil, "do not build"),
+		Entry(nil, "ready to build?"),
 		Entry(nil, ""),
 	)
 })

@@ -254,6 +254,68 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
 
+	It("opens the gate on a writer's ready-to-build with no final round pending", func() {
+		waitingIssue()
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerQuestions,
+			Comment: "**Q1** - Should exports include archived accounts? Recommended answer: no.",
+		})
+		h.comment(1, "o", "ready to build")
+
+		poll()
+
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelImplement))
+		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelWaiting))
+		Expect(h.markerComments(1)).To(ContainElement(ContainSubstring(
+			"role=planner run=run-1 from=factory:waiting to=factory:implement")))
+		Expect(h.runner.find("opencode")).To(BeEmpty(), "opening the gate must not run the model")
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	It("does not open the gate on a plain yes to a question round", func() {
+		waitingIssue()
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerQuestions,
+			Comment: "**Q1** - Should exports include archived accounts? Recommended answer: no.",
+		})
+		h.comment(1, "o", "yes")
+
+		poll()
+
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
+		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelImplement))
+		Expect(h.runner.find("enqueue")).To(HaveLen(1))
+	})
+
+	It("does not open the gate on a non-writer's ready-to-build", func() {
+		waitingIssue()
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerQuestions,
+			Comment: "**Q1** - Should exports include archived accounts? Recommended answer: no.",
+		})
+		h.comment(1, "factory", "ready to build")
+
+		poll()
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	It("does not apply on a writer's negated ready-to-build", func() {
+		waitingIssue()
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerFinalRound,
+			Comment: "One PR. **Is this ready to build?**", Proposal: &single,
+		})
+		h.comment(1, "o", "not ready to build")
+
+		poll()
+
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
+		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelImplement))
+		Expect(h.runner.find("enqueue")).To(HaveLen(1))
+	})
+
 	It("wakes the Planner on a reply other than yes", func() {
 		waitingIssue()
 		plannerRound(workflow.PlannerOutput{
