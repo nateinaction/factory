@@ -150,7 +150,7 @@ var _ = Describe("the foreman command", func() {
 			Entry("poll with arguments", "poll", "extra"),
 			Entry("start alone", "start"),
 			Entry("start without an issue", "start", "implementer", "o/r"),
-			Entry("start with an extra argument", "start", "implementer", "o/r", "5", "extra"),
+			Entry("start with an extra argument", "start", "implementer", "o/r", "5", "extra", "more"),
 			Entry("run without an issue", "run", "implementer", "o/r"),
 			Entry("a malformed repository", "start", "implementer", "not-a-repo", "5"),
 			Entry("a word for an issue", "start", "implementer", "o/r", "five"),
@@ -165,6 +165,16 @@ var _ = Describe("the foreman command", func() {
 			Entry("history with an extra argument", "history", "o/r", "5"),
 			Entry("history with a malformed repository", "history", "not-a-repo"),
 		)
+
+		It("accepts start with a trace context argument", func() {
+			path := filepath.Join(h.dir, "missing.json")
+
+			// The missing config fails the command after its arguments parse: that proves the fourth
+			// argument was accepted, without running an agent role.
+			Expect(h.execute("start", "implementer", "o/r", "5", "not-a-traceparent", "--config", path)).
+				To(Equal(1))
+			Expect(h.logs.String()).NotTo(ContainSubstring("accepts 3 arg(s)"))
+		})
 
 		DescribeTable("fails closed on an unknown agent role",
 			func(verb string) {

@@ -5,10 +5,14 @@ import (
 	"errors"
 	"os"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -65,6 +69,31 @@ var _ = Describe("Start", func() {
 				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:implementing"), "did not release the claim")
 			Expect(h.runner.find("github-app-token")).To(HaveLen(2), "want a fresh token after the run")
 			h.expectLeakFree("minted-token")
+		})
+
+		It("passes its trace context to the factory half across sudo", func() {
+			tracer := sdktrace.NewTracerProvider().Tracer("test")
+			h.deps.Tracer = tracer
+
+			ctx, span := tracer.Start(context.Background(), telemetry.RootSpanName("start"))
+			defer span.End()
+
+			h.acceptWrites()
+			h.sudoExit(0)
+
+			Expect(Start(ctx, h.deps, testConfig(), workflow.Implementer, testRef(5))).To(BeZero())
+
+			sudo := h.runner.find("sudo")
+			Expect(sudo).To(HaveLen(1), "no factory half to continue the trace")
+			Expect(sudo[0].Env).To(HaveKey(telemetry.TraceParentVar),
+				"sudo drops the environment, so start must pass the trace context explicitly")
+
+			parentCtx, ok := telemetry.ContinueTrace(context.Background(), sudo[0].Env[telemetry.TraceParentVar])
+			Expect(ok).To(BeTrue(), "the trace context passed to the factory half is malformed")
+
+			parent := trace.SpanContextFromContext(parentCtx)
+			Expect(parent.TraceID()).To(Equal(span.SpanContext().TraceID()))
+			Expect(parent.SpanID()).To(Equal(span.SpanContext().SpanID()))
 		})
 
 		It("marks the issue failed when the factory half fails", func() {

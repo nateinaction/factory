@@ -1124,10 +1124,15 @@ func claimAndEnqueue(
 
 	enqueueCtx, span := startEnqueueSpan(ctx, d, repo, q.role, issue.Number)
 
-	_, err = d.run(enqueueCtx, proc.Cmd{Argv: []string{
-		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(q.role), "--",
-		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(issue.Number),
-	}})
+	params := []string{"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(issue.Number)}
+	// The DAG passes this to `foreman start`, so the run it starts continues the enqueue's trace.
+	if traceParent := telemetry.TraceParent(enqueueCtx); traceParent != "" {
+		params = append(params, telemetry.TraceParentVar+"="+traceParent)
+	}
+
+	argv := append([]string{d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(q.role), "--"}, params...)
+
+	_, err = d.run(enqueueCtx, proc.Cmd{Argv: argv})
 	if err == nil {
 		inst.claim(ctx, repo, q.role)
 	} else {
@@ -1285,13 +1290,18 @@ func runAsFactory(
 
 	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
+	// The factory half records the same transition markers, so both halves must name one run.
+	// sudo's env_reset drops the environment, so the sudoers rule keeps each variable by name.
+	env := map[string]string{"DAG_RUN_ID": d.runID()}
+	if traceParent := telemetry.TraceParent(ctx); traceParent != "" {
+		env[telemetry.TraceParentVar] = traceParent
+	}
+
 	_, runErr := d.Runner.Run(ctx, proc.Cmd{
 		Argv: []string{
 			"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo.String(), strconv.Itoa(number),
 		},
-		// The factory half records the same transition markers, so both halves must name one run.
-		// The sudoers rule keeps this variable for that reason.
-		Env:     map[string]string{"DAG_RUN_ID": d.runID()},
+		Env:     env,
 		Timeout: ceiling,
 	})
 
