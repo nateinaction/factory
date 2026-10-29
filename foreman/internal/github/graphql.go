@@ -91,5 +91,5 @@ func (c Client) MinimizeComment(ctx context.Context, nodeID string) error {
 
 // DeleteComment deletes an issue comment: the fallback when the App cannot minimize it.
 func (c Client) DeleteComment(ctx context.Context, repo workflow.Repo, id int64) error {
-	return c.Call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, id), nil, nil)
+	return c.Call(ctx, http.MethodDelete, commentPath(repo, id), nil, nil)
 }

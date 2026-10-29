@@ -47,4 +47,11 @@ var _ = Describe("the client's source", func() {
 		Expect(sent).To(Equal(1),
 			"a second request path repeats the close, the size cap and the status check")
 	})
+
+	It("builds every repository path from the one builder", func() {
+		for name, src := range sources() {
+			Expect(src).NotTo(ContainSubstring(`"/repos`),
+				name+" builds an API path by hand; repoPath escapes every part for the whole client")
+		}
+	})
 })
