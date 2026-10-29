@@ -48,7 +48,7 @@ func (h *harness) opencodeWrites(marker, path, text string) {
 func TestRunImplementerFirstRunPushesAndOpensPR(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("repo-token\n"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("repo-token\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	h.opencodeWrites("--continue", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "lessons\n")
@@ -103,7 +103,7 @@ func TestRunImplementerReworkBuildsOnReviewedCommits(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 		[]Item{{Body: ReviewMarker("old") + "\nFIX THE THING"}})
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("repo-token"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("repo-token"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5); err != nil {
@@ -133,7 +133,7 @@ func TestRunImplementerReworkBuildsOnReviewedCommits(t *testing.T) {
 func TestRunImplementerFailsWithoutNewCommits(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	base := h.runner.fn
@@ -156,7 +156,7 @@ func TestRunImplementerFailsWithoutNewCommits(t *testing.T) {
 func TestRunImplementerRetroFailureIsNotFatal(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	base := h.runner.fn
@@ -179,7 +179,7 @@ func TestRunImplementerRetroFailureIsNotFatal(t *testing.T) {
 func TestRunImplementerEmptyRetroIsLoggedNotPosted(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	h.opencodeWrites("--continue", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "  \n")
@@ -195,7 +195,7 @@ func TestRunImplementerEmptyRetroIsLoggedNotPosted(t *testing.T) {
 func TestRunImplementerClearsStaleScratchFromEarlierRuns(t *testing.T) {
 	h := newHarness(t)
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md")
@@ -220,7 +220,7 @@ func (h *harness) reviewerGH(reviews []Item) {
 	h.gh.json("GET /repos/o/r", map[string]any{"default_branch": "main"})
 	h.gh.json("GET /repos/o/r/pulls/8/reviews", reviews)
 	h.gh.status("POST /repos/o/r/pulls/8/reviews", http.StatusOK)
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("repo-token"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Reviewer), []byte("repo-token"), 0o640); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -329,7 +329,7 @@ func TestRunReviewerWithoutPRFails(t *testing.T) {
 	h := newHarness(t)
 	h.gh.json("GET /repos/o/r/issues/5", map[string]any{"number": 5})
 	h.gh.json("GET /repos/o/r/pulls", []map[string]any{})
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Reviewer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)

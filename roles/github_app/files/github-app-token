@@ -1,54 +1,74 @@
 #!/usr/bin/env python3
-"""Mint GitHub App installation tokens; doubles as a git credential helper.
+"""Mint GitHub App installation tokens, one App per agent role.
 
-  github-app-token token          print a valid installation token
-  github-app-token token --repo R print a fresh, uncached token limited to repo R
-                                  (contents, issues, pull_requests: write)
-  github-app-token installation   print the installation id (lookup, not cached)
-  github-app-token get            git credential helper (use via credential.helper)
+  github-app-token token --app A --repo OWNER/NAME
+        print a fresh, uncached token of App A, limited to that repository and
+        carrying the permissions the App was granted
+  github-app-token repositories --app A
+        print OWNER/NAME for every repository App A is installed on
 
-Config dir (default /etc/github-app, override with GITHUB_APP_DIR):
-  app-id, installation-id, private-key.pem
-Tokens are cached in $XDG_CACHE_HOME/github-app-token.json (0600) until
-5 minutes before expiry. Any failure exits non-zero and prints nothing on
-stdout, so git is never handed a bad credential.
+Config dir (default /etc/github-app, override with GITHUB_APP_DIR) holds one
+directory per App, named for its agent role:
+  <A>/app-id, <A>/private-key.pem
+An App never uses another App's directory: a missing credential, an App that
+is not installed on the repository, or any other failure exits non-zero and
+prints nothing on stdout.
 """
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
 CONF = os.environ.get("GITHUB_APP_DIR", "/etc/github-app")
-CACHE = os.path.join(
-    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
-    "github-app-token.json",
-)
-API = "https://api.github.com"
-REFRESH_MARGIN_S = 300
-SCOPED_PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write"}
+API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+APP_RE = re.compile(r"^[a-z]{1,20}$")
+REPO_RE = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
+PAGE_SIZE = 100
+MAX_PAGES = 10
+MAX_INSTALLATIONS = 50
+
+
+def usage():
+    sys.exit(__doc__)
 
 
 def b64(b):
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
-def read(name):
-    with open(os.path.join(CONF, name)) as f:
-        return f.read().strip()
+def parse(argv):
+    """Return (command, {flag: value}) for `cmd --flag value ...`; anything else is a usage error."""
+    if not argv or len(argv) % 2 == 0:
+        usage()
+    flags = {}
+    for flag, value in zip(argv[1::2], argv[2::2]):
+        if not flag.startswith("--") or flag in flags:
+            usage()
+        flags[flag[2:]] = value
+    return argv[0], flags
 
 
-def jwt():
+def app_dir(app):
+    if not APP_RE.match(app):
+        raise ValueError(f"--app takes an agent role name, got {app!r}")
+    return os.path.join(CONF, app)
+
+
+def jwt(app):
+    d = app_dir(app)
+    with open(os.path.join(d, "app-id")) as f:
+        app_id = f.read().strip()
     now = int(time.time())
     head = b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-    body = b64(json.dumps({"iat": now - 60, "exp": now + 540, "iss": read("app-id")}).encode())
+    body = b64(json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
     signing_input = f"{head}.{body}".encode()
     sig = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", os.path.join(CONF, "private-key.pem")],
+        ["openssl", "dgst", "-sha256", "-sign", os.path.join(d, "private-key.pem")],
         input=signing_input, capture_output=True, check=True, timeout=10,
     ).stdout
     return f"{head}.{body}.{b64(sig)}"
@@ -66,60 +86,54 @@ def call(method, path, bearer, body=None):
         return json.load(r)
 
 
-def cached():
-    try:
-        with open(CACHE) as f:
-            c = json.load(f)
-        if c["expires_at"] - time.time() > REFRESH_MARGIN_S:
-            return c["token"]
-    except (OSError, ValueError, KeyError):
-        pass  # missing or corrupt cache just means we mint a new token
-    return None
-
-
-def token():
-    t = cached()
-    if t:
-        return t
-    r = call("POST", f"/app/installations/{read('installation-id')}/access_tokens", jwt())
-    exp = time.mktime(time.strptime(r["expires_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
-    os.makedirs(os.path.dirname(CACHE), mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CACHE))
-    with os.fdopen(fd, "w") as f:
-        json.dump({"token": r["token"], "expires_at": exp}, f)
-    os.replace(tmp, CACHE)  # atomic, and mkstemp already created it 0600
+def installation_token(app, installation_id, repo_name=None):
+    body = None if repo_name is None else {"repositories": [repo_name]}
+    r = call("POST", f"/app/installations/{installation_id}/access_tokens", jwt(app), body)
     return r["token"]
 
 
-def scoped_token(repo):
-    """A one-hour token for a single repo with only the permissions an agent needs.
+def repo_token(app, repo):
+    """A one-hour token for a single repository, never cached: a cache file would outlive the hour."""
+    m = REPO_RE.match(repo)
+    if not m or ".." in repo:
+        raise ValueError(f"--repo takes OWNER/NAME, got {repo!r}")
+    inst = call("GET", f"/repos/{repo}/installation", jwt(app))
+    return installation_token(app, inst["id"], m.group(2))
 
-    Never cached: the caller wants the full hour, and a cache file would outlive it.
-    """
-    if "/" in repo or not repo:
-        raise ValueError(f"--repo takes a bare repo name, got {repo!r}")
-    body = {"repositories": [repo], "permissions": SCOPED_PERMISSIONS}
-    r = call("POST", f"/app/installations/{read('installation-id')}/access_tokens", jwt(), body)
-    return r["token"]
+
+def installed_repositories(app):
+    """Every repository the App is installed on, across its installations."""
+    installations = []
+    for page in range(1, MAX_PAGES + 1):
+        batch = call("GET", f"/app/installations?per_page={PAGE_SIZE}&page={page}", jwt(app))
+        installations.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            break
+    names = []
+    for inst in installations[:MAX_INSTALLATIONS]:
+        names.extend(installation_repositories(installation_token(app, inst["id"])))
+    return names
+
+
+def installation_repositories(token):
+    names = []
+    for page in range(1, MAX_PAGES + 1):
+        r = call("GET", f"/installation/repositories?per_page={PAGE_SIZE}&page={page}", token)
+        names.extend(x["full_name"] for x in r["repositories"])
+        if len(r["repositories"]) < PAGE_SIZE:
+            break
+    return names
 
 
 def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "token" and sys.argv[2:3] == ["--repo"] and len(sys.argv) == 4:
-        print(scoped_token(sys.argv[3]))
-    elif cmd == "token" and len(sys.argv) == 2:
-        print(token())
-    elif cmd == "installation":
-        for i in call("GET", "/app/installations", jwt()):
-            print(i["id"], i["account"]["login"], i["repository_selection"])
-    elif cmd == "get":
-        attrs = dict(l.rstrip("\n").split("=", 1) for l in sys.stdin if "=" in l)
-        if attrs.get("host") == "github.com" and attrs.get("protocol") == "https":
-            print(f"username=x-access-token\npassword={token()}")
-    elif cmd in ("store", "erase"):
-        pass  # tokens are minted, never stored by git
+    cmd, flags = parse(sys.argv[1:])
+    if cmd == "token" and set(flags) == {"app", "repo"}:
+        print(repo_token(flags["app"], flags["repo"]))
+    elif cmd == "repositories" and set(flags) == {"app"}:
+        for name in installed_repositories(flags["app"]):
+            print(name)
     else:
-        sys.exit(__doc__)
+        usage()
 
 
 try:

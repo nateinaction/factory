@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Behaviour of roles/github_app/files/github-app-token against a fake GitHub API:
+# each App mints only with its own credentials, and a missing or uninstalled App
+# fails with nothing on stdout.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+script="$root/roles/github_app/files/github-app-token"
+work="$(mktemp -d)"
+server=""
+trap '[ -z "$server" ] || kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
+
+# Two Apps with their own keys. "implementer" is App 1 and "reviewer" is App 2; "planner" has no credentials.
+for pair in implementer:1 reviewer:2; do
+  app="${pair%%:*}"
+  mkdir -p "$work/conf/$app"
+  echo "${pair##*:}" >"$work/conf/$app/app-id"
+  openssl genrsa -out "$work/conf/$app/private-key.pem" 2048 2>/dev/null
+done
+
+python3 -I "$root/tests/fake_github.py" >"$work/port" &
+server=$!
+for _ in $(seq 1 50); do
+  [ -s "$work/port" ] && break
+  sleep 0.1
+done
+export GITHUB_API_URL="http://127.0.0.1:$(cat "$work/port")" GITHUB_APP_DIR="$work/conf"
+
+failures=0
+# expect <name> <want-exit> <want-stdout> <args...>
+expect() {
+  local name="$1" want_code="$2" want_out="$3"
+  shift 3
+  local out code
+  out="$("$script" "$@" 2>/dev/null)"
+  code=$?
+  if [ "$code" -eq 0 ] && [ "$want_code" -ne 0 ] || [ "$code" -ne 0 ] && [ "$want_code" -eq 0 ] || [ "$out" != "$want_out" ]; then
+    echo "FAIL $name: exit $code, stdout '$out' (want exit $want_code, stdout '$want_out')" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   $name"
+  fi
+}
+
+expect "implementer mints its own repo-scoped token" 0 "tok-1-7-r" token --app implementer --repo o/r
+expect "reviewer mints its own repo-scoped token" 0 "tok-2-7-r" token --app reviewer --repo o/r
+expect "an App not installed on the repo mints nothing" 1 "" token --app implementer --repo o/q
+expect "an App without credentials mints nothing, and takes no other App's" 1 "" token --app planner --repo o/r
+expect "an app name cannot climb out of the config dir" 1 "" token --app ../implementer --repo o/r
+expect "a repo must be owner/name" 1 "" token --app implementer --repo r
+expect "a repo cannot traverse" 1 "" token --app implementer --repo ../r
+expect "token needs --app" 1 "" token --repo o/r
+expect "implementer lists its repositories" 0 "o/r" repositories --app implementer
+expect "reviewer lists its repositories across installations" 0 "$(printf 'o/r\no/q')" repositories --app reviewer
+expect "an App without credentials lists nothing" 1 "" repositories --app planner
+expect "unknown command" 1 "" frobnicate --app implementer
+
+[ "$failures" -eq 0 ]

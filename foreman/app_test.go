@@ -12,7 +12,7 @@ import (
 func (h *harness) withConfig() {
 	h.t.Helper()
 	path := filepath.Join(h.dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"repo":"o/r","model":"prov/model"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"roles":["implementer","reviewer"],"model":"prov/model"}`), 0o600); err != nil {
 		h.t.Fatal(err)
 	}
 	h.deps.Settings.ConfigFile = path
@@ -71,8 +71,8 @@ func TestMainKnownRoleWithoutBehaviourExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestMainPollUsesTheConfiguredRepo pins: main poll uses the configured repo.
-func TestMainPollUsesTheConfiguredRepo(t *testing.T) {
+// TestMainPollUsesTheConfiguredAgentRoles pins: main poll polls where the configured Apps are installed.
+func TestMainPollUsesTheConfiguredAgentRoles(t *testing.T) {
 	h := newHarness(t)
 	h.withConfig()
 	h.queue(nil)
@@ -110,7 +110,7 @@ func TestMainStartRunsTheWholeImplementerHandoff(t *testing.T) {
 
 // TestMainBadConfigFailsClosed pins: main bad config fails closed.
 func TestMainBadConfigFailsClosed(t *testing.T) {
-	for _, cfg := range []string{``, `{}`, `{"repo":"nope","model":"m"}`, `{"repo":"o/r"}`, `[`} {
+	for _, cfg := range []string{``, `{}`, `{"roles":["janitor"],"model":"m"}`, `{"roles":[],"model":"m"}`, `{"roles":["implementer"]}`, `{"model":"m"}`, `[`} {
 		h := newHarness(t)
 		path := filepath.Join(h.dir, "config.json")
 		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
@@ -145,7 +145,7 @@ func TestMainErrorsNeverCarryTheToken(t *testing.T) {
 func TestDefaultSettingsKeepTheConfigLocations(t *testing.T) {
 	s := DefaultSettings("/home/factory", "")
 	if s.ConfigFile != "/etc/factory-agent/config.json" || s.KeyFile != "/home/factory/.config/factory-agent/openrouter-key" ||
-		s.WorkRoot != "/home/factory/work" || s.TokenFile != "/run/factory/gh-token" || s.API != "https://api.github.com" {
+		s.WorkRoot != "/home/factory/work" || s.TokenPath(Reviewer) != "/run/factory/gh-token-reviewer" || s.API != "https://api.github.com" {
 		t.Errorf("%+v", s)
 	}
 	if DefaultSettings("/h", "/x.json").ConfigFile != "/x.json" {

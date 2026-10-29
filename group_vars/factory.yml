@@ -24,17 +24,17 @@ factory_user: factory
 
 # Set false to skip the GitHub App credential entirely.
 factory_github_app: true
-github_app_dir: /etc/github-app
+github_app_dir: /etc/github-app # one directory per agent role below this
+github_app_group: "{{ dagu_user }}"
 
 # PoE HAT fan trip points in millidegrees C (stock is 40000-55000). High values
 # keep the fan off in normal use; the CPU throttles at 80000.
 factory_poe_fan: true
 poe_fan_trip_points_mc: [75000, 77000, 78000, 79000]
 
-# Issue-driven agent (runs on the dagu worker). Picks up open issues labelled
-# ready-for-agent on factory_agent_repo and runs opencode's implement skill.
+# Issue-driven agent (runs on the dagu worker). Works every repository that one of the factory's
+# GitHub Apps is installed on (see secrets/github_app.yml); there is no repository list to keep.
 factory_agent: true
-factory_agent_repo: nateinaction/finances
 # One dagu DAG per agent role, all in one single-slot queue until the run cap lands.
 factory_agent_roles: [planner, researcher, implementer, reviewer, curator]
 factory_agent_queue: factory-agents

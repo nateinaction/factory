@@ -38,13 +38,13 @@ func fail(d Deps, err error) int {
 	return 1
 }
 
-// poll loads the config and polls its repository.
+// poll loads the config and polls every repository one of its Apps is installed on.
 func poll(ctx context.Context, d Deps) int {
 	cfg, err := LoadConfig(d.Settings.ConfigFile)
 	if err != nil {
 		return fail(d, err)
 	}
-	code, err := Poll(ctx, d, cfg.Repo)
+	code, err := Poll(ctx, d, cfg.Roles)
 	if err != nil {
 		return fail(d, err)
 	}

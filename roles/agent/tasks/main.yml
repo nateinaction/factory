@@ -35,7 +35,7 @@
 
 - name: Write the agent config
   ansible.builtin.copy:
-    content: "{{ {'repo': factory_agent_repo, 'model': factory_agent_model} | to_nice_json }}\n"
+    content: "{{ {'roles': github_apps | list | sort, 'model': factory_agent_model} | to_nice_json }}\n"
     dest: /etc/factory-agent/config.json
     mode: "0644"
 

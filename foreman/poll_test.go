@@ -22,6 +22,20 @@ func (h *harness) queue(byLabel map[string][]map[string]any) {
 	})
 }
 
+// roles are the agent roles the harness's config lists.
+func (h *harness) roles() []Role { return []Role{Implementer, Reviewer} }
+
+// queueRepo registers the issues listing of one repository.
+func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
+	h.gh.handle("GET /repos/"+repo+"/issues", func(w http.ResponseWriter, r *http.Request) {
+		list := byLabel[r.URL.Query().Get("labels")]
+		if list == nil {
+			list = []map[string]any{}
+		}
+		writeJSON(w, list)
+	})
+}
+
 // acceptWrites lets label and comment writes on issue n succeed.
 func (h *harness) acceptWrites(n string) {
 	h.gh.status("DELETE /repos/o/r/issues/"+n+"/labels/{label}", http.StatusOK)
@@ -37,7 +51,7 @@ func TestPollClaimsReviewsBeforeWork(t *testing.T) {
 		LabelReady:       {{"number": 3}},
 	})
 	h.acceptWrites("12")
-	code, err := Poll(context.Background(), h.deps, "o/r")
+	code, err := Poll(context.Background(), h.deps, h.roles())
 	if err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -71,7 +85,7 @@ func TestPollClaimsWorkWhenNoReviewWaits(t *testing.T) {
 		LabelReady: {{"number": 4, "pull_request": map[string]any{}}, {"number": 5}},
 	})
 	h.acceptWrites("5")
-	if code, err := Poll(context.Background(), h.deps, "o/r"); err != nil || code != 0 {
+	if code, err := Poll(context.Background(), h.deps, h.roles()); err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
 	if got := h.gh.bodies("POST", "/repos/o/r/issues/5/labels"); !strings.Contains(got[0], LabelWorking) {
@@ -90,7 +104,7 @@ func TestPollClaimsWorkWhenNoReviewWaits(t *testing.T) {
 func TestPollWithNothingReadyWritesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.queue(nil)
-	code, err := Poll(context.Background(), h.deps, "o/r")
+	code, err := Poll(context.Background(), h.deps, h.roles())
 	if err != nil || code != 0 || h.out.String() != "nothing ready\n" {
 		t.Fatalf("%d %v %q", code, err, h.out.String())
 	}
@@ -109,7 +123,7 @@ func TestPollLosingTheClaimStopsQuietly(t *testing.T) {
 	h := newHarness(t)
 	h.queue(map[string][]map[string]any{LabelReady: {{"number": 5}}})
 	h.gh.status("DELETE /repos/o/r/issues/5/labels/{label}", http.StatusNotFound)
-	code, err := Poll(context.Background(), h.deps, "o/r")
+	code, err := Poll(context.Background(), h.deps, h.roles())
 	if err != nil || code != 0 || h.out.String() != "issue 5 was claimed by someone else\n" {
 		t.Fatalf("%d %v %q", code, err, h.out.String())
 	}
@@ -130,7 +144,7 @@ func TestPollEnqueueFailureFailsTheIssue(t *testing.T) {
 		}
 		return base(c)
 	}
-	code, err := Poll(context.Background(), h.deps, "o/r")
+	code, err := Poll(context.Background(), h.deps, h.roles())
 	if err != nil || code != 1 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -149,19 +163,163 @@ func TestPollEnqueueFailureFailsTheIssue(t *testing.T) {
 	}
 }
 
-// TestPollMintsTheRepoScopedToken pins: poll mints the repo scoped token.
-func TestPollMintsTheRepoScopedToken(t *testing.T) {
+// TestPollMintsEachTokenFromTheAppThatOwnsIt pins: a claim is made with the owning agent role's repo-scoped token.
+func TestPollMintsEachTokenFromTheAppThatOwnsIt(t *testing.T) {
 	h := newHarness(t)
-	h.queue(nil)
-	if _, err := Poll(context.Background(), h.deps, "o/r"); err != nil {
+	h.queue(map[string][]map[string]any{LabelReviewReady: {{"number": 12}}})
+	h.acceptWrites("12")
+	if _, err := Poll(context.Background(), h.deps, h.roles()); err != nil {
 		t.Fatal(err)
 	}
-	mint := h.runner.find("github-app-token")
-	if len(mint) != 1 || !slices.Equal(mint[0].Argv, []string{"/usr/local/bin/github-app-token", "token", "--repo", "r"}) || !mint[0].Capture {
+	mint := h.runner.find("app-token", " token ")
+	if len(mint) != 1 || !slices.Equal(mint[0].Argv, []string{
+		"/usr/local/bin/github-app-token", "token", "--app", "reviewer", "--repo", "o/r",
+	}) || !mint[0].Capture {
 		t.Errorf("mint %v", mint)
 	}
-	if got := h.gh.calls()[0].Header.Get("Authorization"); got != "Bearer minted-token" {
-		t.Errorf("auth %q", got)
+	for _, r := range h.gh.calls() {
+		if got := r.Header.Get("Authorization"); got != "Bearer minted-token-reviewer" {
+			t.Errorf("%s %s used %q", r.Method, r.Path, got)
+		}
+	}
+}
+
+// TestPollListsEachAppsInstallations pins: the poll asks every configured App where it is installed.
+func TestPollListsEachAppsInstallations(t *testing.T) {
+	h := newHarness(t)
+	h.queue(nil)
+	if _, err := Poll(context.Background(), h.deps, h.roles()); err != nil {
+		t.Fatal(err)
+	}
+	var apps []string
+	for _, c := range h.runner.find("app-token", " repositories ") {
+		apps = append(apps, appOf(c))
+	}
+	if !slices.Equal(apps, []string{"implementer", "reviewer"}) {
+		t.Errorf("apps %v", apps)
+	}
+}
+
+// TestPollIgnoresARepositoryWithNoAppInstalled pins: a repository no factory App is installed on is not polled.
+func TestPollIgnoresARepositoryWithNoAppInstalled(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{}
+	code, err := Poll(context.Background(), h.deps, h.roles())
+	if err != nil || code != 0 || h.out.String() != "nothing ready\n" {
+		t.Fatalf("%d %v %q", code, err, h.out.String())
+	}
+	if len(h.gh.calls()) != 0 || len(h.runner.find(" token ")) != 0 {
+		t.Errorf("worked an unassigned repository: %v", h.gh.summary())
+	}
+}
+
+// TestPollAnyInstalledAppAssignsTheRepository pins: each repository is polled for the agent roles installed on it.
+func TestPollAnyInstalledAppAssignsTheRepository(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{Implementer: {"o/a"}, Reviewer: {"o/b", "o/a"}}
+	h.queueRepo("o/a", map[string][]map[string]any{})
+	h.queueRepo("o/b", map[string][]map[string]any{})
+	if _, err := Poll(context.Background(), h.deps, h.roles()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"GET /repos/o/a/issues", "GET /repos/o/b/issues", "GET /repos/o/a/issues"}
+	if got := h.gh.summary(); !slices.Equal(got, want) {
+		t.Errorf("got %v want %v", got, want)
+	}
+}
+
+// TestPollWorksOnlyTheAgentRolesInstalledOnARepository pins: others' issues wait, silently.
+func TestPollWorksOnlyTheAgentRolesInstalledOnARepository(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{Implementer: {"o/r"}}
+	h.queue(map[string][]map[string]any{
+		LabelReviewReady: {{"number": 12}},
+		LabelReady:       {{"number": 3}},
+	})
+	h.acceptWrites("3")
+	if code, err := Poll(context.Background(), h.deps, h.roles()); err != nil || code != 0 {
+		t.Fatalf("%d %v", code, err)
+	}
+	want := []string{
+		"GET /repos/o/r/issues",
+		"DELETE /repos/o/r/issues/3/labels/ready-for-agent",
+		"POST /repos/o/r/issues/3/labels",
+		"POST /repos/o/r/issues/3/comments",
+	}
+	if got := h.gh.summary(); !slices.Equal(got, want) {
+		t.Errorf("got %v", got)
+	}
+}
+
+// TestPollWaitsQuietlyWhenTheOwningAppIsMissing pins: no comment and no label for a missing agent role.
+func TestPollWaitsQuietlyWhenTheOwningAppIsMissing(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{Implementer: {"o/r"}}
+	h.queue(map[string][]map[string]any{LabelReviewReady: {{"number": 12}}})
+	code, err := Poll(context.Background(), h.deps, h.roles())
+	if err != nil || code != 0 || h.out.String() != "nothing ready\n" {
+		t.Fatalf("%d %v %q", code, err, h.out.String())
+	}
+	for _, s := range h.gh.summary() {
+		if !strings.HasPrefix(s, "GET ") {
+			t.Errorf("wrote %s", s)
+		}
+	}
+}
+
+// failMint makes minting fail for the App of role, passing every other command on.
+func (h *harness) failMint(role Role, onlyToken bool) {
+	base := h.runner.fn
+	h.runner.fn = func(c Cmd) (string, error) {
+		if strings.Contains(joined(c), "app-token") && appOf(c) == string(role) &&
+			(!onlyToken || strings.Contains(joined(c), " token ")) {
+			return "", &ExitError{Program: "github-app-token", Code: 1}
+		}
+		return base(c)
+	}
+}
+
+// TestPollTreatsARepositoryWhoseTokenCannotBeMintedAsUnassigned pins: fail closed per agent role and repository.
+func TestPollTreatsARepositoryWhoseTokenCannotBeMintedAsUnassigned(t *testing.T) {
+	h := newHarness(t)
+	h.failMint(Reviewer, true)
+	h.queue(map[string][]map[string]any{
+		LabelReviewReady: {{"number": 12}},
+		LabelReady:       {{"number": 3}},
+	})
+	h.acceptWrites("3")
+	if code, err := Poll(context.Background(), h.deps, h.roles()); err != nil || code != 0 {
+		t.Fatalf("%d %v", code, err)
+	}
+	if got := h.gh.summary(); !slices.Contains(got, "DELETE /repos/o/r/issues/3/labels/ready-for-agent") || len(got) != 4 {
+		t.Errorf("got %v", got)
+	}
+	if !strings.Contains(h.errb.String(), "reviewer") {
+		t.Errorf("stderr %q", h.errb.String())
+	}
+}
+
+// TestPollTreatsAnAppThatCannotListItsInstallationsAsInstalledNowhere pins: fail closed per App.
+func TestPollTreatsAnAppThatCannotListItsInstallationsAsInstalledNowhere(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{Reviewer: {"o/r"}}
+	h.failMint(Reviewer, false)
+	h.queue(map[string][]map[string]any{LabelReviewReady: {{"number": 12}}})
+	code, err := Poll(context.Background(), h.deps, h.roles())
+	if err != nil || code != 0 || h.out.String() != "nothing ready\n" {
+		t.Fatalf("%d %v %q", code, err, h.out.String())
+	}
+	if len(h.gh.calls()) != 0 || len(h.runner.find("--app reviewer", " token ")) != 0 {
+		t.Errorf("acted for an App that could not list its installations: %v", h.gh.summary())
+	}
+}
+
+// TestPollIgnoresMalformedRepositoryNames pins: only owner/name lines count as installations.
+func TestPollIgnoresMalformedRepositoryNames(t *testing.T) {
+	h := newHarness(t)
+	h.installed = map[Role][]string{Implementer: {"../etc", "not a repo", ""}}
+	if code, err := Poll(context.Background(), h.deps, h.roles()); err != nil || code != 0 || len(h.gh.calls()) != 0 {
+		t.Fatalf("%d %v %v", code, err, h.gh.summary())
 	}
 }
 
@@ -169,7 +327,7 @@ func TestPollMintsTheRepoScopedToken(t *testing.T) {
 func TestPollListsQueuesWithEscapedLabels(t *testing.T) {
 	h := newHarness(t)
 	h.queue(nil)
-	if _, err := Poll(context.Background(), h.deps, "o/r"); err != nil {
+	if _, err := Poll(context.Background(), h.deps, h.roles()); err != nil {
 		t.Fatal(err)
 	}
 	var labels []string

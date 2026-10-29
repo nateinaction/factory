@@ -1,39 +1,14 @@
 ---
-# The long-lived credential (the app private key) is readable by the dagu user only.
+# One GitHub App per agent role; credentials.yml installs each App's files.
 - name: Load GitHub App settings
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/secrets/github_app.yml"
   # Fail closed: a missing file stops the play rather than skipping silently.
 
-- name: Read the private key from the controller
-  ansible.builtin.set_fact:
-    github_app_private_key: "{{ lookup('ansible.builtin.file', github_app_private_key_file | expanduser) }}"
-  no_log: true
+- name: Install each App's credentials
+  ansible.builtin.include_tasks: credentials.yml
 
-- name: Create the credential directory
-  ansible.builtin.file:
-    path: "{{ github_app_dir }}"
-    state: directory
-    owner: "{{ dagu_user }}"
-    group: "{{ dagu_user }}"
-    mode: "0700"
-
-- name: Install the credential files
-  ansible.builtin.copy:
-    content: "{{ item.content }}\n"
-    dest: "{{ github_app_dir }}/{{ item.name }}"
-    owner: "{{ dagu_user }}"
-    group: "{{ dagu_user }}"
-    mode: "0600"
-  loop:
-    - { name: app-id, content: "{{ github_app_id }}" }
-    - { name: installation-id, content: "{{ github_app_installation_id }}" }
-    - { name: private-key.pem, content: "{{ github_app_private_key | trim }}" }
-  loop_control:
-    label: "{{ item.name }}"
-  no_log: true
-
-- name: Install the token minting script / git credential helper
+- name: Install the token minting script
   ansible.builtin.copy:
     src: github-app-token
     dest: /usr/local/bin/github-app-token
@@ -41,12 +16,8 @@
     group: root
     mode: "0755"
 
-- name: Use the helper for github.com when dagu runs git
-  ansible.builtin.copy:
-    content: |
-      [credential "https://github.com"]
-          helper = !/usr/local/bin/github-app-token
-    dest: "{{ dagu_home }}/.gitconfig"
-    owner: "{{ dagu_user }}"
-    group: "{{ dagu_user }}"
-    mode: "0644"
+- name: Remove the git credential helper for the single App
+  # The helper had one App's token for every git call. foreman now hands each run the token of its own agent role.
+  ansible.builtin.file:
+    path: "{{ dagu_home }}/.gitconfig"
+    state: absent

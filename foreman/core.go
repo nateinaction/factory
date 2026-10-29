@@ -97,7 +97,7 @@ func ParseIssueNumber(text string) (int, error) {
 
 // ValidateRepo checks the owner/name shape, since a repo ends up in paths and URLs.
 func ValidateRepo(repo string) error {
-	if !repoRE.MatchString(repo) {
+	if !repoRE.MatchString(repo) || strings.HasPrefix(repo, "..") || strings.Contains(repo, "/..") {
 		return fmt.Errorf("repo must be owner/name, got %q", repo)
 	}
 	return nil
