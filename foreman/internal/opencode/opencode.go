@@ -392,8 +392,9 @@ type UsageReport struct {
 	Missing     []string      `json:"missing"`
 }
 
-// WithDomains records every domain the run contacted. A nil slice means the adapter could not
-// observe egress, and domains stays listed as missing rather than reported as none.
+// WithDomains records every domain the run's egress proxy was asked for, refused ones included. A
+// nil slice means the adapter could not observe egress, and domains stays listed as missing rather
+// than reported as none.
 func (r UsageReport) WithDomains(domains []string) UsageReport {
 	if domains == nil {
 		return r

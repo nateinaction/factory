@@ -19,8 +19,10 @@ import (
 const (
 	// DialTimeout bounds reaching an upstream.
 	DialTimeout = 10 * time.Second
-	// HeaderTimeout bounds waiting for an upstream's response headers. The body may then stream for
-	// as long as the run lasts.
+	// HeaderTimeout bounds waiting for headers, and serves both directions: an upstream's response
+	// headers (a transport's ResponseHeaderTimeout) and a client's request headers (a server's
+	// ReadHeaderTimeout). The proxies reuse this one value for both. The
+	// body may then stream for as long as the run lasts.
 	HeaderTimeout = 60 * time.Second
 	// IdleTimeout bounds a kept-alive connection between requests.
 	IdleTimeout = 90 * time.Second

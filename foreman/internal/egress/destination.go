@@ -47,8 +47,9 @@ var nonPublicPrefixes = []netip.Prefix{ //nolint:gochecknoglobals // a read-only
 }
 
 // publiclyRoutable reports whether addr is one the proxy may dial: a valid global unicast address
-// outside every loopback, private, link-local, shared and multicast range. An IPv4-mapped IPv6
-// address is checked as the IPv4 address it holds.
+// outside every loopback, private, link-local, shared and multicast range. It does not unmap an
+// IPv4-mapped IPv6 address: the ranges above are IPv4 prefixes, which do not hold a mapped address,
+// so the caller unmaps first (see lookup).
 func publiclyRoutable(addr netip.Addr) bool {
 	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return false
@@ -102,7 +103,8 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 
 	checked := make([]netip.Addr, 0, min(len(addrs), maxResolvedAddresses))
 
-	// The DNS answer is untrusted input: check and keep at most maxResolvedAddresses of it.
+	// The DNS answer is untrusted input: check and keep at most maxResolvedAddresses of it. The unmap
+	// is what lets publiclyRoutable's IPv4 ranges hold an IPv4-mapped answer.
 	for _, addr := range addrs[:min(len(addrs), maxResolvedAddresses)] {
 		addr = addr.Unmap()
 		if !publiclyRoutable(addr) {

@@ -79,6 +79,7 @@ func start(key, token, addr, upstream string) (*Proxy, error) {
 	// but OpenRouter.
 	p.transport = proxy.Transport((&net.Dialer{Timeout: proxy.DialTimeout}).DialContext, tlsTimeout)
 	p.reverse = p.reverseProxy()
+	// Inbound request headers take the upstream header timeout: one ceiling serves both directions.
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: proxy.HeaderTimeout}
 
 	// The serve loop reports anything but a clean stop through the default logger, as the reverse

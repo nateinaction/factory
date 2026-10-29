@@ -1,8 +1,8 @@
 // Package egress is the loopback proxy every run's traffic crosses. srt blocks direct egress and
 // points the run at this proxy; the proxy enforces the agent role's allowlist, refuses every
 // destination that is not publicly routable, forwards the traffic, and records every domain the run
-// contacted for the usage line. It also serves the run's OpenRouter API path, so the model's base URL
-// is reachable through the one port srt bridges on every OS.
+// asked for — the refused ones included — for the usage line. It also serves the run's OpenRouter
+// API path, so the model's base URL is reachable through the one port srt bridges on every OS.
 package egress
 
 import (
@@ -121,6 +121,7 @@ func startProxy(
 		pr.Out.URL = p.apiURL(pr.In)
 		pr.Out.Host = ""
 	}, "egress proxy: model endpoint unavailable")
+	// Inbound request headers take the upstream header timeout: one ceiling serves both directions.
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: proxy.HeaderTimeout}
 
 	proxy.Serve(logger, "egress", p.server, ln)
@@ -174,7 +175,8 @@ func (p *Proxy) URL() string {
 	return "http://" + p.Address() + APIPrefix
 }
 
-// Domains is every host the run contacted, sorted and without repeats.
+// Domains is every host the proxy was asked for, sorted and without repeats. A host the policy or the
+// address check refused is recorded too: the usage line says what the run tried to reach.
 func (p *Proxy) Domains() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -357,7 +359,7 @@ func (p *Proxy) releaseTunnel() {
 	p.open--
 }
 
-// copyTunnel pipes both directions until each side ends, tracking the pair so Close can end it.
+// copyTunnel pipes both directions until the first side ends, tracking the pair so Close can end it.
 func (p *Proxy) copyTunnel(client, upstream net.Conn) {
 	p.mu.Lock()
 	p.tunnels[client] = struct{}{}
@@ -379,7 +381,8 @@ func (p *Proxy) copyTunnel(client, upstream net.Conn) {
 
 	<-done
 
-	// Both directions have ended, so a close error has nowhere left to go.
+	// The first direction has ended; closing both is what ends the second, so neither close error
+	// has a reader left.
 	_ = client.Close()
 	// The upstream is closed with it, for the same reason.
 	_ = upstream.Close()
