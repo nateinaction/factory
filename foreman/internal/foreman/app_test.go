@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // withConfig writes a valid config file and points the harness at it.
@@ -38,7 +40,7 @@ func TestMainRejectsBadInvocationsWithUsageExit(t *testing.T) {
 		if code := Main(context.Background(), args, h.deps); code != ExitUsage {
 			t.Errorf("%v: exit %d", args, code)
 		}
-		if len(h.runner.cmds) != 0 || len(h.gh.calls()) != 0 {
+		if len(h.runner.cmds) != 0 || len(h.gh.Calls()) != 0 {
 			t.Errorf("%v: did work on a bad invocation", args)
 		}
 	}
@@ -56,7 +58,7 @@ func TestMainUnknownAgentRoleFailsClosed(t *testing.T) {
 		if !strings.Contains(h.errb.String(), `unknown agent role "janitor"`) {
 			t.Errorf("%s stderr %q", verb, h.errb.String())
 		}
-		if len(h.runner.cmds) != 0 || len(h.gh.calls()) != 0 {
+		if len(h.runner.cmds) != 0 || len(h.gh.Calls()) != 0 {
 			t.Errorf("%s did work for an unknown role", verb)
 		}
 	}
@@ -79,7 +81,7 @@ func TestMainPollUsesTheConfiguredAgentRoles(t *testing.T) {
 	if code := Main(context.Background(), []string{"poll"}, h.deps); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.errb.String())
 	}
-	if got := h.gh.calls()[0].Path; got != "/repos/o/r/issues" {
+	if got := h.gh.Calls()[0].Path; got != "/repos/o/r/issues" {
 		t.Errorf("path %q", got)
 	}
 }
@@ -90,7 +92,7 @@ func TestMainRunReturnsTheReviewVerdictAsExitCode(t *testing.T) {
 	h.withConfig()
 	h.reviewerGH(nil)
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), blockingReview)
-	if code := Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps); code != ReviewFindings {
+	if code := Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps); code != workflow.ReviewFindings {
 		t.Fatalf("exit %d: %s", code, h.errb.String())
 	}
 	if oc := h.runner.find("opencode run --agent reviewer"); len(oc) != 1 {
@@ -132,24 +134,12 @@ func TestMainBadConfigFailsClosed(t *testing.T) {
 func TestMainErrorsNeverCarryTheToken(t *testing.T) {
 	h := newHarness(t)
 	h.withConfig()
-	h.gh.status("GET /repos/o/r/issues", 500)
+	h.gh.Status("GET /repos/o/r/issues", 500)
 	if code := Main(context.Background(), []string{"poll"}, h.deps); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
 	if strings.Contains(h.errb.String(), "minted-token") || !strings.Contains(h.errb.String(), "foreman: ") {
 		t.Errorf("stderr %q", h.errb.String())
-	}
-}
-
-// TestDefaultSettingsKeepTheConfigLocations pins: default settings keep the config locations.
-func TestDefaultSettingsKeepTheConfigLocations(t *testing.T) {
-	s := DefaultSettings("/home/factory", "")
-	if s.ConfigFile != "/etc/factory-agent/config.json" || s.KeyFile != "/home/factory/.config/factory-agent/openrouter-key" ||
-		s.WorkRoot != "/home/factory/work" || s.TokenPath(Reviewer) != "/run/factory/gh-token-reviewer" || s.API != "https://api.github.com" {
-		t.Errorf("%+v", s)
-	}
-	if DefaultSettings("/h", "/x.json").ConfigFile != "/x.json" {
-		t.Error("override ignored")
 	}
 }
 

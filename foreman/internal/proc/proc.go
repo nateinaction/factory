@@ -1,4 +1,5 @@
-package foreman
+// Package proc runs processes: never through a shell, always under a ceiling.
+package proc
 
 import (
 	"bytes"
@@ -11,6 +12,9 @@ import (
 	"time"
 )
 
+// DefaultTimeout bounds a process whose Cmd sets no timeout.
+const DefaultTimeout = 300 * time.Second
+
 // Cmd is one process to run: never through a shell, always with a ceiling.
 type Cmd struct {
 	// Argv is the program and its arguments.
@@ -19,7 +23,7 @@ type Cmd struct {
 	Dir string
 	// Env is added to the inherited environment.
 	Env map[string]string
-	// Timeout bounds the run. Zero is replaced by GitTimeout.
+	// Timeout bounds the run. Zero is replaced by DefaultTimeout.
 	Timeout time.Duration
 	// Capture returns stdout instead of passing it through.
 	Capture bool
@@ -36,26 +40,20 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("%s exited with code %d", e.Program, e.Code)
 }
 
-// Runner runs processes. The real one is ExecRunner; tests substitute a fake.
-type Runner interface {
-	// Run starts the process and waits for it. A non-zero exit is an *ExitError.
-	Run(ctx context.Context, c Cmd) (string, error)
-}
-
 // ExecRunner runs real processes, passing stdout and stderr through unless captured.
 type ExecRunner struct {
 	Stdout io.Writer
 	Stderr io.Writer
 }
 
-// Run starts the process and waits for it, under c.Timeout.
+// Run starts the process and waits for it, under c.Timeout. A non-zero exit is an *ExitError.
 func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	if len(c.Argv) == 0 {
 		return "", errors.New("empty command")
 	}
 	timeout := c.Timeout
 	if timeout <= 0 {
-		timeout = GitTimeout
+		timeout = DefaultTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

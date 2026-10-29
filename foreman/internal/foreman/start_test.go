@@ -7,25 +7,28 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // sudoExit makes the factory half exit with code, after checking the token file is in place.
 func (h *harness) sudoExit(code int, tokenSeen *string, mode *os.FileMode) {
 	base := h.runner.fn
-	h.runner.fn = func(c Cmd) (string, error) {
+	h.runner.fn = func(c proc.Cmd) (string, error) {
 		if c.Argv[0] != "sudo" {
 			return base(c)
 		}
-		raw, err := os.ReadFile(h.deps.Settings.TokenPath(Role(c.Argv[6])))
+		raw, err := os.ReadFile(h.deps.Settings.TokenPath(workflow.Role(c.Argv[6])))
 		if err != nil {
 			h.t.Errorf("token file not in place: %v", err)
 		}
 		*tokenSeen = string(raw)
-		if st, err := os.Stat(h.deps.Settings.TokenPath(Role(c.Argv[6]))); err == nil {
+		if st, err := os.Stat(h.deps.Settings.TokenPath(workflow.Role(c.Argv[6]))); err == nil {
 			*mode = st.Mode().Perm()
 		}
 		if code != 0 {
-			return "", &ExitError{Program: "sudo", Code: code}
+			return "", &proc.ExitError{Program: "sudo", Code: code}
 		}
 		return "", nil
 	}
@@ -33,7 +36,7 @@ func (h *harness) sudoExit(code int, tokenSeen *string, mode *os.FileMode) {
 
 // outcome returns the labels added and comments posted on issue 5, in order.
 func (h *harness) outcome() (labels, comments []string) {
-	return h.gh.bodies("POST", "/repos/o/r/issues/5/labels"), h.gh.bodies("POST", "/repos/o/r/issues/5/comments")
+	return h.gh.Bodies("POST", "/repos/o/r/issues/5/labels"), h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")
 }
 
 // TestStartImplementerSuccessQueuesReview pins: start implementer success queues review.
@@ -43,7 +46,7 @@ func TestStartImplementerSuccessQueuesReview(t *testing.T) {
 	var seen string
 	var mode os.FileMode
 	h.sudoExit(0, &seen, &mode)
-	code, err := Start(context.Background(), h.deps, Implementer, "o/r", 5)
+	code, err := Start(context.Background(), h.deps, workflow.Implementer, "o/r", 5)
 	if err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -56,15 +59,15 @@ func TestStartImplementerSuccessQueuesReview(t *testing.T) {
 	if seen != "minted-token-implementer" || mode != 0o640 {
 		t.Errorf("token file %q mode %v", seen, mode)
 	}
-	if _, err := os.Stat(h.deps.Settings.TokenPath(Implementer)); !os.IsNotExist(err) {
+	if _, err := os.Stat(h.deps.Settings.TokenPath(workflow.Implementer)); !os.IsNotExist(err) {
 		t.Errorf("token file left behind: %v", err)
 	}
 	labels, comments := h.outcome()
-	if len(labels) != 1 || !strings.Contains(labels[0], LabelReviewReady) ||
+	if len(labels) != 1 || !strings.Contains(labels[0], workflow.LabelReviewReady) ||
 		!strings.Contains(comments[0], "The agent finished; see the linked pull request. Queued for review.") {
 		t.Errorf("%v %v", labels, comments)
 	}
-	if got := h.gh.summary(); !slices.Contains(got, "DELETE /repos/o/r/issues/5/labels/agent-working") {
+	if got := h.gh.Summary(); !slices.Contains(got, "DELETE /repos/o/r/issues/5/labels/agent-working") {
 		t.Errorf("did not release the claim: %v", got)
 	}
 	if n := len(h.runner.find("github-app-token")); n != 2 {
@@ -80,15 +83,15 @@ func TestStartImplementerFailureMarksFailed(t *testing.T) {
 	var seen string
 	var mode os.FileMode
 	h.sudoExit(1, &seen, &mode)
-	code, err := Start(context.Background(), h.deps, Implementer, "o/r", 5)
+	code, err := Start(context.Background(), h.deps, workflow.Implementer, "o/r", 5)
 	if err != nil || code != 1 {
 		t.Fatalf("%d %v", code, err)
 	}
 	labels, comments := h.outcome()
-	if !strings.Contains(labels[0], LabelFailed) || !strings.Contains(comments[0], "The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry.") {
+	if !strings.Contains(labels[0], workflow.LabelFailed) || !strings.Contains(comments[0], "The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry.") {
 		t.Errorf("%v %v", labels, comments)
 	}
-	if _, err := os.Stat(h.deps.Settings.TokenPath(Implementer)); !os.IsNotExist(err) {
+	if _, err := os.Stat(h.deps.Settings.TokenPath(workflow.Implementer)); !os.IsNotExist(err) {
 		t.Errorf("token file left behind: %v", err)
 	}
 }
@@ -98,18 +101,18 @@ func TestStartTreatsAFactoryHalfThatCannotRunAsFailed(t *testing.T) {
 	h := newHarness(t)
 	h.acceptWrites("5")
 	base := h.runner.fn
-	h.runner.fn = func(c Cmd) (string, error) {
+	h.runner.fn = func(c proc.Cmd) (string, error) {
 		if c.Argv[0] == "sudo" {
 			return "", errors.New("sudo missing")
 		}
 		return base(c)
 	}
-	code, err := Start(context.Background(), h.deps, Implementer, "o/r", 5)
+	code, err := Start(context.Background(), h.deps, workflow.Implementer, "o/r", 5)
 	if err != nil || code != 1 {
 		t.Fatalf("%d %v", code, err)
 	}
 	labels, _ := h.outcome()
-	if !strings.Contains(labels[0], LabelFailed) || !strings.Contains(h.errb.String(), "sudo missing") {
+	if !strings.Contains(labels[0], workflow.LabelFailed) || !strings.Contains(h.errb.String(), "sudo missing") {
 		t.Errorf("%v %q", labels, h.errb.String())
 	}
 }
@@ -122,10 +125,10 @@ func TestStartReviewerRoutesByExitCode(t *testing.T) {
 		wantText string
 		wantExit int
 	}{
-		{ReviewClean, LabelDone, "Review found no high or medium issues; see the pull request.", 0},
-		{ReviewFindings, LabelReady, "Review found high or medium issues, posted on the pull request. Sent back to the agent.", 0},
-		{ReviewExhausted, LabelFailed, "Review still found high or medium issues after 3 rounds. A person needs to look at the pull request.", 1},
-		{2, LabelFailed, "The review failed. Check the dagu run log, then re-apply `ready-for-agent-review` to retry.", 1},
+		{workflow.ReviewClean, workflow.LabelDone, "Review found no high or medium issues; see the pull request.", 0},
+		{workflow.ReviewFindings, workflow.LabelReady, "Review found high or medium issues, posted on the pull request. Sent back to the agent.", 0},
+		{workflow.ReviewExhausted, workflow.LabelFailed, "Review still found high or medium issues after 3 rounds. A person needs to look at the pull request.", 1},
+		{2, workflow.LabelFailed, "The review failed. Check the dagu run log, then re-apply `ready-for-agent-review` to retry.", 1},
 	}
 	for _, tc := range cases {
 		h := newHarness(t)
@@ -133,7 +136,7 @@ func TestStartReviewerRoutesByExitCode(t *testing.T) {
 		var seen string
 		var mode os.FileMode
 		h.sudoExit(tc.code, &seen, &mode)
-		code, err := Start(context.Background(), h.deps, Reviewer, "o/r", 5)
+		code, err := Start(context.Background(), h.deps, workflow.Reviewer, "o/r", 5)
 		if err != nil || code != tc.wantExit {
 			t.Fatalf("code %d: %d %v", tc.code, code, err)
 		}
@@ -141,7 +144,7 @@ func TestStartReviewerRoutesByExitCode(t *testing.T) {
 		if !strings.Contains(labels[0], tc.wantLbl) || !strings.Contains(comments[0], tc.wantText) {
 			t.Errorf("code %d: %v %v", tc.code, labels, comments)
 		}
-		if got := h.gh.summary(); !slices.Contains(got, "DELETE /repos/o/r/issues/5/labels/agent-reviewing") {
+		if got := h.gh.Summary(); !slices.Contains(got, "DELETE /repos/o/r/issues/5/labels/agent-reviewing") {
 			t.Errorf("code %d did not release the claim: %v", tc.code, got)
 		}
 		if sudo := h.runner.find("sudo"); !strings.Contains(joined(sudo[0]), "run reviewer o/r 5") {
@@ -152,12 +155,12 @@ func TestStartReviewerRoutesByExitCode(t *testing.T) {
 
 // TestStartRefusesRolesWithoutBehaviour pins: start refuses roles without behaviour.
 func TestStartRefusesRolesWithoutBehaviour(t *testing.T) {
-	for _, role := range []Role{Planner, Researcher, Curator} {
+	for _, role := range []workflow.Role{workflow.Planner, workflow.Researcher, workflow.Curator} {
 		h := newHarness(t)
 		if code, err := Start(context.Background(), h.deps, role, "o/r", 5); err == nil || code == 0 {
 			t.Errorf("%s: %d %v", role, code, err)
 		}
-		if len(h.runner.cmds) != 0 || len(h.gh.calls()) != 0 {
+		if len(h.runner.cmds) != 0 || len(h.gh.Calls()) != 0 {
 			t.Errorf("%s did something before refusing", role)
 		}
 	}

@@ -1,24 +1,29 @@
-package foreman
+// Package opencode maps foreman's guarantees to opencode v1.19.3: a named agent per agent role, no
+// repository config, fresh state per run, a context cap and compaction per agent role, and a usage
+// report. It is pure: it builds command lines and environments and reads what opencode printed.
+package opencode
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
-)
 
-// The opencode adapter maps foreman's guarantees to opencode v1.19.3: a named agent per agent role, no
-// repository config, fresh state per run, a context cap and compaction per agent role, and a usage report.
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
+)
 
 // MaxModelAttempts is one attempt plus the two retries the spec allows for a transient model failure.
 const MaxModelAttempts = 3
 
 // backoffs are the waits before the second and third attempt.
 var backoffs = [MaxModelAttempts - 1]time.Duration{10 * time.Second, 30 * time.Second}
+
+// Backoff is the wait after the given failed attempt (1-based) and before the next one.
+func Backoff(attempt int) time.Duration {
+	return backoffs[attempt-1]
+}
 
 // InMemoryDB is OPENCODE_DB's value for a run whose state never touches the disk.
 const InMemoryDB = ":memory:"
@@ -45,8 +50,8 @@ const (
 	FailOther FailureKind = "model error"
 )
 
-// retryable reports whether the kind is a transient failure.
-func (k FailureKind) retryable() bool {
+// Retryable reports whether the kind is a transient failure.
+func (k FailureKind) Retryable() bool {
 	return k == FailRateLimit || k == FailServer || k == FailTimeout
 }
 
@@ -72,16 +77,6 @@ func (e *ModelError) Error() string {
 
 // Unwrap exposes the cause.
 func (e *ModelError) Unwrap() error { return e.Cause }
-
-// AgentConfig is one agent role's model settings, rendered from `factory_models` by Ansible.
-type AgentConfig struct {
-	// Model is the OpenRouter model id, for the usage report.
-	Model string `json:"model"`
-	// ContextCap is the input-token cap the model alias carries.
-	ContextCap int `json:"context_cap"`
-	// Compaction is whether opencode compacts instead of overflowing.
-	Compaction bool `json:"compaction"`
-}
 
 // Usage is what a run spent. A nil field is one the adapter could not report; it is never zero.
 type Usage struct {
@@ -223,9 +218,21 @@ func classify(name string, status int) FailureKind {
 	return FailOther
 }
 
-// AgentEnv is the environment of one opencode process. The inline config turns compaction on or off
+// Failure decides whether an attempt failed. An API error in the stream fails the run even when
+// opencode exits 0; a non-zero exit with no API error is FailOther.
+func Failure(s Stream, runErr error) (FailureKind, bool) {
+	if s.Failure != nil {
+		return *s.Failure, true
+	}
+	if runErr != nil {
+		return FailOther, true
+	}
+	return "", false
+}
+
+// Env is the environment of one opencode process. The inline config turns compaction on or off
 // for this agent role; the rest keeps repository config and external skills out and state private.
-func AgentEnv(openrouterKey, stateDB string, a AgentConfig) (map[string]string, error) {
+func Env(openrouterKey, stateDB string, a config.AgentConfig) (map[string]string, error) {
 	inline, err := json.Marshal(map[string]any{"compaction": map[string]bool{"auto": a.Compaction}})
 	if err != nil {
 		return nil, err
@@ -239,10 +246,10 @@ func AgentEnv(openrouterKey, stateDB string, a AgentConfig) (map[string]string, 
 	}, nil
 }
 
-// AgentRun is one `opencode run` invocation.
-type AgentRun struct {
+// Run is one `opencode run` invocation.
+type Run struct {
 	// Role is the named opencode agent.
-	Role Role
+	Role workflow.Role
 	// Prompt is the whole prompt.
 	Prompt string
 	// Session resumes this session id; empty starts a new one.
@@ -251,16 +258,16 @@ type AgentRun struct {
 	Timeout time.Duration
 }
 
-// AgentResult is what an invocation reported.
-type AgentResult struct {
+// Result is what an invocation reported.
+type Result struct {
 	// Session is the session the model ran in.
 	Session string
 	// Usage is summed over every attempt, including failed ones.
 	Usage Usage
 }
 
-// agentArgv is the command line; the prompt is the last argument.
-func agentArgv(r AgentRun) []string {
+// Argv is the command line; the prompt is the last argument.
+func Argv(r Run) []string {
 	argv := []string{"opencode", "run", "--agent", string(r.Role), "--format", "json"}
 	if r.Session != "" {
 		argv = append(argv, "--session", r.Session)
@@ -268,111 +275,28 @@ func agentArgv(r AgentRun) []string {
 	return append(argv, r.Prompt)
 }
 
-// agent runs the model, retrying transient failures up to twice within r.Timeout.
-func (s session) agent(r AgentRun) (AgentResult, error) {
-	ctx, cancel := context.WithTimeout(s.ctx, r.Timeout)
-	defer cancel()
-	deadline, _ := ctx.Deadline() // WithTimeout always sets one
-	var res AgentResult
-	for attempt := 1; attempt <= MaxModelAttempts; attempt++ {
-		stream, err := s.attempt(ctx, r, time.Until(deadline))
-		res.Usage = res.Usage.Add(stream.Usage)
-		if stream.Session != "" {
-			res.Session = stream.Session
-		}
-		kind, failed := failure(stream, err)
-		if !failed {
-			return res, nil
-		}
-		var cause error
-		if stream.Failure == nil {
-			cause = err
-		}
-		if ctx.Err() != nil {
-			return res, fmt.Errorf("%s: %w", r.Role, ctx.Err())
-		}
-		if !kind.retryable() || attempt == MaxModelAttempts {
-			return res, &ModelError{Kind: kind, Attempts: attempt, Cause: cause}
-		}
-		if err := s.d.sleep(ctx, backoffs[attempt-1]); err != nil {
-			return res, fmt.Errorf("%s: %w", r.Role, err)
-		}
-	}
-	return res, &ModelError{Kind: FailOther, Attempts: MaxModelAttempts} // unreachable: the loop returns
-}
-
-// attempt runs opencode once and parses what it printed. The stream goes to the dagu log with the
-// OpenRouter key removed.
-func (s session) attempt(ctx context.Context, r AgentRun, timeout time.Duration) (Stream, error) {
-	out, err := s.d.Runner.Run(ctx, Cmd{
-		Argv: agentArgv(r), Dir: s.workdir, Env: s.agentEnv, Timeout: timeout, Capture: true,
-	})
-	if out != "" {
-		s.d.logf("%s", s.redact(out))
-	}
-	return ParseStream(out), err
-}
-
-// redact removes the OpenRouter key from text bound for a log.
-func (s session) redact(text string) string {
-	key := s.agentEnv["OPENROUTER_API_KEY"]
-	if key == "" {
-		return text
-	}
-	return strings.ReplaceAll(text, key, "[redacted]")
-}
-
-// failure decides whether an attempt failed. An API error in the stream fails the run even when
-// opencode exits 0; a non-zero exit with no API error is FailOther.
-func failure(s Stream, runErr error) (FailureKind, bool) {
-	if s.Failure != nil {
-		return *s.Failure, true
-	}
-	if runErr != nil {
-		return FailOther, true
-	}
-	return "", false
-}
-
-// withState gives fn a fresh state database for the role's run and deletes it afterwards. The
-// Reviewer's state is in memory only. A leftover from an earlier run is removed first.
-func withState(root string, role Role, number int, fn func(db string) error) (err error) {
-	if role == Reviewer {
-		return fn(InMemoryDB)
-	}
-	dir, err := freshPath(root, fmt.Sprintf("state-%s-%d", role, number))
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
-	return fn(dir + "/opencode.db")
-}
-
 // UsageReport is the one JSON line a run logs to the dagu run log. A pointer or omitted field is one
 // the adapter could not report; Missing lists them so absence is never read as zero.
 type UsageReport struct {
-	Event       string   `json:"event"`
-	Repository  string   `json:"repository"`
-	Issue       int      `json:"issue"`
-	AgentRole   Role     `json:"agent_role"`
-	Model       string   `json:"model"`
-	WorkerHost  string   `json:"worker_host,omitempty"`
-	Input       *int     `json:"input_tokens,omitempty"`
-	Output      *int     `json:"output_tokens,omitempty"`
-	Cached      *int     `json:"cached_tokens,omitempty"`
-	ContextCap  int      `json:"context_cap"`
-	PeakContext *int     `json:"peak_context,omitempty"`
-	Cost        *float64 `json:"cost,omitempty"`
-	Domains     []string `json:"domains,omitempty"`
-	Missing     []string `json:"missing"`
+	Event       string        `json:"event"`
+	Repository  string        `json:"repository"`
+	Issue       int           `json:"issue"`
+	AgentRole   workflow.Role `json:"agent_role"`
+	Model       string        `json:"model"`
+	WorkerHost  string        `json:"worker_host,omitempty"`
+	Input       *int          `json:"input_tokens,omitempty"`
+	Output      *int          `json:"output_tokens,omitempty"`
+	Cached      *int          `json:"cached_tokens,omitempty"`
+	ContextCap  int           `json:"context_cap"`
+	PeakContext *int          `json:"peak_context,omitempty"`
+	Cost        *float64      `json:"cost,omitempty"`
+	Domains     []string      `json:"domains,omitempty"`
+	Missing     []string      `json:"missing"`
 }
 
 // NewUsageReport builds the report. The adapter cannot yet observe contacted domains (the sandbox
 // slice will), so they are always listed as missing.
-func NewUsageReport(role Role, repo string, number int, host string, a AgentConfig, u Usage) UsageReport {
+func NewUsageReport(role workflow.Role, repo string, number int, host string, a config.AgentConfig, u Usage) UsageReport {
 	r := UsageReport{
 		Event: "usage", Repository: repo, Issue: number, AgentRole: role, Model: a.Model, WorkerHost: host,
 		Input: u.Input, Output: u.Output, Cached: u.Cached, ContextCap: a.ContextCap, PeakContext: u.PeakContext,
@@ -391,31 +315,4 @@ func NewUsageReport(role Role, repo string, number int, host string, a AgentConf
 		}
 	}
 	return r
-}
-
-// logUsage writes the run's single usage line to stdout, which dagu captures in the run log.
-func (d Deps) logUsage(r UsageReport) {
-	line, err := json.Marshal(r)
-	if err != nil {
-		d.logf("usage report: %v", err)
-		return
-	}
-	if err := writeLine(d.Out, string(line)); err != nil {
-		d.logf("usage report: %v", err)
-	}
-}
-
-// sleep waits for d or until ctx ends. Tests replace it through Deps.Sleep.
-func (d Deps) sleep(ctx context.Context, wait time.Duration) error {
-	if d.Sleep != nil {
-		return d.Sleep(ctx, wait)
-	}
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }

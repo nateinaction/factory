@@ -1,7 +1,8 @@
-package foreman
+// Package workflow is foreman's pure core: agent roles, labels, markers and review verdicts. It does
+// no I/O, so every rule here can be checked by calling a function with values.
+package workflow
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,8 +28,10 @@ const (
 	Curator Role = "curator"
 )
 
-// knownRoles is the closed set of agent roles, in spec order.
-var knownRoles = []Role{Planner, Researcher, Implementer, Reviewer, Curator}
+// KnownRoles is the closed set of agent roles, in spec order.
+func KnownRoles() []Role {
+	return []Role{Planner, Researcher, Implementer, Reviewer, Curator}
+}
 
 // Limits shared by the prompts, comments and API calls.
 const (
@@ -38,6 +41,16 @@ const (
 	CommentLimitChars = 60_000
 	// MaxReviewRounds is how many distinct commits are reviewed before a person is called.
 	MaxReviewRounds = 3
+)
+
+// Exit codes of `run reviewer`, read by `start reviewer`.
+const (
+	// ReviewClean means no high or medium findings.
+	ReviewClean = 0
+	// ReviewFindings means high or medium findings were posted.
+	ReviewFindings = 10
+	// ReviewExhausted means findings remain after MaxReviewRounds rounds.
+	ReviewExhausted = 11
 )
 
 // Labels that drive today's flow. Old names are kept until the label slice.
@@ -75,7 +88,7 @@ var (
 
 // ParseRole accepts only a known agent role.
 func ParseRole(name string) (Role, error) {
-	for _, r := range knownRoles {
+	for _, r := range KnownRoles() {
 		if string(r) == name {
 			return r, nil
 		}
@@ -147,8 +160,8 @@ func BranchName(number int) string {
 	return fmt.Sprintf("agent/issue-%d", number)
 }
 
-// truncate keeps at most n characters.
-func truncate(s string, n int) string {
+// Truncate keeps at most n characters.
+func Truncate(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
 		return s
@@ -156,18 +169,13 @@ func truncate(s string, n int) string {
 	return string(r[:n])
 }
 
-// RetroPrompt asks the finished session for its retro.
-func RetroPrompt(repo string, number int, outPath string) string {
-	return fmt.Sprintf("Use the `retro` skill on the session you just finished, which implemented issue "+
-		"#%d of %s. Do not change the repository and do not ask questions. "+
-		"Instead of presenting the candidates to a user, write them as Markdown, most "+
-		"severe first, to %s; they will be posted as a comment on the retro ticket.", number, repo, outPath)
-}
-
 // ReviewMarker keys a review to the commit it judged.
 func ReviewMarker(sha string) string {
 	return fmt.Sprintf("<!-- agent-review:%s -->", sha)
 }
+
+// ReviewMarkerPrefix starts every review foreman posts.
+const ReviewMarkerPrefix = "<!-- agent-review:"
 
 // RetroMarker keys a retro comment to an issue and commit.
 func RetroMarker(number int, sha string) string {
@@ -255,7 +263,7 @@ func RenderReview(sha, summary string, findings []Finding) string {
 	if len(findings) == 0 {
 		lines = append(lines, "", "No findings.")
 	}
-	return truncate(strings.Join(lines, "\n"), CommentLimitChars)
+	return Truncate(strings.Join(lines, "\n"), CommentLimitChars)
 }
 
 // StartsWith keeps the items whose body starts with prefix, in API order.
@@ -272,20 +280,9 @@ func StartsWith(items []Item, prefix string) []Item {
 // ReviewRounds counts the distinct commits reviewed so far, counting sha whether or not it is posted yet.
 func ReviewRounds(reviews []Item, sha string) int {
 	marked := map[string]bool{ReviewMarker(sha): true}
-	for _, r := range StartsWith(reviews, "<!-- agent-review:") {
+	for _, r := range StartsWith(reviews, ReviewMarkerPrefix) {
 		first, _, _ := strings.Cut(r.Body, "\n")
 		marked[first] = true
 	}
 	return len(marked)
-}
-
-// GitAuthEnv gives git its credentials through the environment, so they never appear in argv.
-func GitAuthEnv(token string) map[string]string {
-	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-	return map[string]string{
-		"GIT_CONFIG_COUNT":    "1",
-		"GIT_CONFIG_KEY_0":    "http.https://github.com/.extraheader",
-		"GIT_CONFIG_VALUE_0":  "Authorization: Basic " + basic,
-		"GIT_TERMINAL_PROMPT": "0",
-	}
 }

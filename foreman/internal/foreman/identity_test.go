@@ -6,11 +6,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // TestStartMintsOnlyTheOwningAppsTokens pins: no App ever falls back to another App's token.
 func TestStartMintsOnlyTheOwningAppsTokens(t *testing.T) {
-	for _, role := range []Role{Implementer, Reviewer} {
+	for _, role := range []workflow.Role{workflow.Implementer, workflow.Reviewer} {
 		h := newHarness(t)
 		h.acceptWrites("5")
 		var seen string
@@ -28,7 +30,7 @@ func TestStartMintsOnlyTheOwningAppsTokens(t *testing.T) {
 				t.Errorf("%s: mint %v", role, c.Argv)
 			}
 		}
-		for _, r := range h.gh.calls() {
+		for _, r := range h.gh.Calls() {
 			if got := r.Header.Get("Authorization"); got != "Bearer minted-token-"+string(role) {
 				t.Errorf("%s: %s %s used %q", role, r.Method, r.Path, got)
 			}
@@ -39,23 +41,12 @@ func TestStartMintsOnlyTheOwningAppsTokens(t *testing.T) {
 	}
 }
 
-// TestStartNamesTheTokenFileForItsAgentRole pins: each run's token file is named for its agent role.
-func TestStartNamesTheTokenFileForItsAgentRole(t *testing.T) {
-	s := Settings{TokenDir: "/run/factory"}
-	if got := s.TokenPath(Reviewer); got != "/run/factory/gh-token-reviewer" {
-		t.Errorf("got %q", got)
-	}
-	if s.TokenPath(Reviewer) == s.TokenPath(Implementer) {
-		t.Error("two agent roles share a token file")
-	}
-}
-
 // TestStartFailsARunWhoseAppCredentialIsMissing pins: the run fails to the failed label, posted by an App still installed.
 func TestStartFailsARunWhoseAppCredentialIsMissing(t *testing.T) {
 	h := newHarness(t)
 	h.acceptWrites("5")
-	h.failMint(Implementer, false)
-	code, err := Start(context.Background(), h.deps, Implementer, "o/r", 5)
+	h.failMint(workflow.Implementer, false)
+	code, err := Start(context.Background(), h.deps, workflow.Implementer, "o/r", 5)
 	if err != nil || code != 1 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -63,10 +54,10 @@ func TestStartFailsARunWhoseAppCredentialIsMissing(t *testing.T) {
 		t.Error("ran the agent without its credential")
 	}
 	labels, comments := h.outcome()
-	if len(labels) != 1 || !strings.Contains(labels[0], LabelFailed) || !strings.Contains(comments[0], "credential") {
+	if len(labels) != 1 || !strings.Contains(labels[0], workflow.LabelFailed) || !strings.Contains(comments[0], "credential") {
 		t.Errorf("%v %v", labels, comments)
 	}
-	for _, r := range h.gh.calls() {
+	for _, r := range h.gh.Calls() {
 		if got := r.Header.Get("Authorization"); got != "Bearer minted-token-reviewer" {
 			t.Errorf("%s %s used %q", r.Method, r.Path, got)
 		}
@@ -76,13 +67,13 @@ func TestStartFailsARunWhoseAppCredentialIsMissing(t *testing.T) {
 // TestStartWithNoAppLeftReportsTheFailure pins: with no App able to post, the run still fails and writes nothing.
 func TestStartWithNoAppLeftReportsTheFailure(t *testing.T) {
 	h := newHarness(t)
-	h.failMint(Implementer, false)
-	h.failMint(Reviewer, false)
-	code, err := Start(context.Background(), h.deps, Implementer, "o/r", 5)
+	h.failMint(workflow.Implementer, false)
+	h.failMint(workflow.Reviewer, false)
+	code, err := Start(context.Background(), h.deps, workflow.Implementer, "o/r", 5)
 	if err == nil || code != 1 {
 		t.Fatalf("%d %v", code, err)
 	}
-	if len(h.gh.calls()) != 0 {
-		t.Errorf("wrote without a token: %v", h.gh.summary())
+	if len(h.gh.Calls()) != 0 {
+		t.Errorf("wrote without a token: %v", h.gh.Summary())
 	}
 }

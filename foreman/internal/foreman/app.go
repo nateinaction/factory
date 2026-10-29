@@ -1,6 +1,11 @@
 package foreman
 
-import "context"
+import (
+	"context"
+
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
+)
 
 // ExitUsage is the exit code of a malformed invocation, including an unknown agent role.
 const ExitUsage = 2
@@ -40,7 +45,7 @@ func fail(d Deps, err error) int {
 
 // poll loads the config and polls every repository one of its Apps is installed on.
 func poll(ctx context.Context, d Deps) int {
-	cfg, err := LoadConfig(d.Settings.ConfigFile)
+	cfg, err := config.Load(d.Settings.ConfigFile)
 	if err != nil {
 		return fail(d, err)
 	}
@@ -53,18 +58,18 @@ func poll(ctx context.Context, d Deps) int {
 
 // roleVerb parses and checks the arguments of `start` and `run`; an unknown agent role fails closed.
 func roleVerb(ctx context.Context, d Deps, verb string, rest []string) int {
-	role, err := ParseRole(rest[0])
+	role, err := workflow.ParseRole(rest[0])
 	if err != nil {
 		return usageError(d, err.Error())
 	}
-	if err := ValidateRepo(rest[1]); err != nil {
+	if err := workflow.ValidateRepo(rest[1]); err != nil {
 		return usageError(d, err.Error())
 	}
-	number, err := ParseIssueNumber(rest[2])
+	number, err := workflow.ParseIssueNumber(rest[2])
 	if err != nil {
 		return usageError(d, err.Error())
 	}
-	cfg, err := LoadConfig(d.Settings.ConfigFile)
+	cfg, err := config.Load(d.Settings.ConfigFile)
 	if err != nil {
 		return fail(d, err)
 	}

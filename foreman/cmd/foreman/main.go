@@ -9,7 +9,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nateinaction/factory/foreman"
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/foreman"
+	"github.com/nateinaction/factory/foreman/internal/github"
+	"github.com/nateinaction/factory/foreman/internal/proc"
 )
 
 // main wires the real world into foreman.Main and exits with its code.
@@ -33,9 +36,9 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d := foreman.Deps{
-		Settings: foreman.DefaultSettings(home, os.Getenv("FACTORY_AGENT_CONFIG")),
-		Runner:   foreman.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
-		HTTP:     &http.Client{Timeout: foreman.HTTPTimeout},
+		Settings: config.DefaultSettings(home, os.Getenv("FACTORY_AGENT_CONFIG")),
+		Runner:   proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
+		HTTP:     &http.Client{Timeout: github.HTTPTimeout},
 		Out:      os.Stdout,
 		Err:      os.Stderr,
 		Host:     host,

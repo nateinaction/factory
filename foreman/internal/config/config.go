@@ -1,38 +1,14 @@
-package foreman
+// Package config is foreman's edge configuration: the host's paths and endpoints, and the JSON file the
+// Ansible role writes. It is parsed once at the edge and passed inward as values.
+package config
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
-)
 
-// Ceilings on every process foreman starts.
-const (
-	// GitTimeout bounds git and the small helpers.
-	GitTimeout = 300 * time.Second
-	// AgentTimeout bounds the Implementer's model run.
-	AgentTimeout = 3600 * time.Second
-	// RetroTimeout bounds the retro step.
-	RetroTimeout = 900 * time.Second
-	// ReviewTimeout bounds the Reviewer's model run.
-	ReviewTimeout = 1800 * time.Second
-	// MintTimeout bounds minting a token.
-	MintTimeout = 30 * time.Second
-)
-
-// MaxAssignedRepos bounds how many assigned repositories one poll looks at.
-const MaxAssignedRepos = 200
-
-// Exit codes of `run reviewer`, read by `start reviewer`.
-const (
-	// ReviewClean means no high or medium findings.
-	ReviewClean = 0
-	// ReviewFindings means high or medium findings were posted.
-	ReviewFindings = 10
-	// ReviewExhausted means findings remain after MaxReviewRounds rounds.
-	ReviewExhausted = 11
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // Settings are the paths and endpoints at the edge. DefaultSettings fills them from the host layout.
@@ -77,20 +53,30 @@ func DefaultSettings(home, configOverride string) Settings {
 }
 
 // TokenPath is the token file of one agent role's run.
-func (s Settings) TokenPath(role Role) string {
+func (s Settings) TokenPath(role workflow.Role) string {
 	return filepath.Join(s.TokenDir, "gh-token-"+string(role))
+}
+
+// AgentConfig is one agent role's model settings, rendered from `factory_models` by Ansible.
+type AgentConfig struct {
+	// Model is the OpenRouter model id, for the usage report.
+	Model string `json:"model"`
+	// ContextCap is the input-token cap the model alias carries.
+	ContextCap int `json:"context_cap"`
+	// Compaction is whether opencode compacts instead of overflowing.
+	Compaction bool `json:"compaction"`
 }
 
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
 type Config struct {
 	// Roles are the agent roles whose Apps the host holds credentials for.
-	Roles []Role `json:"roles"`
+	Roles []workflow.Role `json:"roles"`
 	// Agents holds each agent role's model settings, keyed by the role's name.
 	Agents map[string]AgentConfig `json:"agents"`
 }
 
-// LoadConfig reads and validates the config file: every agent role needs a model and a context cap.
-func LoadConfig(path string) (Config, error) {
+// Load reads and validates the config file: every agent role needs a model and a context cap.
+func Load(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
@@ -103,11 +89,11 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config %s: roles is required", path)
 	}
 	for _, r := range c.Roles {
-		if _, err := ParseRole(string(r)); err != nil {
+		if _, err := workflow.ParseRole(string(r)); err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", path, err)
 		}
 	}
-	for _, r := range knownRoles {
+	for _, r := range workflow.KnownRoles() {
 		a, ok := c.Agents[string(r)]
 		if !ok || a.Model == "" || a.ContextCap <= 0 {
 			return Config{}, fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)

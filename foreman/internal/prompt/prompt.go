@@ -1,4 +1,6 @@
-package foreman
+// Package prompt builds the prompts foreman gives the model: the agent role's fixed instruction, the
+// repository's steering docs, then the issue material, in that order.
+package prompt
 
 import (
 	"errors"
@@ -7,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // DocsLimitChars caps all repository docs put into one prompt, so the prompt stays under the
@@ -52,16 +56,16 @@ func ReadRepoDocs(root string) ([]Doc, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", rel, err)
 		}
-		text := truncate(string(raw), budget)
+		text := workflow.Truncate(string(raw), budget)
 		budget -= len(text)
 		docs = append(docs, Doc{Path: rel, Text: text})
 	}
 	return docs, nil
 }
 
-// BuildPrompt joins the three parts in their fixed order: the agent role's prompt, the repository
+// Build joins the three parts in their fixed order: the agent role's prompt, the repository
 // docs, then the issue material. The first two are the prefix and carry nothing that varies per run.
-func BuildPrompt(rolePrompt string, docs []Doc, material string) string {
+func Build(rolePrompt string, docs []Doc, material string) string {
 	var b strings.Builder
 	b.WriteString(rolePrompt)
 	b.WriteString("\n\n# Repository docs\n")
@@ -87,21 +91,29 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 	`"high|medium|low", "title": "...", "detail": "...", "location": "file:line or empty"}]}. ` +
 	"An empty findings list means the change is clean."
 
-// ImplementerPrompt is the Implementer's prompt; feedback is the latest review, empty on a first run.
-func ImplementerPrompt(docs []Doc, repo string, issue Issue, feedback string) string {
+// Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run.
+func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string) string {
 	rework := ""
 	if feedback != "" {
 		rework = "\n\nThe open pull request for this branch was reviewed and the review found " +
 			"problems. Fix every high and medium finding below on top of the existing " +
-			"commits, then commit.\n\nReview:\n" + truncate(feedback, BodyLimitChars)
+			"commits, then commit.\n\nReview:\n" + workflow.Truncate(feedback, workflow.BodyLimitChars)
 	}
-	return BuildPrompt(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s",
-		repo, issue.Number, issue.Title, truncate(issue.Body, BodyLimitChars), rework))
+	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s",
+		repo, issue.Number, issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars), rework))
 }
 
-// ReviewerPrompt is the Reviewer's prompt: base is the branch to compare with, specPath holds the
+// Reviewer is the Reviewer's prompt: base is the branch to compare with, specPath holds the
 // issue, and the JSON verdict goes to outPath.
-func ReviewerPrompt(docs []Doc, base, specPath, outPath string) string {
-	return BuildPrompt(reviewerRolePrompt, docs, fmt.Sprintf("The fixed point is origin/%s.\n"+
+func Reviewer(docs []Doc, base, specPath, outPath string) string {
+	return Build(reviewerRolePrompt, docs, fmt.Sprintf("The fixed point is origin/%s.\n"+
 		"The spec is the issue saved at %s.\nWrite the JSON to %s.", base, specPath, outPath))
+}
+
+// Retro asks the finished session for its retro.
+func Retro(repo string, number int, outPath string) string {
+	return fmt.Sprintf("Use the `retro` skill on the session you just finished, which implemented issue "+
+		"#%d of %s. Do not change the repository and do not ask questions. "+
+		"Instead of presenting the candidates to a user, write them as Markdown, most "+
+		"severe first, to %s; they will be posted as a comment on the retro ticket.", number, repo, outPath)
 }

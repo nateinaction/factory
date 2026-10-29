@@ -1,4 +1,6 @@
-package foreman
+// Package github is foreman's client for GitHub's REST API: one token per client, bounded pages and
+// responses, and errors that name the call but never the token.
+package github
 
 import (
 	"bytes"
@@ -11,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // GitHub API paging and size ceilings.
@@ -131,19 +135,19 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 }
 
 // ListLabeled lists the oldest open issues carrying label.
-func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]Issue, error) {
+func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
 		"state": {"open"}, "labels": {label}, "sort": {"created"},
 		"direction": {"asc"}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
-	var issues []Issue
+	var issues []workflow.Issue
 	err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/issues?"+q.Encode(), nil, &issues)
 	return issues, err
 }
 
 // GetIssue reads one issue.
-func (c Client) GetIssue(ctx context.Context, repo string, number int) (Issue, error) {
-	var issue Issue
+func (c Client) GetIssue(ctx context.Context, repo string, number int) (workflow.Issue, error) {
+	var issue workflow.Issue
 	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), nil, &issue)
 	return issue, err
 }
@@ -232,8 +236,8 @@ func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) 
 }
 
 // Reviews lists a pull request's reviews.
-func (c Client) Reviews(ctx context.Context, repo string, pr int) ([]Item, error) {
-	return Paged[Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr))
+func (c Client) Reviews(ctx context.Context, repo string, pr int) ([]workflow.Item, error) {
+	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr))
 }
 
 // LatestReviewBody is the body of the last review foreman posted, or empty.
@@ -242,7 +246,7 @@ func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (stri
 	if err != nil {
 		return "", err
 	}
-	ours := StartsWith(reviews, "<!-- agent-review:")
+	ours := workflow.StartsWith(reviews, workflow.ReviewMarkerPrefix)
 	if len(ours) == 0 {
 		return "", nil
 	}
@@ -251,16 +255,16 @@ func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (stri
 
 // RetroTicket returns the number of the one open retro ticket, creating it on first use.
 func (c Client) RetroTicket(ctx context.Context, repo string) (int, error) {
-	issues, err := c.ListLabeled(ctx, repo, LabelRetro)
+	issues, err := c.ListLabeled(ctx, repo, workflow.LabelRetro)
 	if err != nil {
 		return 0, err
 	}
-	if found, ok := PickIssue(issues); ok {
+	if found, ok := workflow.PickIssue(issues); ok {
 		return found.Number, nil
 	}
-	var created Issue
+	var created workflow.Issue
 	err = c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues", map[string]any{
-		"title": RetroTitle, "labels": []string{LabelRetro},
+		"title": workflow.RetroTitle, "labels": []string{workflow.LabelRetro},
 		"body": "One comment per agent implementation run, from the retro skill.",
 	}, &created)
 	return created.Number, err
@@ -272,13 +276,13 @@ func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, tex
 	if err != nil {
 		return err
 	}
-	marker := RetroMarker(number, sha)
-	body := truncate(fmt.Sprintf("%s\n## Retro: #%d\n\n%s", marker, number, text), CommentLimitChars)
-	comments, err := Paged[Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, ticket))
+	marker := workflow.RetroMarker(number, sha)
+	body := workflow.Truncate(fmt.Sprintf("%s\n## Retro: #%d\n\n%s", marker, number, text), workflow.CommentLimitChars)
+	comments, err := Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, ticket))
 	if err != nil {
 		return err
 	}
-	if mine := StartsWith(comments, marker); len(mine) > 0 {
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
 		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
 			map[string]string{"body": body}, nil)
 	}

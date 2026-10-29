@@ -8,6 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // okStream is what `opencode run --format json` prints for a run that finished: one step.
@@ -23,13 +28,13 @@ func errStream(name string, status int) string {
 }
 
 // opencodeCalls are the recorded opencode processes.
-func (h *harness) opencodeCalls() []Cmd { return h.runner.find("opencode run") }
+func (h *harness) opencodeCalls() []proc.Cmd { return h.runner.find("opencode run") }
 
 // answerOpencode makes the n-th (0-based) opencode process print outs[n]; later ones print the last.
 func (h *harness) answerOpencode(outs ...string) {
 	base := h.runner.fn
 	n := 0
-	h.runner.fn = func(c Cmd) (string, error) {
+	h.runner.fn = func(c proc.Cmd) (string, error) {
 		if c.Argv[0] != "opencode" {
 			return base(c)
 		}
@@ -39,13 +44,13 @@ func (h *harness) answerOpencode(outs ...string) {
 	}
 }
 
-// runImpl runs the Implementer on issue 5 against a fake GitHub.
-func (h *harness) runImpl(agent AgentConfig) (int, error) {
+// runImpl runs the workflow.Implementer on issue 5 against a fake GitHub.
+func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
-	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("repo-token\n"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(workflow.Implementer), []byte("repo-token\n"), 0o640); err != nil {
 		h.t.Fatal(err)
 	}
-	return Run(context.Background(), h.deps, Implementer, "o/r", agent, 5)
+	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, 5)
 }
 
 // TestRunUsesTheNamedAgentAndDisablesRepositoryConfig pins: each run is `opencode run --agent <role>` with repository config and external skills off.
@@ -80,7 +85,7 @@ func TestRunStateIsFreshAndDeletedAndNothingIsContinued(t *testing.T) {
 	}
 	var seen []string
 	base := h.runner.fn
-	h.runner.fn = func(c Cmd) (string, error) {
+	h.runner.fn = func(c proc.Cmd) (string, error) {
 		if c.Argv[0] == "opencode" {
 			db := c.Env["OPENCODE_DB"]
 			if len(seen) == 0 {
@@ -122,12 +127,12 @@ func TestRetroResumesBySessionID(t *testing.T) {
 	}
 }
 
-// TestReviewerStateIsInMemory pins: the Reviewer's state never touches the disk.
+// TestReviewerStateIsInMemory pins: the workflow.Reviewer's state never touches the disk.
 func TestReviewerStateIsInMemory(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH(nil)
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), cleanReview)
-	if _, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5); err != nil {
+	if _, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent, 5); err != nil {
 		t.Fatal(err)
 	}
 	if oc := h.opencodeCalls(); len(oc) != 1 || oc[0].Env["OPENCODE_DB"] != ":memory:" {
@@ -296,7 +301,7 @@ func TestAFailedRunStillLogsItsUsage(t *testing.T) {
 // cloneLeavesDocs makes a clone leave an AGENTS.md behind, like a real repository.
 func (h *harness) cloneLeavesDocs() {
 	base := h.runner.fn
-	h.runner.fn = func(c Cmd) (string, error) {
+	h.runner.fn = func(c proc.Cmd) (string, error) {
 		if len(c.Argv) > 3 && c.Argv[0] == "git" && c.Argv[1] == "clone" {
 			dir := c.Argv[3]
 			if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -323,7 +328,7 @@ func TestPromptPrefixIsByteIdenticalAcrossRuns(t *testing.T) {
 		argv := h.opencodeCalls()[0].Argv
 		prompts = append(prompts, argv[len(argv)-1])
 	}
-	prefix := func(p string) string { before, _, _ := strings.Cut(p, IssueMaterialHeading); return before }
+	prefix := func(p string) string { before, _, _ := strings.Cut(p, prompt.IssueMaterialHeading); return before }
 	if prefix(prompts[0]) != prefix(prompts[1]) || prefix(prompts[0]) == prompts[0] {
 		t.Fatalf("prefixes differ or no material: %q / %q", prompts[0], prompts[1])
 	}
@@ -334,74 +339,6 @@ func TestPromptPrefixIsByteIdenticalAcrossRuns(t *testing.T) {
 	for _, varying := range []string{"issue-5", "#5", "work"} {
 		if strings.Contains(p, varying) {
 			t.Errorf("prefix contains %q", varying)
-		}
-	}
-}
-
-// TestReadRepoDocsIsFixedOrderAndBounded pins: docs are read in a fixed order, missing ones skipped, and capped.
-func TestReadRepoDocsIsFixedOrderAndBounded(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, text string) {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("docs/agents/b.md", "B")
-	write("docs/agents/a.md", "A")
-	write("GLOSSARY.md", strings.Repeat("g", DocsLimitChars+10))
-	write("AGENTS.md", "root")
-	docs, err := ReadRepoDocs(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	total := 0
-	for _, d := range docs {
-		names = append(names, d.Path)
-		total += len(d.Text)
-	}
-	if strings.Join(names, ",") != "AGENTS.md,GLOSSARY.md,docs/agents/a.md,docs/agents/b.md" || total > DocsLimitChars {
-		t.Errorf("%v total %d", names, total)
-	}
-}
-
-// TestLoadConfigRequiresEveryAgentRole pins: each of the five agent roles has a model and a cap.
-func TestLoadConfigRequiresEveryAgentRole(t *testing.T) {
-	good := func() map[string]AgentConfig {
-		m := map[string]AgentConfig{}
-		for _, r := range knownRoles {
-			m[string(r)] = testAgent
-		}
-		return m
-	}
-	load := func(agents map[string]AgentConfig) error {
-		raw, err := json.Marshal(map[string]any{"roles": []Role{Implementer}, "agents": agents})
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(t.TempDir(), "c.json")
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, err = LoadConfig(path)
-		return err
-	}
-	if err := load(good()); err != nil {
-		t.Fatal(err)
-	}
-	for name, mutate := range map[string]func(map[string]AgentConfig){
-		"missing role": func(m map[string]AgentConfig) { delete(m, "curator") },
-		"no model":     func(m map[string]AgentConfig) { m["planner"] = AgentConfig{ContextCap: 1} },
-		"no cap":       func(m map[string]AgentConfig) { m["planner"] = AgentConfig{Model: "m"} },
-	} {
-		m := good()
-		mutate(m)
-		if load(m) == nil {
-			t.Errorf("%s accepted", name)
 		}
 	}
 }

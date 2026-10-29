@@ -1,4 +1,4 @@
-package foreman
+package workflow
 
 import (
 	"strings"
@@ -64,33 +64,6 @@ func TestPickIssueSkipsPullRequests(t *testing.T) {
 func TestBranchName(t *testing.T) {
 	if got := BranchName(7); got != "agent/issue-7" {
 		t.Error(got)
-	}
-}
-
-// TestImplementerPromptCarriesIssueAfterDocs pins: implementer prompt first run.
-func TestImplementerPromptCarriesIssueAfterDocs(t *testing.T) {
-	got := ImplementerPrompt([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", Issue{Number: 4, Title: "T", Body: "B"}, "")
-	want := implementerRolePrompt + "\n\n# Repository docs\n\n## AGENTS.md\n\nRULES\n" + IssueMaterialHeading +
-		"Repository: o/r\nIssue: #4\nTitle: T\n\nB"
-	if got != want {
-		t.Errorf("got %q", got)
-	}
-}
-
-// TestImplementerPromptRework pins: agent prompt rework.
-func TestImplementerPromptRework(t *testing.T) {
-	got := ImplementerPrompt(nil, "o/r", Issue{Number: 4, Title: "T", Body: "B"}, "FEEDBACK")
-	if !strings.HasSuffix(got, "Fix every high and medium finding below on top of the existing commits, then commit.\n\nReview:\nFEEDBACK") {
-		t.Errorf("got %q", got)
-	}
-}
-
-// TestImplementerPromptTruncatesBodyAndFeedback pins: agent prompt truncates body and feedback.
-func TestImplementerPromptTruncatesBodyAndFeedback(t *testing.T) {
-	long := strings.Repeat("é", BodyLimitChars+50)
-	got := ImplementerPrompt(nil, "o/r", Issue{Number: 1, Title: "T", Body: long}, long)
-	if n := strings.Count(got, "é"); n != 2*BodyLimitChars {
-		t.Errorf("kept %d runes", n)
 	}
 }
 
@@ -176,30 +149,5 @@ func TestReviewRoundsCountsDistinctCommitsIncludingCurrent(t *testing.T) {
 	}
 	if got := ReviewRounds(reviews, "c"); got != 3 {
 		t.Errorf("new sha: %d", got)
-	}
-}
-
-// TestGitAuthEnvKeepsTokenOutOfArgv pins: git auth env keeps token out of argv.
-func TestGitAuthEnvKeepsTokenOutOfArgv(t *testing.T) {
-	env := GitAuthEnv("tok")
-	// base64("x-access-token:tok")
-	if env["GIT_CONFIG_VALUE_0"] != "Authorization: Basic eC1hY2Nlc3MtdG9rZW46dG9r" ||
-		env["GIT_CONFIG_KEY_0"] != "http.https://github.com/.extraheader" ||
-		env["GIT_CONFIG_COUNT"] != "1" || env["GIT_TERMINAL_PROMPT"] != "0" {
-		t.Errorf("got %v", env)
-	}
-}
-
-// TestPromptsForRetroAndReview pins: prompts for retro and review.
-func TestPromptsForRetroAndReview(t *testing.T) {
-	r := RetroPrompt("o/r", 9, "/w/out.md")
-	if !strings.Contains(r, "#9 of o/r") || !strings.Contains(r, "to /w/out.md;") {
-		t.Error(r)
-	}
-	p := ReviewerPrompt(nil, "main", "/w/spec.md", "/w/out.json")
-	for _, want := range []string{"origin/main", "saved at /w/spec.md", "JSON to /w/out.json"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("missing %q in %q", want, p)
-		}
 	}
 }

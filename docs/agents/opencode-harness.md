@@ -1,6 +1,6 @@
 # opencode harness adapter
 
-foreman maps its guarantees to opencode v1.19.3 in `foreman/adapter.go`.
+foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (pure: command line, environment, stream parsing, retry rules) and `foreman/internal/foreman/agent.go` (the retry loop and state directory).
 
 | Guarantee | opencode mechanism |
 |---|---|
