@@ -74,18 +74,15 @@ func parsePromotionMarker(body, prefix string) (GroupID, bool, error) {
 
 // PromotionRepo is the repository a promoted group's issue is filed in. A document group stays in the
 // repository it is about; a skill or factory group leaves a public repository for the factory repo, and
-// stays where it is in a private one until a writer publishes it. An empty factory repo fails closed.
-func PromotionRepo(g GroupID, repo string, private bool, factoryRepo string) (string, error) {
+// stays where it is in a private one until a writer publishes it. A zero factory repo fails closed.
+func PromotionRepo(g GroupID, repo Repo, private bool, factoryRepo Repo) (Repo, error) {
 	if g.Target.Kind == TargetDocs || private {
 		return repo, nil
 	}
 
-	if factoryRepo == "" {
-		return "", errors.New("no factory repository is configured, so nothing can be promoted out of a public repository")
-	}
-
-	if err := ValidateRepo(factoryRepo); err != nil {
-		return "", err
+	if factoryRepo == (Repo{}) {
+		return Repo{}, errors.New(
+			"no factory repository is configured, so nothing can be promoted out of a public repository")
 	}
 
 	return factoryRepo, nil

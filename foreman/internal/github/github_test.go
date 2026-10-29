@@ -580,7 +580,10 @@ var _ = Describe("Client", func() {
 		It("posts the resolution once and updates it on a repeat", func() {
 			number := issue()
 
-			body := workflow.RenderResolution("o/r", "research/emulate", "It works.")
+			repo, err := workflow.ParseRepo("o/r")
+			Expect(err).NotTo(HaveOccurred())
+
+			body := workflow.RenderResolution(repo, "research/emulate", "It works.")
 			Expect(c.PostResolution(ctx, ref(number), "research/emulate", body)).To(Succeed())
 			Expect(c.PostResolution(ctx, ref(number), "research/emulate", body+"\n\nmore")).To(Succeed())
 

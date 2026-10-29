@@ -102,8 +102,8 @@ func PartOf(body string) (int, bool) {
 }
 
 // IssueURL is an issue's web URL.
-func IssueURL(repo string, number int) string {
-	return fmt.Sprintf("https://github.com/%s/issues/%d", repo, number)
+func IssueURL(ref IssueRef) string {
+	return fmt.Sprintf("https://github.com/%s/issues/%d", ref.Repo, ref.Number)
 }
 
 // DecisionEntry renders the map's one-line index entry for a resolved ticket.
@@ -213,7 +213,7 @@ const ResearchMarkerPrefix = MarkerPrefix + "research "
 
 // RenderResolution is the resolution comment: its marker, the answer, and a link to the findings branch.
 // The link is kept whole: the answer is cut to leave room for it.
-func RenderResolution(repo, branch, resolution string) string {
+func RenderResolution(repo Repo, branch, resolution string) string {
 	link := fmt.Sprintf("https://github.com/%s/tree/%s", repo, branch)
 
 	head := ResearchMarker(branch) + "\n\n"

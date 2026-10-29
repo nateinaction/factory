@@ -1122,12 +1122,17 @@ func (s session) rebaseOntoBranch(ctx context.Context, branch, message string) e
 func (s session) resolveResearch(
 	ctx context.Context, j job, repo, branch string, parent workflow.Issue, out workflow.ResearcherOutput,
 ) error {
-	if err := j.c.PostResolution(ctx, repo, j.issue.Number, branch,
-		workflow.RenderResolution(repo, branch, out.Resolution)); err != nil {
+	ref, err := issueRef(repo, j.issue.Number)
+	if err != nil {
 		return err
 	}
 
-	entry := workflow.DecisionEntry(j.issue.Title, workflow.IssueURL(repo, j.issue.Number), out.DecisionLine)
+	if err := j.c.PostResolution(ctx, repo, j.issue.Number, branch,
+		workflow.RenderResolution(ref.Repo, branch, out.Resolution)); err != nil {
+		return err
+	}
+
+	entry := workflow.DecisionEntry(j.issue.Title, workflow.IssueURL(ref), out.DecisionLine)
 
 	body, err := workflow.AppendDecision(parent.Body, entry)
 	if err != nil {

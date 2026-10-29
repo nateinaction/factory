@@ -438,7 +438,12 @@ func applyResolution(
 func appendDecision(
 	ctx context.Context, c ghClient, repo string, parent, ticket workflow.Issue, line string,
 ) error {
-	entry := workflow.DecisionEntry(ticket.Title, workflow.IssueURL(repo, ticket.Number), line)
+	ref, err := issueRef(repo, ticket.Number)
+	if err != nil {
+		return err
+	}
+
+	entry := workflow.DecisionEntry(ticket.Title, workflow.IssueURL(ref), line)
 
 	body, err := workflow.AppendDecision(parent.Body, entry)
 	if err != nil {

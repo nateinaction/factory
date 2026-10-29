@@ -127,7 +127,8 @@ var _ = Describe("the map's decisions", func() {
 	})
 
 	It("builds an issue's web URL", func() {
-		Expect(workflow.IssueURL("o/r", 7)).To(Equal("https://github.com/o/r/issues/7"))
+		ref := workflow.IssueRef{Repo: mustRepo("o/r"), Number: 7}
+		Expect(workflow.IssueURL(ref)).To(Equal("https://github.com/o/r/issues/7"))
 	})
 })
 
@@ -138,7 +139,7 @@ var _ = Describe("a research resolution", func() {
 	})
 
 	It("carries the answer and a link to the branch", func() {
-		body := workflow.RenderResolution("o/r", "research/emulate", "It works.")
+		body := workflow.RenderResolution(mustRepo("o/r"), "research/emulate", "It works.")
 
 		Expect(body).To(And(
 			HavePrefix(workflow.ResearchMarker("research/emulate")),
@@ -148,7 +149,7 @@ var _ = Describe("a research resolution", func() {
 	})
 
 	It("truncates a resolution over the comment limit, keeping the link to the branch", func() {
-		body := workflow.RenderResolution("o/r", "research/emulate",
+		body := workflow.RenderResolution(mustRepo("o/r"), "research/emulate",
 			strings.Repeat("é", workflow.CommentLimitChars+50))
 		Expect(len([]rune(body))).To(BeNumerically("<=", workflow.CommentLimitChars))
 		Expect(body).To(HaveSuffix("[research/emulate](https://github.com/o/r/tree/research/emulate)"))

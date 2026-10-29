@@ -331,7 +331,8 @@ var _ = Describe("the Curator's brief", func() {
 			}},
 		}
 
-		brief := workflow.CuratorBrief("o/r", 7, true, reports, workflow.BuildDashboard(reports, state, now))
+		brief := workflow.CuratorBrief(
+			workflow.IssueRef{Repo: mustRepo("o/r"), Number: 7}, true, reports, workflow.BuildDashboard(reports, state, now))
 
 		Expect(brief).To(ContainSubstring("o/r"))
 		Expect(brief).To(ContainSubstring("#7"))
