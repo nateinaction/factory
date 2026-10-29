@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -58,6 +59,65 @@ var _ = Describe("the root span", func() {
 		Expect(spans[0].Name()).To(Equal("foreman.poll"))
 		Expect(spans[0].Attributes()).To(ContainElement(attribute.Int(telemetry.AttrExitCode, 0)))
 		Expect(spans[0].Status().Code).To(Equal(codes.Unset))
+	})
+
+	// testTraceParent is a well-formed W3C trace context a DAG parameter or the environment can carry.
+	const testTraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	It("continues the trace context start receives from the DAG's parameter", func() {
+		GinkgoT().Setenv("FACTORY_AGENT_CONFIG", filepath.Join(h.dir, "missing.json"))
+
+		root, err := newRootCommand(h.deps, config.SettingsViper(h.home))
+		Expect(err).NotTo(HaveOccurred())
+
+		root.SetOut(&h.out)
+		root.SetErr(&h.errOut)
+
+		executeTraced(context.Background(), tracer, h.logger, root,
+			[]string{"start", "implementer", "o/r", "5", testTraceParent}, false)
+
+		spans := recorder.Ended()
+		Expect(spans).To(HaveLen(1), "the command has no root span")
+		Expect(spans[0].Parent().TraceID().String()).To(Equal("4bf92f3577b34da6a3ce929d0e0e4736"))
+		Expect(spans[0].Parent().SpanID().String()).To(Equal("00f067aa0ba902b7"))
+		Expect(spans[0].Parent().IsRemote()).To(BeTrue())
+	})
+
+	It("continues the trace context run receives from its environment", func() {
+		GinkgoT().Setenv("FACTORY_AGENT_CONFIG", filepath.Join(h.dir, "missing.json"))
+		GinkgoT().Setenv(telemetry.TraceParentVar, testTraceParent)
+
+		root, err := newRootCommand(h.deps, config.SettingsViper(h.home))
+		Expect(err).NotTo(HaveOccurred())
+
+		root.SetOut(&h.out)
+		root.SetErr(&h.errOut)
+
+		executeTraced(context.Background(), tracer, h.logger, root,
+			[]string{"run", "implementer", "o/r", "5"}, false)
+
+		spans := recorder.Ended()
+		Expect(spans).To(HaveLen(1), "the command has no root span")
+		Expect(spans[0].Parent().TraceID().String()).To(Equal("4bf92f3577b34da6a3ce929d0e0e4736"))
+		Expect(spans[0].Parent().SpanID().String()).To(Equal("00f067aa0ba902b7"))
+	})
+
+	It("ignores a malformed trace context with a diagnostic and starts a new trace", func() {
+		GinkgoT().Setenv("FACTORY_AGENT_CONFIG", filepath.Join(h.dir, "missing.json"))
+
+		root, err := newRootCommand(h.deps, config.SettingsViper(h.home))
+		Expect(err).NotTo(HaveOccurred())
+
+		root.SetOut(&h.out)
+		root.SetErr(&h.errOut)
+
+		executeTraced(context.Background(), tracer, h.logger, root,
+			[]string{"start", "implementer", "o/r", "5", "not-a-traceparent"}, false)
+
+		spans := recorder.Ended()
+		Expect(spans).To(HaveLen(1), "the command has no root span")
+		Expect(spans[0].Parent().IsValid()).To(BeFalse(), "a malformed context became a parent")
+		Expect(h.logs.String()).To(ContainSubstring("malformed trace context"))
 	})
 
 	It("marks a failed run and logs the failure inside the span", func() {

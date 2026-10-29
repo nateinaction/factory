@@ -25,9 +25,10 @@ check() {
 for role in planner researcher implementer reviewer curator; do
   dag="$out/factory-$role.yaml"
   check "$role DAG calls foreman start with its role" \
-    grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE}" "$dag"
+    grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE} \${params.TRACEPARENT}" "$dag"
   check "$role DAG declares REPO" grep -Eq 'name: REPO' "$dag"
   check "$role DAG declares ISSUE" grep -Eq 'name: ISSUE' "$dag"
+  check "$role DAG declares TRACEPARENT" grep -Eq 'name: TRACEPARENT' "$dag"
   check "$role DAG has its own queue" grep -Fq "queue: factory-$role" "$dag"
   check "$role DAG selects a host that takes the role" grep -Fq "$role: \"true\"" "$dag"
   check "$role queue rendered for dagu" grep -Fq "name: factory-$role" "$out/dagu-config.yaml"
@@ -61,9 +62,9 @@ check "sudoers has exactly one permitted command" bash -c \
   'grep -E "NOPASSWD:" "$1" | sed "s/.*NOPASSWD: *//" | grep -Fxq "/usr/local/bin/foreman run *"' _ "$out/dagu-agent.sudoers"
 # The agent never inherits the factory's configuration through sudo: no FACTORY_* variable is kept.
 check "sudoers keeps no FACTORY_ variable" bash -c '! grep -Eq "FACTORY_" "$1"' _ "$out/dagu-agent.sudoers"
-# The check above is not vacuous: env_keep is present, and names only the dagu run id.
-check "sudoers keeps only DAG_RUN_ID in the environment" bash -c \
-  'kept="$(grep -E "env_keep" "$1" | sed "s/.*env_keep *+\?= *//" | tr -d "\"" | tr " " "\n" | sort -u)"; [ "$kept" = "DAG_RUN_ID" ]' _ "$out/dagu-agent.sudoers"
+# The check above is not vacuous: env_keep is present, and names the run id and trace context only.
+check "sudoers keeps only DAG_RUN_ID and TRACEPARENT in the environment" bash -c \
+  'kept="$(grep -E "env_keep" "$1" | sed "s/.*env_keep *+\?= *//" | tr -d "\"" | tr " " "\n" | sort -u)"; [ "$kept" = "$(printf "DAG_RUN_ID\nTRACEPARENT")" ]' _ "$out/dagu-agent.sudoers"
 if command -v visudo >/dev/null 2>&1; then
   check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
 fi
