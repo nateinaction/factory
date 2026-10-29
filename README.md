@@ -106,8 +106,8 @@ reviews that PR.
    `ready-for-agent` (or `ready-for-agent-review`) to retry.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
-OpenRouter key. The Apps need the permissions above, and installations must accept them. Pick the model with
-`factory_agent_model` (a `provider/model` id for opencode).
+OpenRouter key. The Apps need the permissions above, and installations must accept them. Each agent role's
+model, context cap and compaction setting come from `factory_models`.
 
 Things to know:
 

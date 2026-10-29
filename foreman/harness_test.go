@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every process and answers through fn.
@@ -61,7 +62,11 @@ type harness struct {
 	dir    string
 	// installed maps an agent role to the repositories its App is installed on.
 	installed map[Role][]string
+	sleeps    []time.Duration
 }
+
+// testAgent is the agent role settings tests run with.
+var testAgent = AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
 
 // newHarness builds a harness whose runner answers the helpers every flow needs.
 func newHarness(t *testing.T) *harness {
@@ -82,6 +87,7 @@ func newHarness(t *testing.T) *harness {
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
 		Runner: h.runner, HTTP: gh.srv.Client(), Out: h.out, Err: h.errb,
+		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 	}
 	return h
 }
@@ -90,6 +96,8 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) defaultRun(c Cmd) (string, error) {
 	line := joined(c)
 	switch {
+	case c.Argv[0] == "opencode":
+		return okStream("ses_1"), nil
 	case strings.Contains(line, "github-app-token") && strings.Contains(line, " repositories "):
 		return strings.Join(h.installed[Role(appOf(c))], "\n") + "\n", nil
 	case strings.Contains(line, "github-app-token") && !slices.Contains(h.installed[Role(appOf(c))], repoOf(c)):

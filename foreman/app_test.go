@@ -12,7 +12,7 @@ import (
 func (h *harness) withConfig() {
 	h.t.Helper()
 	path := filepath.Join(h.dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"roles":["implementer","reviewer"],"model":"prov/model"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
 		h.t.Fatal(err)
 	}
 	h.deps.Settings.ConfigFile = path
@@ -93,7 +93,7 @@ func TestMainRunReturnsTheReviewVerdictAsExitCode(t *testing.T) {
 	if code := Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps); code != ReviewFindings {
 		t.Fatalf("exit %d: %s", code, h.errb.String())
 	}
-	if oc := h.runner.find("opencode run --model prov/model"); len(oc) != 1 {
+	if oc := h.runner.find("opencode run --agent reviewer"); len(oc) != 1 {
 		t.Errorf("model from config not used: %v", h.runner.cmds)
 	}
 }
@@ -110,7 +110,7 @@ func TestMainStartRunsTheWholeImplementerHandoff(t *testing.T) {
 
 // TestMainBadConfigFailsClosed pins: main bad config fails closed.
 func TestMainBadConfigFailsClosed(t *testing.T) {
-	for _, cfg := range []string{``, `{}`, `{"roles":["janitor"],"model":"m"}`, `{"roles":[],"model":"m"}`, `{"roles":["implementer"]}`, `{"model":"m"}`, `[`} {
+	for _, cfg := range []string{``, `{}`, `{"roles":["janitor"],"agents":{}}`, `{"roles":["implementer"],"agents":{}}`, `{"roles":[],"agents":{}}`, `{"agents":{}}`, `[`} {
 		h := newHarness(t)
 		path := filepath.Join(h.dir, "config.json")
 		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
@@ -152,3 +152,9 @@ func TestDefaultSettingsKeepTheConfigLocations(t *testing.T) {
 		t.Error("override ignored")
 	}
 }
+
+// validConfig is a config file with every agent role.
+var validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
+	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
+	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
+	`"curator":{"model":"prov/model","context_cap":200000}}}`

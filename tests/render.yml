@@ -9,6 +9,9 @@
     - ../group_vars/factory.yml
   vars:
     dagu_mode: server
+    github_apps:
+      implementer: {app_id: "1", private_key_file: /dev/null}
+      reviewer: {app_id: "2", private_key_file: /dev/null}
   tasks:
     - name: Render the poll DAG
       ansible.builtin.template:
@@ -24,6 +27,18 @@
       loop: "{{ factory_agent_roles }}"
       loop_control:
         loop_var: agent_role
+
+    - name: Render opencode's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/opencode.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/opencode.json"
+        mode: "0644"
+
+    - name: Render foreman's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/config.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config.json"
+        mode: "0644"
 
     - name: Render the sudoers file
       ansible.builtin.template:

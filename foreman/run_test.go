@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // implementerGH registers the GitHub side of an Implementer run on issue 5; pr is the existing PR or nil.
@@ -38,7 +39,7 @@ func (h *harness) opencodeWrites(marker, path, text string) {
 			if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 				h.t.Error(err)
 			}
-			return "", nil
+			return okStream("ses_1"), nil
 		}
 		return base(c)
 	}
@@ -51,8 +52,8 @@ func TestRunImplementerFirstRunPushesAndOpensPR(t *testing.T) {
 	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("repo-token\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	h.opencodeWrites("--continue", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "lessons\n")
-	code, err := Run(context.Background(), h.deps, Implementer, "o/r", "prov/model", 5)
+	h.opencodeWrites("--session", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "lessons\n")
+	code, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5)
 	if err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -63,8 +64,8 @@ func TestRunImplementerFirstRunPushesAndOpensPR(t *testing.T) {
 	if len(h.runner.find("checkout -B agent/issue-5")) != 1 || len(h.runner.find("fetch origin")) != 0 {
 		t.Errorf("checkout/fetch: %v", h.runner.cmds)
 	}
-	oc := h.runner.find("opencode run --model prov/model Use the `implement` skill to implement GitHub issue #5 of o/r")
-	if len(oc) != 1 || oc[0].Dir != work || oc[0].Env["OPENROUTER_API_KEY"] != "or-key" || oc[0].Timeout != AgentTimeout {
+	oc := h.runner.find("opencode run --agent implementer --format json Use the `implement` skill")
+	if len(oc) != 1 || oc[0].Dir != work || oc[0].Env["OPENROUTER_API_KEY"] != "or-key" || !near(oc[0].Timeout, AgentTimeout) {
 		t.Fatalf("opencode %+v", oc)
 	}
 	if strings.Contains(joined(oc[0]), "Review:") {
@@ -85,14 +86,14 @@ func TestRunImplementerFirstRunPushesAndOpensPR(t *testing.T) {
 	if c := h.gh.bodies("POST", "/repos/o/r/issues/5/comments"); len(c) != 1 || !strings.Contains(c[0], "Pull request: http://github/pr/8") {
 		t.Errorf("comments %v", c)
 	}
-	if h.out.String() != "http://github/pr/8\n" {
+	if !strings.HasPrefix(h.out.String(), "http://github/pr/8\n") {
 		t.Errorf("stdout %q", h.out.String())
 	}
 	retro := h.gh.bodies("POST", "/repos/o/r/issues/41/comments")
 	if len(retro) != 1 || !strings.Contains(retro[0], `<!-- agent-retro:5:sha-head -->\n## Retro: #5\n\nlessons`) {
 		t.Errorf("retro %v", retro)
 	}
-	if rc := h.runner.find("--continue"); len(rc) != 1 || rc[0].Timeout != RetroTimeout {
+	if rc := h.runner.find("--session"); len(rc) != 1 || !near(rc[0].Timeout, RetroTimeout) {
 		t.Errorf("retro run %v", rc)
 	}
 	h.leakFree("repo-token", "or-key")
@@ -106,13 +107,13 @@ func TestRunImplementerReworkBuildsOnReviewedCommits(t *testing.T) {
 	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("repo-token"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5); err != nil {
+	if _, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.runner.find("fetch origin agent/issue-5")) != 1 || len(h.runner.find("checkout -B agent/issue-5 origin/agent/issue-5")) != 1 {
 		t.Errorf("did not build on the branch: %v", h.runner.cmds)
 	}
-	if oc := h.runner.find("opencode run --model m"); len(oc) < 1 || !strings.Contains(joined(oc[0]), "Review:\n"+ReviewMarker("old")+"\nFIX THE THING") {
+	if oc := h.runner.find("opencode run --agent implementer"); len(oc) < 1 || !strings.Contains(joined(oc[0]), "Review:\n"+ReviewMarker("old")+"\nFIX THE THING") {
 		t.Errorf("feedback missing from prompt")
 	}
 	if push := h.runner.find("noreply.github.com push"); len(push) != 1 || strings.Contains(joined(push[0]), "--force") {
@@ -124,7 +125,7 @@ func TestRunImplementerReworkBuildsOnReviewedCommits(t *testing.T) {
 	if c := h.gh.bodies("POST", "/repos/o/r/issues/5/comments"); len(c) != 0 {
 		t.Errorf("commented a PR link again: %v", c)
 	}
-	if h.out.String() != "http://github/pr/8\n" {
+	if !strings.HasPrefix(h.out.String(), "http://github/pr/8\n") {
 		t.Errorf("stdout %q", h.out.String())
 	}
 }
@@ -143,7 +144,7 @@ func TestRunImplementerFailsWithoutNewCommits(t *testing.T) {
 		}
 		return base(c)
 	}
-	code, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5)
 	if err == nil || code == 0 || !strings.Contains(err.Error(), "no commits") {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -161,12 +162,12 @@ func TestRunImplementerRetroFailureIsNotFatal(t *testing.T) {
 	}
 	base := h.runner.fn
 	h.runner.fn = func(c Cmd) (string, error) {
-		if strings.Contains(joined(c), "--continue") {
+		if strings.Contains(joined(c), "--session") {
 			return "", errors.New("retro blew up")
 		}
 		return base(c)
 	}
-	code, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5)
 	if err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -182,8 +183,8 @@ func TestRunImplementerEmptyRetroIsLoggedNotPosted(t *testing.T) {
 	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	h.opencodeWrites("--continue", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "  \n")
-	if code, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5); err != nil || code != 0 {
+	h.opencodeWrites("--session", filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md"), "  \n")
+	if code, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5); err != nil || code != 0 {
 		t.Fatalf("%d %v", code, err)
 	}
 	if !strings.Contains(h.errb.String(), "the retro wrote nothing") || len(h.gh.bodies("POST", "/repos/o/r/issues/41/comments")) != 0 {
@@ -205,7 +206,7 @@ func TestRunImplementerClearsStaleScratchFromEarlierRuns(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale retro"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5); err != nil {
+	if _, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.gh.bodies("POST", "/repos/o/r/issues/41/comments")) != 0 {
@@ -227,6 +228,7 @@ func (h *harness) reviewerGH(reviews []Item) {
 
 // cleanReview is a review with no findings.
 const cleanReview = `{"summary":"fine","findings":[]}`
+
 // blockingReview is a review with one high finding.
 const blockingReview = `{"summary":"bad","findings":[{"severity":"high","title":"bug","detail":"d","location":"a.go:1"}]}`
 
@@ -235,7 +237,7 @@ func TestRunReviewerCleanApproves(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH(nil)
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), cleanReview)
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "prov/model", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err != nil || code != ReviewClean {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -250,8 +252,8 @@ func TestRunReviewerCleanApproves(t *testing.T) {
 		len(h.runner.find("checkout -B agent/issue-5 origin/agent/issue-5")) != 1 {
 		t.Errorf("checkout: %v", h.runner.cmds)
 	}
-	oc := h.runner.find("opencode run --model prov/model Use the `code-review` skill. The fixed point is origin/main")
-	if len(oc) != 1 || oc[0].Dir != work || oc[0].Timeout != ReviewTimeout || oc[0].Env["OPENROUTER_API_KEY"] != "or-key" {
+	oc := h.runner.find("opencode run --agent reviewer --format json Use the `code-review` skill")
+	if len(oc) != 1 || oc[0].Dir != work || !near(oc[0].Timeout, ReviewTimeout) || oc[0].Env["OPENROUTER_API_KEY"] != "or-key" {
 		t.Errorf("opencode %+v", oc)
 	}
 	spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "review-5.spec.md"))
@@ -266,7 +268,7 @@ func TestRunReviewerFindingsSendBack(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH(nil)
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), blockingReview)
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err != nil || code != ReviewFindings {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -281,7 +283,7 @@ func TestRunReviewerStopsAfterMaxRounds(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH([]Item{{Body: ReviewMarker("s1")}, {Body: ReviewMarker("s2")}})
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), blockingReview)
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err != nil || code != ReviewExhausted {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -292,7 +294,7 @@ func TestRunReviewerRepeatOfAReviewedCommitPostsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH([]Item{{Body: ReviewMarker("sha-head") + "\nearlier"}})
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), blockingReview)
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err != nil || code != ReviewFindings {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -306,7 +308,7 @@ func TestRunReviewerMalformedReviewFailsClosed(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH(nil)
 	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), `{"summary":"ok"}`)
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err == nil || code == ReviewClean {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -319,7 +321,7 @@ func TestRunReviewerMalformedReviewFailsClosed(t *testing.T) {
 func TestRunReviewerMissingReviewFileFailsClosed(t *testing.T) {
 	h := newHarness(t)
 	h.reviewerGH(nil)
-	if code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5); err == nil || code == ReviewClean {
+	if code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5); err == nil || code == ReviewClean {
 		t.Fatalf("%d %v", code, err)
 	}
 }
@@ -332,7 +334,7 @@ func TestRunReviewerWithoutPRFails(t *testing.T) {
 	if err := os.WriteFile(h.deps.Settings.TokenPath(Reviewer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", "m", 5)
+	code, err := Run(context.Background(), h.deps, Reviewer, "o/r", testAgent, 5)
 	if err == nil || code == 0 || !strings.Contains(err.Error(), "no open pull request for agent/issue-5") {
 		t.Fatalf("%d %v", code, err)
 	}
@@ -342,7 +344,7 @@ func TestRunReviewerWithoutPRFails(t *testing.T) {
 func TestRunRefusesRolesWithoutBehaviour(t *testing.T) {
 	for _, role := range []Role{Planner, Researcher, Curator} {
 		h := newHarness(t)
-		code, err := Run(context.Background(), h.deps, role, "o/r", "m", 5)
+		code, err := Run(context.Background(), h.deps, role, "o/r", testAgent, 5)
 		if err == nil || code == 0 || len(h.runner.cmds) != 0 || len(h.gh.calls()) != 0 {
 			t.Errorf("%s: %d %v", role, code, err)
 		}
@@ -352,10 +354,13 @@ func TestRunRefusesRolesWithoutBehaviour(t *testing.T) {
 // TestRunWithoutTokenFileFails pins: run without token file fails.
 func TestRunWithoutTokenFileFails(t *testing.T) {
 	h := newHarness(t)
-	if code, err := Run(context.Background(), h.deps, Implementer, "o/r", "m", 5); err == nil || code == 0 {
+	if code, err := Run(context.Background(), h.deps, Implementer, "o/r", testAgent, 5); err == nil || code == 0 {
 		t.Errorf("%d %v", code, err)
 	}
 	if !slices.Equal(h.gh.summary(), nil) {
 		t.Errorf("called GitHub without a token: %v", h.gh.summary())
 	}
 }
+
+// near reports whether a per-attempt timeout is the deadline less a moment of elapsed time.
+func near(got, deadline time.Duration) bool { return got <= deadline && got > deadline-time.Minute }
