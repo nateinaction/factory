@@ -13,6 +13,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
+	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 )
 
@@ -46,6 +47,16 @@ type Runner interface {
 	Run(ctx context.Context, c proc.Cmd) (string, error)
 }
 
+// Forwarder is the run's OpenRouter proxy, as the run lifecycle sees it.
+type Forwarder interface {
+	// URL is the OpenRouter base URL the model is told to call.
+	URL() string
+	// Usage is what the forwarded responses reported.
+	Usage() openrouter.Usage
+	// Close stops the proxy.
+	Close() error
+}
+
 // Deps is everything at the edge: settings, processes, HTTP and the output streams.
 type Deps struct {
 	// Settings are the paths and endpoints.
@@ -62,6 +73,10 @@ type Deps struct {
 	Host string
 	// Sleep waits between model retries; nil waits on the clock.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Proxy starts the run's OpenRouter proxy; nil starts the real one.
+	Proxy func(key, addr string) (Forwarder, error)
+	// ProxyAddr is the loopback address the run's proxy binds; empty binds a free loopback port.
+	ProxyAddr string
 }
 
 // client returns a GitHub client for token.
