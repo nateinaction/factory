@@ -31,9 +31,12 @@ srt's read model is deny-then-allow: reads are open unless denied. foreman compi
 `/sys`; see the residual visibility below). `allowRead` then binds back only two things:
 
 - the host's own share in `hostRead` (`foreman/internal/sandbox`): `/nix/store`, `/usr`, `/bin`,
-  `/sbin`, `/lib`, `/lib64`, `/etc`, `/opt`, `/dev`, `/proc`, `/sys`, and on macOS `/System`,
-  `/Library`, `/private/etc` and `/private/var`. These let a process start and use the toolchain;
-  they hold no factory or run data.
+  `/sbin`, `/lib`, `/lib64`, `/etc`, `/dev`, `/proc`, `/sys`, and on macOS `/System`, `/private/etc`
+  and `/private/var`. These let a process start and use the toolchain; they hold no factory or run
+  data. `/private/var` stays because macOS's `/var` is a symlink to it and tools consult `/var/run`
+  and the dynamic loader's `/var/db`; the factory's own paths under it stay in the deny list.
+  `/opt` and `/Library` were dropped: the factory's toolchain comes from `/nix/store`, so neither
+  is needed to start a process.
 - this run's paths: its run directory, its clone (read-only for the roles that never commit), the
   forked skills, the resolved toolchain, and its scratch/output directory.
 
@@ -56,12 +59,16 @@ srt cannot hide quite everything, and this file records the gap rather than clai
   therefore visible. `/etc/factory-agent`, the `/etc/github-app` credential directories (mode 0700
   and 0600, owned by dagu) and the OpenRouter key file remain denied where the factory can name
   them; the token directory is denied by name.
+- On macOS `/private/var` is readable for `/var/run` and the dynamic loader's `/var/db`. Its
+  world-readable logs, databases and temporary files are therefore visible, while the factory's
+  own paths under it stay in the deny list.
 - A path under a symlinked parent is bound where it really is. macOS's `/tmp` is a symlink to
   `/private/tmp`, so an accepted run directory is a real path, not one reached through `/tmp`; the
   acceptance test resolves its temp directory for this reason.
 
 The concrete residual risk is therefore a prompt-injected run reading **host system files that are
-world-readable under `/etc`, `/dev`, `/proc` or `/sys`** — for example `/etc/machine-id` — but not the
+world-readable under `/etc`, `/dev`, `/proc`, `/sys` or, on macOS, `/private/var`** — for example
+`/etc/machine-id` — but not the
 factory's secrets, another run's clone or scratch directory, the real home, dagu's directories or the
 token directory. Those stay in the explicit deny list; the list is the mitigation, not a claim that
 `denyRead: ["/"]` alone is one.

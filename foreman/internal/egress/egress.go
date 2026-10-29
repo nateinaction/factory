@@ -7,7 +7,6 @@ package egress
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nateinaction/factory/foreman/internal/proxyauth"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
@@ -447,13 +447,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 // not carry the run's token is refused before it is forwarded, and any other origin-form path is
 // refused too: the sandbox gets no general-purpose reverse proxy.
 func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
-	if !p.authorized(r) {
+	if !proxyauth.Authorized(r, p.token) {
 		http.Error(w, "egress proxy: run token required", http.StatusUnauthorized)
 
 		return
 	}
 
-	if p.api == nil || !underAPIPrefix(r.URL.Path) {
+	if p.api == nil || !proxyauth.UnderPrefix(r.URL.Path, APIPrefix) {
 		http.Error(w, "egress proxy: only the OpenRouter API is served", http.StatusForbidden)
 
 		return
@@ -467,17 +467,6 @@ func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
 
 	p.record(APIDomain)
 	p.apiProxy.ServeHTTP(w, r)
-}
-
-// authorized reports whether r carries the run's token in its Authorization header. The comparison
-// is constant time, and the token never reaches a log.
-func (p *Proxy) authorized(r *http.Request) bool {
-	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		return false
-	}
-
-	return subtle.ConstantTimeCompare([]byte(got), []byte(p.token)) == 1
 }
 
 // apiURL is r as a request to the key proxy: the same path beneath /api/v1, nothing that could
@@ -495,11 +484,4 @@ func (p *Proxy) apiURL(r *http.Request) *url.URL {
 	dest.RawQuery = r.URL.RawQuery
 
 	return &dest
-}
-
-// underAPIPrefix reports whether p is the API or a path beneath it.
-func underAPIPrefix(p string) bool {
-	clean := path.Clean(p)
-
-	return clean == APIPrefix || strings.HasPrefix(clean, APIPrefix+"/")
 }

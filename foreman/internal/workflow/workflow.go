@@ -404,21 +404,27 @@ const factoryAppSep = "-factory-"
 
 // FactoryAuthored reports whether login is one of the factory's own GitHub App identities: the bot
 // account of an App named <owner>-factory-<agent role>, which posts as
-// <owner>-factory-<agent role>[bot]. Every reader of a factory marker checks this first, so a writer
-// or an outsider cannot forge one; a login that is empty or not a known agent role's App is not
-// factory, never an error and never an assumption.
-func FactoryAuthored(login string) bool {
+// <owner>-factory-<agent role>[bot]. owner is the repository owner, the only owner whose factory Apps
+// are ours. Every reader of a factory marker checks this first, so a writer or another owner's App
+// cannot forge one; an empty owner, an empty login or an App for no known agent role is not factory,
+// never an error and never an assumption. GitHub logins are case-insensitive, so the owner prefix is
+// compared that way too.
+func FactoryAuthored(login, owner string) bool {
+	if owner == "" {
+		return false
+	}
+
 	name, ok := strings.CutSuffix(login, "[bot]")
 	if !ok {
 		return false
 	}
 
-	at := strings.LastIndex(name, factoryAppSep)
-	if at <= 0 {
+	prefix := owner + factoryAppSep
+	if len(name) <= len(prefix) || !strings.EqualFold(name[:len(prefix)], prefix) {
 		return false
 	}
 
-	_, err := ParseRole(name[at+len(factoryAppSep):])
+	_, err := ParseRole(name[len(prefix):])
 
 	return err == nil
 }
@@ -791,9 +797,23 @@ func StartsWith(items []Item, prefix string) []Item {
 	return out
 }
 
+// FactoryStartsWith keeps the items a factory App authored whose body starts with prefix, in API
+// order. A marker mid-body is not a marker, and another author's marker is not a factory record.
+func FactoryStartsWith(items []Item, prefix, owner string) []Item {
+	var out []Item
+
+	for _, i := range items {
+		if FactoryAuthored(i.Author, owner) && strings.HasPrefix(i.Body, prefix) {
+			out = append(out, i)
+		}
+	}
+
+	return out
+}
+
 // ReviewRounds counts the distinct commits that took a review round, counting sha whether or not it
 // is posted yet. A posted review and a CI failure both count once per commit.
-func ReviewRounds(reviews, comments []Item, sha string) int {
+func ReviewRounds(reviews, comments []Item, sha, owner string) int {
 	marked := map[string]bool{sha: true}
 
 	for _, r := range StartsWith(reviews, ReviewMarkerPrefix) {
@@ -802,11 +822,7 @@ func ReviewRounds(reviews, comments []Item, sha string) int {
 		}
 	}
 
-	for _, c := range StartsWith(comments, CIFailureMarkerPrefix) {
-		if !FactoryAuthored(c.Author) {
-			continue
-		}
-
+	for _, c := range FactoryStartsWith(comments, CIFailureMarkerPrefix, owner) {
 		if sha := ciFailureSHA(c.Body); sha != "" {
 			marked[sha] = true
 		}

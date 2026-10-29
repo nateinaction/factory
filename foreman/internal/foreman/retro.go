@@ -40,7 +40,7 @@ func (s session) retroEpilogue(
 	budget config.Budget,
 ) opencode.Usage {
 	if !opencode.RetroAllowed(runErr) {
-		s.d.log().Info("retro skipped for this failure", "repo", repo, "issue", number, "role", role,
+		s.d.log().Info("retro skipped for this failure", "repo", repo, "issue", number, "agent_role", role,
 			"error", runErr)
 
 		return opencode.Usage{}
@@ -48,7 +48,7 @@ func (s session) retroEpilogue(
 
 	if sessionID == "" {
 		if runErr != nil {
-			s.d.log().Warn("retro failed", "repo", repo, "issue", number, "role", role,
+			s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role,
 				"error", errors.New("the run reported no session to resume"))
 		}
 
@@ -56,7 +56,7 @@ func (s session) retroEpilogue(
 	}
 
 	if key == "" {
-		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "role", role,
+		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role,
 			"error", errors.New("the run has no commit to key its retro by"))
 
 		return opencode.Usage{}
@@ -64,7 +64,7 @@ func (s session) retroEpilogue(
 
 	usage, err := s.retro(ctx, j.c, repo, number, role, sessionID, key, budget)
 	if err != nil {
-		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "role", role, "error", err)
+		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role, "error", err)
 	}
 
 	return usage

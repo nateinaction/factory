@@ -14,11 +14,11 @@ type Marker struct {
 // Markers reads every factory-authored handoff marker in comments, oldest first. A comment from
 // another author is skipped before its body is read, so a forged marker moves nothing and a forged
 // malformed one does not block. A factory marker that does not parse is an error, never skipped.
-func Markers(comments []Item) ([]Marker, error) {
+func Markers(comments []Item, owner string) ([]Marker, error) {
 	out := make([]Marker, 0, len(comments))
 
 	for _, c := range comments {
-		if !FactoryAuthored(c.Author) {
+		if !FactoryAuthored(c.Author, owner) {
 			continue
 		}
 
@@ -36,8 +36,8 @@ func Markers(comments []Item) ([]Marker, error) {
 }
 
 // LatestMarker is the last handoff marker in API order, which is oldest first.
-func LatestMarker(comments []Item) (Marker, bool, error) {
-	markers, err := Markers(comments)
+func LatestMarker(comments []Item, owner string) (Marker, bool, error) {
+	markers, err := Markers(comments, owner)
 	if err != nil || len(markers) == 0 {
 		return Marker{}, false, err
 	}
@@ -48,7 +48,7 @@ func LatestMarker(comments []Item) (Marker, bool, error) {
 // AfterMarker returns the comments posted after marker, oldest first, with factory handoff markers
 // left out. Another author's comment that merely looks like a marker is not a factory record, so it
 // stays in the thread a run reads.
-func AfterMarker(comments []Item, marker Marker) []Item {
+func AfterMarker(comments []Item, marker Marker, owner string) []Item {
 	var out []Item
 
 	for _, c := range comments {
@@ -57,7 +57,7 @@ func AfterMarker(comments []Item, marker Marker) []Item {
 		}
 
 		// A factory handoff marker is foreman's own record, not part of the thread a run reads.
-		if FactoryAuthored(c.Author) {
+		if FactoryAuthored(c.Author, owner) {
 			if _, ok, err := ParseTransition(c.Body); ok || err != nil {
 				continue
 			}
@@ -101,8 +101,8 @@ func waitingOnWriter(state State) bool {
 // Guidance returns the comments a woken run must read: every comment posted after the handoff marker
 // that left the issue waiting on a writer, when a run was woken out of that state. Comments are
 // oldest first, with handoff markers left out. A run that was not woken reads nothing.
-func Guidance(comments []Item) []Item {
-	markers, err := Markers(comments)
+func Guidance(comments []Item, owner string) []Item {
+	markers, err := Markers(comments, owner)
 	if err != nil || len(markers) == 0 {
 		return nil
 	}
@@ -114,7 +114,7 @@ func Guidance(comments []Item) []Item {
 
 	for _, marker := range slices.Backward(markers) {
 		if marker.ID < wake.ID && marker.To == wake.From {
-			return AfterMarker(comments, marker)
+			return AfterMarker(comments, marker, owner)
 		}
 	}
 

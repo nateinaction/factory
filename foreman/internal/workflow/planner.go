@@ -454,14 +454,14 @@ const (
 // StoredSpec returns the spec of the latest stored proposal, when that proposal is a single. The
 // latest stored proposal wins: another shape keeps its spec where that shape puts it, not in the
 // final-round comment.
-func StoredSpec(comments []Item) (string, bool, error) {
+func StoredSpec(comments []Item, owner string) (string, bool, error) {
 	var (
 		spec  string
 		final bool
 	)
 
 	for _, c := range comments {
-		if !FactoryAuthored(c.Author) {
+		if !FactoryAuthored(c.Author, owner) {
 			continue
 		}
 
@@ -554,7 +554,7 @@ func approvalPrefixWord(word string) bool {
 	case "i", "am", "we", wordThis, "it", "is", "are", "looks", "look", "good", "great",
 		"all", "fine", "yes", "yep", "yeah", "ok", "okay", "definitely", "absolutely",
 		"so", "then", "lets", "the", "spec", "plan", "everything", "and", "go", "ahead",
-		"please":
+		"lgtm", "ship", "approved", "please":
 		return true
 	default:
 		return false

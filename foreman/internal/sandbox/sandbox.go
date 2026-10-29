@@ -97,14 +97,22 @@ func Plan(role workflow.Role, layout Layout) Spec {
 
 // hostRead is the operating system every run may still read. The sandbox hides the host by
 // denying `/` and binding back only these paths (plus the run's own), so the list is the host's
-// share, never the factory's: it holds the OS, its device and process files, and /nix/store.
+// share, never the factory's: it holds the OS runtime, its device and process files, and /nix/store.
 // Both Linux and macOS paths are listed; srt skips an entry that does not exist.
 var hostRead = []string{ //nolint:gochecknoglobals // a read-only list
+	// The toolchain foreman resolves from the default branch.
 	"/nix/store",
+	// The OS runtime and its shared libraries.
 	"/usr", "/bin", "/sbin", "/lib", "/lib64",
-	"/etc", "/opt",
+	// /etc is the TLS certificate, DNS and NSS configuration a toolchain needs; the factory's own
+	// /etc/factory-agent stays denied by name. On macOS /etc is a symlink to /private/etc.
+	"/etc",
+	// srt 0.0.81 leaves these visible even under denyRead: ["/"]; see docs/sandbox.md.
 	"/dev", "/proc", "/sys",
-	"/System", "/Library", "/private/etc", "/private/var",
+	// macOS's runtime frameworks and its real /etc and /var. /private/var stays because macOS's
+	// /var is a symlink to it and tools consult /var/run and the dynamic loader's /var/db; it holds
+	// no factory data, and the factory's own paths under it stay in the deny list.
+	"/System", "/private/etc", "/private/var",
 }
 
 // settings is the srt settings file's shape. Only the fields foreman sets are here.

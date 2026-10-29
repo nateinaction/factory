@@ -117,7 +117,7 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 		return prepared{}, err
 	}
 
-	finalSpec, _, err := workflow.StoredSpec(comments)
+	finalSpec, _, err := workflow.StoredSpec(comments, repo.Owner())
 	if err != nil {
 		return prepared{}, err
 	}

@@ -98,6 +98,10 @@ expect_error "repositories needs --app, and says so" "usage:" repositories
 expect_error "a repeated value flag is refused" "--app" token --app implementer --app reviewer --repo o/r
 expect_error "a repeated switch is refused" "--read-only" token --app implementer --repo o/r --read-only --read-only
 expect_error "a flag the command does not take is refused" "--repo" repositories --app implementer --repo o/r
+expect_error "a conflicting --read-only on repositories is refused" \
+  "unrecognized arguments: --read-only" repositories --app implementer --read-only
+expect_error "a conflicting --read-only value on token is refused" \
+  "ignored explicit argument 'x'" token --app implementer --repo o/r --read-only=x
 expect_error "a flag with no value is refused" "--repo" token --app implementer --repo
 
 [ "$failures" -eq 0 ]

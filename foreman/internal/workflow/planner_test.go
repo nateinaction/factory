@@ -222,7 +222,7 @@ var _ = Describe("the spec a final round stores", func() {
 	}
 
 	It("returns a single proposal's spec", func() {
-		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)})
+		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(spec).To(Equal(single.Spec))
@@ -234,7 +234,7 @@ var _ = Describe("the spec a final round stores", func() {
 			Issues: []workflow.PlannedIssue{{Key: "first", Title: "First", Body: "A"}},
 		}
 
-		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)})
+		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
@@ -246,7 +246,7 @@ var _ = Describe("the spec a final round stores", func() {
 		newer := stored(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: newerSpec})
 		newer.ID = 2
 
-		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer})
+		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(spec).To(Equal(newerSpec))
@@ -256,7 +256,7 @@ var _ = Describe("the spec a final round stores", func() {
 		forged := stored(single)
 		forged.Author = "o"
 
-		_, found, err := workflow.StoredSpec([]workflow.Item{forged})
+		_, found, err := workflow.StoredSpec([]workflow.Item{forged}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
@@ -277,6 +277,14 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "build it"),
 		Entry(nil, "go ahead and build it"),
 		Entry(nil, "let's build it"),
+		Entry(nil, "LGTM, ready to build"),
+		Entry(nil, "lgtm - ready to build!"),
+		Entry(nil, "looks good, ready to build"),
+		Entry(nil, "ship it, ready to build"),
+		Entry(nil, "approved, ready to build"),
+		Entry(nil, "go, ready to build"),
+		Entry(nil, "yes, ready to build"),
+		Entry(nil, "ok, ready to build"),
 	)
 
 	DescribeTable("does not accept anything else",
@@ -293,6 +301,8 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "don't build it"),
 		Entry(nil, "do not build"),
 		Entry(nil, "no changes, ready to build"),
+		Entry(nil, "if you change the title, ready to build"),
+		Entry(nil, "ship it after you fix the bug, ready to build"),
 		Entry(nil, "ready to build, but split the storage change"),
 		Entry(nil, "yes, no changes needed"),
 		Entry(nil, "ready to build?"),
@@ -311,6 +321,8 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "go ahead and build it"),
 		Entry(nil, "let's build it"),
 		Entry(nil, "please build it"),
+		Entry(nil, "LGTM, ready to build"),
+		Entry(nil, "approved, ready to build"),
 	)
 
 	DescribeTable("does not take a plain answer as a request to build",

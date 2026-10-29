@@ -156,7 +156,7 @@ var _ = Describe("the retro dashboard", func() {
 		factory := make([]dashboardIssue, 0, 1)
 
 		for _, issue := range dashboards() {
-			if workflow.FactoryAuthored(issue.User.Login) {
+			if workflow.FactoryAuthored(issue.User.Login, "o") {
 				factory = append(factory, issue)
 			}
 		}

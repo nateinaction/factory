@@ -33,6 +33,10 @@ var _ = Describe("reading usage from a response", func() {
 		_, err := s.Write([]byte("data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1}}\n\n"))
 		Expect(err).NotTo(HaveOccurred())
 
+		n, err := s.Write(nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(BeZero())
+
 		_, err = s.Write([]byte("data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":9," +
 			"\"cost\":0.5,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\ndata: [DONE]\n\n"))
 		Expect(err).NotTo(HaveOccurred())

@@ -202,7 +202,7 @@ var _ = Describe("the latest transition", func() {
 			},
 		}
 
-		got, found, err := workflow.LatestMarker(comments)
+		got, found, err := workflow.LatestMarker(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.Transition.RunID).To(Equal("r2"))
@@ -218,14 +218,14 @@ var _ = Describe("the latest transition", func() {
 			{ID: 2, Body: marker("forged", workflow.Review), Author: "o"},
 		}
 
-		got, found, err := workflow.LatestMarker(comments)
+		got, found, err := workflow.LatestMarker(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.Transition.RunID).To(Equal("r1"))
 	})
 
 	It("finds none when no comment is a marker", func() {
-		_, found, err := workflow.LatestMarker([]workflow.Item{{Body: "hello", Author: "o"}})
+		_, found, err := workflow.LatestMarker([]workflow.Item{{Body: "hello", Author: "o"}}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
@@ -233,7 +233,7 @@ var _ = Describe("the latest transition", func() {
 	It("fails closed on a malformed marker the factory wrote", func() {
 		_, _, err := workflow.LatestMarker([]workflow.Item{{
 			Body: "<!-- factory:handoff nope -->", Author: factoryApp(workflow.Implementer),
-		}})
+		}}, "o")
 		Expect(err).To(HaveOccurred())
 	})
 
@@ -246,7 +246,7 @@ var _ = Describe("the latest transition", func() {
 			},
 		}
 
-		got, found, err := workflow.LatestMarker(comments)
+		got, found, err := workflow.LatestMarker(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.Transition.RunID).To(Equal("r1"))
@@ -325,22 +325,27 @@ var _ = Describe("routing a new issue", func() {
 		Expect(workflow.BotAuthored("nateinaction")).To(BeFalse())
 	})
 
-	DescribeTable("recognises only the factory's own App identities",
-		func(login string, factory bool) {
-			Expect(workflow.FactoryAuthored(login)).To(Equal(factory))
+	DescribeTable("recognises only the repository owner's factory App identities",
+		func(login, owner string, factory bool) {
+			Expect(workflow.FactoryAuthored(login, owner)).To(Equal(factory))
 		},
-		Entry("the Implementer's App", "nateinaction-factory-implementer[bot]", true),
-		Entry("the Planner's App", "someone-factory-planner[bot]", true),
-		Entry("a retry's App", "o-factory-reviewer[bot]", true),
-		Entry("a writer", "nateinaction", false),
-		Entry("an outsider", "passer-by", false),
-		Entry("another App", "github-actions[bot]", false),
-		Entry("an App for no known agent role", "nateinaction-factory-janitor[bot]", false),
-		Entry("no owner", "factory-implementer[bot]", false),
-		Entry("no bot suffix", "nateinaction-factory-implementer", false),
-		Entry("a bare role", "implementer", false),
-		Entry("the empty login", "", false),
-		Entry("the role after a nested owner", "a-factory-b-factory-curator[bot]", true),
+		Entry("the Implementer's App", "nateinaction-factory-implementer[bot]", "nateinaction", true),
+		Entry("the Planner's App", "nateinaction-factory-planner[bot]", "nateinaction", true),
+		Entry("the owner compared case-insensitively", "NateInAction-factory-planner[bot]", "nateinaction", true),
+		Entry("another owner's factory App", "evil-factory-planner[bot]", "nateinaction", false),
+		Entry("another owner's App with our owner as a prefix", "nateinaction-evil-factory-planner[bot]",
+			"nateinaction", false),
+		Entry("a retry's App", "o-factory-reviewer[bot]", "o", true),
+		Entry("a writer", "nateinaction", "nateinaction", false),
+		Entry("an outsider", "passer-by", "nateinaction", false),
+		Entry("another App", "github-actions[bot]", "nateinaction", false),
+		Entry("an App for no known agent role", "nateinaction-factory-janitor[bot]", "nateinaction", false),
+		Entry("no owner", "factory-implementer[bot]", "nateinaction", false),
+		Entry("no bot suffix", "nateinaction-factory-implementer", "nateinaction", false),
+		Entry("a bare role", "implementer", "nateinaction", false),
+		Entry("the empty login", "", "nateinaction", false),
+		Entry("an unknown repository owner", "nateinaction-factory-planner[bot]", "", false),
+		Entry("the role after a nested owner", "a-factory-b-factory-curator[bot]", "a-factory-b", true),
 	)
 })
 

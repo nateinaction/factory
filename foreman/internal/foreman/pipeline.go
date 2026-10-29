@@ -225,8 +225,13 @@ func runRole(
 // settleRun applies the outcome the run's exit code routes to, before the retro. A role with nowhere
 // to move records nothing here, and one whose transition fails is logged: `start` retries it.
 func settleRun(ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, limit, code int, runErr error) {
+	// A role the pipeline table does not know has no route to settle: the run stops here and
+	// `start` cannot record it either, so log why rather than leave the run silently unrecorded.
 	ar, ok := agentRoleFor(role)
 	if !ok {
+		d.log().Warn("not settling the run: no pipeline is defined for this agent role",
+			"agent_role", role, "repo", ref.Repo, "issue", ref.Number)
+
 		return
 	}
 
@@ -235,14 +240,18 @@ func settleRun(ctx context.Context, d Deps, role workflow.Role, ref workflow.Iss
 		return
 	}
 
+	// A role with no queue has nowhere to move the issue to, so the run stops with no transition.
 	q, ok := workflow.QueueOf(role)
 	if !ok {
+		d.log().Warn("not settling the run: this agent role has no handoff queue",
+			"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst)
+
 		return
 	}
 
 	if err := finishRun(ctx, d, role, ref, q.Running, r.dst, r.text); err != nil {
 		d.log().Warn("cannot record the run's outcome before its retro; start will retry it",
-			"role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
+			"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
 	}
 }
 

@@ -127,8 +127,8 @@ var _ = Describe("the CI failure report", func() {
 			ID: 1, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer),
 		}}
 
-		Expect(workflow.HasCIFailure(comments, report.SHA)).To(BeTrue())
-		Expect(workflow.HasCIFailure(comments, "other")).To(BeFalse())
+		Expect(workflow.HasCIFailure(comments, report.SHA, "o")).To(BeTrue())
+		Expect(workflow.HasCIFailure(comments, "other", "o")).To(BeFalse())
 	})
 
 	It("reads back the report without its marker", func() {
@@ -172,7 +172,7 @@ var _ = Describe("the CI failure report", func() {
 			{ID: 3, Body: implementMarker, Author: factoryApp(workflow.Reviewer)},
 		}
 
-		got, ok, err := workflow.LatestCIFailure(comments)
+		got, ok, err := workflow.LatestCIFailure(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal(int64(2)))
@@ -184,7 +184,7 @@ var _ = Describe("the CI failure report", func() {
 			{ID: 3, Body: implementMarker, Author: factoryApp(workflow.Reviewer)},
 			{ID: 4, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
 		}
-		_, ok, err = workflow.LatestCIFailure(stale)
+		_, ok, err = workflow.LatestCIFailure(stale, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 	})
@@ -192,7 +192,7 @@ var _ = Describe("the CI failure report", func() {
 	It("is not read when there was no handoff to review", func() {
 		_, ok, err := workflow.LatestCIFailure([]workflow.Item{
 			{ID: 1, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer)},
-		})
+		}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 	})
@@ -209,10 +209,10 @@ var _ = Describe("the CI failure report", func() {
 			{ID: 2, Body: workflow.RenderCIFailure(report), Author: "o"},
 		}
 
-		_, ok, err := workflow.LatestCIFailure(comments)
+		_, ok, err := workflow.LatestCIFailure(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
-		Expect(workflow.HasCIFailure(comments, report.SHA)).To(BeFalse())
+		Expect(workflow.HasCIFailure(comments, report.SHA, "o")).To(BeFalse())
 	})
 
 	It("skips a malformed handoff marker another author wrote", func() {
@@ -228,7 +228,7 @@ var _ = Describe("the CI failure report", func() {
 			{ID: 3, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer)},
 		}
 
-		got, ok, err := workflow.LatestCIFailure(comments)
+		got, ok, err := workflow.LatestCIFailure(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(got.ID).To(Equal(int64(3)))
@@ -244,11 +244,11 @@ var _ = Describe("review rounds", func() {
 	}
 
 	It("counts distinct reviewed commits, a repeat of one counting once", func() {
-		Expect(workflow.ReviewRounds(reviews, nil, "a")).To(Equal(2))
+		Expect(workflow.ReviewRounds(reviews, nil, "a", "o")).To(Equal(2))
 	})
 
 	It("counts the current commit before its review is posted", func() {
-		Expect(workflow.ReviewRounds(reviews, nil, "c")).To(Equal(3))
+		Expect(workflow.ReviewRounds(reviews, nil, "c", "o")).To(Equal(3))
 	})
 
 	It("counts a CI failure as a round on its commit", func() {
@@ -257,7 +257,7 @@ var _ = Describe("review rounds", func() {
 			{Body: "a human comment", Author: "o"},
 		}
 
-		Expect(workflow.ReviewRounds(reviews, comments, "d")).To(Equal(3))
+		Expect(workflow.ReviewRounds(reviews, comments, "d", "o")).To(Equal(3))
 	})
 
 	It("counts a commit once when both CI and a review named it", func() {
@@ -265,7 +265,7 @@ var _ = Describe("review rounds", func() {
 			Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "a"}), Author: factoryApp(workflow.Reviewer),
 		}}
 
-		Expect(workflow.ReviewRounds(reviews, comments, "a")).To(Equal(2))
+		Expect(workflow.ReviewRounds(reviews, comments, "a", "o")).To(Equal(2))
 	})
 
 	It("does not count a CI failure another author posted", func() {
@@ -273,6 +273,6 @@ var _ = Describe("review rounds", func() {
 			Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "d"}), Author: "o",
 		}}
 
-		Expect(workflow.ReviewRounds(reviews, comments, "a")).To(Equal(2))
+		Expect(workflow.ReviewRounds(reviews, comments, "a", "o")).To(Equal(2))
 	})
 })

@@ -264,6 +264,44 @@ var _ = Describe("Client", func() {
 			From: workflow.Reviewing, To: workflow.Done, SHA: "abc",
 		}
 
+		// The marker is posted by the Reviewer's App, so a repeat is one the factory authored.
+		BeforeEach(func() {
+			c = github.NewClient(p.URL(), "minted-token-reviewer", p.Client())
+		})
+
+		markerFor := func(t workflow.Transition) string {
+			GinkgoHelper()
+
+			marker, err := workflow.RenderTransition(t)
+			Expect(err).NotTo(HaveOccurred())
+
+			return marker
+		}
+
+		It("posts the marker when an outsider already wrote one that carries it", func() {
+			number := issue(workflow.LabelReviewing)
+
+			Expect(emulator.CommentAs(ctx, "o/r", number, "admin-token",
+				markerFor(transition)+"\n\nnot foreman's record")).To(Succeed())
+
+			_, err := c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(HaveLen(1),
+				"an outsider's marker suppressed the factory's transition")
+		})
+
+		It("does not post the marker a factory App already wrote", func() {
+			number := issue(workflow.LabelReviewing)
+
+			Expect(emulator.CommentAs(ctx, "o/r", number, "minted-token-reviewer",
+				markerFor(transition)+"\n\nforeman's record")).To(Succeed())
+
+			_, err := c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(BeEmpty(),
+				"a factory marker was recorded twice")
+		})
+
 		It("posts the marker with its outcome, then swaps the labels", func() {
 			number := issue(workflow.LabelReviewing)
 
@@ -691,6 +729,11 @@ var _ = Describe("Client", func() {
 			Role: workflow.Researcher, RunID: "run-3",
 			From: workflow.Researching, To: workflow.Closed,
 		}
+
+		// The marker is posted by the Researcher's App, so a repeat is one the factory authored.
+		BeforeEach(func() {
+			c = github.NewClient(p.URL(), "minted-token-researcher", p.Client())
+		})
 
 		It("posts the marker, removes the claim and closes the ticket", func() {
 			number := issue(workflow.LabelResearching)
