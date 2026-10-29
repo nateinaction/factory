@@ -312,6 +312,44 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "I think it is ready to build"),
 	)
 
+	DescribeTable("accepts each decided word as a plain yes",
+		func(text string) { Expect(workflow.OpensGate(text)).To(BeTrue()) },
+		Entry(nil, "yes"),
+		Entry(nil, "yep"),
+		Entry(nil, "yeah"),
+		Entry(nil, "ok"),
+		Entry(nil, "okay"),
+		Entry(nil, "lgtm"),
+		Entry(nil, "LGTM!"),
+	)
+
+	DescribeTable("refuses a word that is not decided as a plain yes",
+		func(text string) {
+			Expect(workflow.OpensGate(text)).To(BeFalse())
+			Expect(workflow.RequestsBuild(text)).To(BeFalse())
+		},
+		Entry(nil, "sure"),
+		Entry(nil, "yup"),
+		Entry(nil, "y"),
+		Entry(nil, "k"),
+		Entry(nil, "fine"),
+		Entry(nil, "approved"),
+		Entry(nil, "ship it"),
+		Entry(nil, "go"),
+		Entry(nil, "looks good"),
+		Entry(nil, "sounds good"),
+		Entry(nil, "+1"),
+		Entry(nil, "true"),
+	)
+
+	DescribeTable("refuses a decided word that carries a clause",
+		func(text string) { Expect(workflow.OpensGate(text)).To(BeFalse()) },
+		Entry(nil, "yep, but split the storage change"),
+		Entry(nil, "ok if the tests pass"),
+		Entry(nil, "lgtm after you rename it"),
+		Entry(nil, "okay?"),
+	)
+
 	DescribeTable("accepts a writer's explicit request to build",
 		func(text string) { Expect(workflow.RequestsBuild(text)).To(BeTrue()) },
 		Entry(nil, "ready to build"),

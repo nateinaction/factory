@@ -296,6 +296,49 @@ var _ = Describe("applying a proposal a writer opened the gate on", func() {
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
 
+	It("does not reopen the gate on a ready-to-build once the issue left factory:waiting", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 1}}})
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerQuestions,
+			Comment: "**Q1** - Should exports include archived accounts? Recommended answer: no.",
+		})
+
+		opened, err := workflow.RenderTransition(workflow.Transition{
+			Role: workflow.Planner, RunID: "old", From: workflow.Waiting, To: workflow.Implement,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(emulator.CommentAs(context.Background(), "o/r", 1,
+			"minted-token-planner", opened+"\n\nThe gate is open.")).To(Succeed())
+		h.comment(1, "o", "ready to build")
+
+		poll()
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplement))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	DescribeTable("refuses to apply a proposal on a word that is not decided",
+		func(word string) {
+			waitingIssue()
+			plannerRound(workflow.PlannerOutput{
+				Version: 1, Kind: workflow.PlannerFinalRound,
+				Comment: "One PR. **Is this ready to build?**", Proposal: &single,
+			})
+			h.comment(1, "o", word)
+
+			poll()
+
+			Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelImplement))
+			Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
+		},
+		Entry(nil, "sure"),
+		Entry(nil, "yup"),
+		Entry(nil, "fine"),
+		Entry(nil, "approved"),
+		Entry(nil, "ship it"),
+		Entry(nil, "looks good"),
+	)
+
 	It("does not apply on a writer's negated ready-to-build", func() {
 		waitingIssue()
 		plannerRound(workflow.PlannerOutput{
