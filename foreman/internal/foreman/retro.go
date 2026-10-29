@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
-	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -74,7 +73,7 @@ func (s session) retroEpilogue(
 // it strictly, and posts the whole retro on the issue it worked, keyed by issue, agent role and run
 // key.
 func (s session) retro(
-	ctx context.Context, c github.Client, repo string, number int, role workflow.Role, sessionID, key string,
+	ctx context.Context, c ghClient, repo string, number int, role workflow.Role, sessionID, key string,
 	budget config.Budget,
 ) (opencode.Usage, error) {
 	path := retroPath(s.d.Settings.WorkRoot, number, role)

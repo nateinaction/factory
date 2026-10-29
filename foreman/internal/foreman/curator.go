@@ -102,7 +102,7 @@ func curateRun(
 // curatorInputs reads the repository's retro log, the dashboard's state and the repository's
 // visibility. The dashboard issue is the run's issue.
 func curatorInputs(
-	ctx context.Context, d Deps, c github.Client, repo string, dashboard workflow.Issue,
+	ctx context.Context, d Deps, c ghClient, repo string, dashboard workflow.Issue,
 ) ([]workflow.DashboardReport, workflow.DashboardState, bool, error) {
 	state, err := workflow.ParseDashboard(dashboard.Body)
 	if err != nil {
@@ -211,7 +211,7 @@ func (s session) applyCurator(
 
 // writeDashboardBody writes the dashboard only when the redrawn body differs.
 func (s session) writeDashboardBody(
-	ctx context.Context, c github.Client, repo string, number int, before, after string,
+	ctx context.Context, c ghClient, repo string, number int, before, after string,
 ) error {
 	if before == after {
 		return nil
@@ -281,15 +281,15 @@ func (s session) fileCuratorIssue(
 // curatorClient returns the client for dest: this run's client in the repository, and the Curator
 // App's token minted for another repository.
 func (s session) curatorClient(
-	ctx context.Context, c github.Client, repo, dest string,
-) (github.Client, error) {
+	ctx context.Context, c ghClient, repo, dest string,
+) (ghClient, error) {
 	if dest == repo {
 		return c, nil
 	}
 
 	token, err := s.d.mintToken(ctx, workflow.Curator, dest)
 	if err != nil {
-		return github.Client{}, fmt.Errorf("mint a token for %s: %w", dest, err)
+		return ghClient{}, fmt.Errorf("mint a token for %s: %w", dest, err)
 	}
 
 	return s.d.client(token), nil

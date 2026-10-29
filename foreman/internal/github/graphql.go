@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // The GraphQL documents foreman sends. Minimizing a comment is GraphQL-only: the REST API has no such
@@ -88,6 +90,6 @@ func (c Client) MinimizeComment(ctx context.Context, nodeID string) error {
 }
 
 // DeleteComment deletes an issue comment: the fallback when the App cannot minimize it.
-func (c Client) DeleteComment(ctx context.Context, repo string, id int64) error {
+func (c Client) DeleteComment(ctx context.Context, repo workflow.Repo, id int64) error {
 	return c.Call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, id), nil, nil)
 }

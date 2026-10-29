@@ -12,7 +12,6 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/dagu"
-	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -137,7 +136,7 @@ const PollRunLimit = 1000
 type queuedIssue struct {
 	repo   string
 	issue  workflow.Issue
-	client github.Client
+	client ghClient
 }
 
 // firstIssue reports whether a comes before b: the oldest creation first, an undated issue after
@@ -325,7 +324,7 @@ func prepareRepo(
 
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
 func settleIssue(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, perms *permissions,
 	repo string, issue workflow.Issue,
 ) error {
 	dead, err := failDeadRun(ctx, d, cfg, c, repo, issue)
@@ -340,7 +339,7 @@ func settleIssue(
 // margin to factory:failed, once, with a marker. A missing deadline or timeline event leaves the
 // issue alone: an age it cannot read is never an age that fails a run.
 func failDeadRun(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
 ) (bool, error) {
 	role, state, ok := workflow.RunningState(issue)
 	if !ok {
@@ -396,7 +395,7 @@ func failDeadRun(
 
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
 func prepareIssue(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string, issue workflow.Issue,
 ) error {
 	comments, err := issueComments(ctx, c, repo, issue)
 	if err != nil {
@@ -444,7 +443,7 @@ func prepareIssue(
 // to the agent role that failed. A done issue is woken by a comment on its pull request; the others
 // by a comment on the issue. The wake is made with the token of the agent role it queues for.
 func wakeIssue(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker, found bool,
 ) (bool, error) {
 	if !found {
@@ -496,7 +495,7 @@ func wakeIssue(
 // wakeThread is the thread a wake is judged on: the pull request's comments for a done issue, the
 // issue's own otherwise. ok is false when a done issue has no open pull request to comment on.
 func wakeThread(
-	ctx context.Context, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, c ghClient, repo string, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker,
 ) ([]workflow.Item, bool, error) {
 	if latest.To != workflow.Done {
@@ -519,7 +518,7 @@ func wakeThread(
 
 // written reports whether a writer commented after the latest marker.
 func written(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string,
+	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string,
 	thread []workflow.Item, latest workflow.Marker,
 ) bool {
 	for _, comment := range workflow.AfterMarker(thread, latest) {
@@ -532,7 +531,7 @@ func written(
 }
 
 // issueComments lists an issue's comments, skipping the call when it has none.
-func issueComments(ctx context.Context, c github.Client, repo string, issue workflow.Issue) ([]workflow.Item, error) {
+func issueComments(ctx context.Context, c ghClient, repo string, issue workflow.Issue) ([]workflow.Item, error) {
 	if issue.Comments == 0 {
 		return nil, nil
 	}
@@ -552,7 +551,7 @@ func newPermissions() *permissions {
 }
 
 // isWriter reports whether login has write access. An unreadable permission is not write access.
-func (p *permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo, login string) bool {
+func (p *permissions) isWriter(ctx context.Context, d Deps, c ghClient, repo, login string) bool {
 	if login == "" {
 		return false
 	}
@@ -579,7 +578,7 @@ func (p *permissions) isWriter(ctx context.Context, d Deps, c github.Client, rep
 
 // counted reports whether an issue counts: its author is a writer, or a writer has commented on it.
 func counted(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string,
+	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string,
 	issue workflow.Issue, comments []workflow.Item,
 ) bool {
 	if perms.isWriter(ctx, d, c, repo, issue.Author) {
@@ -598,7 +597,7 @@ func counted(
 // blocked reports whether an issue has an open blocker. Native dependencies come first; a repository
 // without them falls back to the issue's "Blocked by:" line. A read failure is an error, so the
 // caller never claims an issue whose blockers it cannot read.
-func blocked(ctx context.Context, c github.Client, repo string, issue workflow.Issue) (bool, error) {
+func blocked(ctx context.Context, c ghClient, repo string, issue workflow.Issue) (bool, error) {
 	open, supported, err := c.OpenBlockers(ctx, repo, issue.Number)
 	if err != nil {
 		return false, err
@@ -715,7 +714,7 @@ func compareIssues(a, b queuedIssue) int {
 // eligible reports whether the poll may work an issue at all: not a pull request, not paused, not
 // already claimed, counted, and unblocked. A read it cannot make leaves the issue alone, never claims it.
 func eligible(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string, issue workflow.Issue,
 ) bool {
 	if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) || claimed(issue) {
 		return false
@@ -747,7 +746,7 @@ func eligible(
 // readCI reads what GitHub reports about sha: its check runs, its commit statuses, and the tail of
 // each failed Actions job's log. A log that cannot be read is logged and left out; the failure
 // itself still reaches the Implementer.
-func readCI(ctx context.Context, d Deps, c github.Client, repo, sha string) (workflow.CIReport, error) {
+func readCI(ctx context.Context, d Deps, c ghClient, repo, sha string) (workflow.CIReport, error) {
 	report := workflow.CIReport{SHA: sha}
 
 	checks, err := c.CheckRuns(ctx, repo, sha)
@@ -788,7 +787,7 @@ func readCI(ctx context.Context, d Deps, c github.Client, repo, sha string) (wor
 // deadline. Neither of the latter starts a model run. The reads and writes use the Reviewer's client,
 // so every transition is made by the agent role that owns the review queue.
 func ciGate(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
 ) (claim, moved bool, err error) {
 	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
 	if err != nil {
@@ -837,7 +836,7 @@ func ciGate(
 // ciPendingExpired reports whether the issue has waited in factory:review past the CI pending
 // deadline. An age it cannot date leaves the issue queued, like a run it cannot date is not dead.
 func ciPendingExpired(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
 ) (bool, error) {
 	events, err := c.Timeline(ctx, repo, issue.Number)
 	if err != nil {
@@ -857,7 +856,7 @@ func ciPendingExpired(
 
 // ciPendingFailure fails an issue whose CI stayed pending past its deadline.
 func ciPendingFailure(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string,
 	issue workflow.Issue, report workflow.CIReport,
 ) error {
 	t := workflow.Transition{
@@ -876,7 +875,7 @@ func ciPendingFailure(
 // model run. At the review round limit it fails the issue instead. The report comes before the
 // transition, so the Implementer's run reads it as the reason it was sent back.
 func ciFailureBack(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string,
+	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string,
 	issue workflow.Issue, pr int, report workflow.CIReport,
 ) error {
 	reviews, err := c.Reviews(ctx, repo, pr)
@@ -929,7 +928,7 @@ func claimed(issue workflow.Issue) bool {
 }
 
 // headSHA is the commit the issue's open pull request is at, or empty before one exists.
-func headSHA(ctx context.Context, c github.Client, repo string, number int) (string, error) {
+func headSHA(ctx context.Context, c ghClient, repo string, number int) (string, error) {
 	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(number))
 	if err != nil {
 		return "", err
@@ -945,7 +944,7 @@ func headSHA(ctx context.Context, c github.Client, repo string, number int) (str
 // claimAndEnqueue claims the issue, then queues its run. A queue failure fails the issue rather than
 // leaving it claimed.
 func claimAndEnqueue(
-	ctx context.Context, d Deps, c github.Client, repo string, issue workflow.Issue, q queueStep,
+	ctx context.Context, d Deps, c ghClient, repo string, issue workflow.Issue, q queueStep,
 ) (int, error) {
 	sha, err := headSHA(ctx, c, repo, issue.Number)
 	if err != nil {

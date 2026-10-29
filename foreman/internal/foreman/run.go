@@ -255,7 +255,7 @@ const gitPush = "push"
 type job struct {
 	sec   secrets
 	env   map[string]string
-	c     github.Client
+	c     ghClient
 	issue workflow.Issue
 }
 
@@ -488,7 +488,7 @@ func implementRun(
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
 // and the comments that woke the issue.
 func buildImplementerPrompt(
-	ctx context.Context, c github.Client, repo string, issue workflow.Issue, workdir, feedback, out string,
+	ctx context.Context, c ghClient, repo string, issue workflow.Issue, workdir, feedback, out string,
 ) (string, error) {
 	docs, err := prompt.ReadRepoDocs(workdir)
 	if err != nil {
@@ -505,7 +505,7 @@ func buildImplementerPrompt(
 
 // rework reads what a run that was sent back must answer: every comment since the marker that woke
 // the issue, and the CI failure report when that is why it came back.
-func rework(ctx context.Context, c github.Client, repo string, number int) ([]workflow.Item, string, error) {
+func rework(ctx context.Context, c ghClient, repo string, number int) ([]workflow.Item, string, error) {
 	thread, err := guidance(ctx, c, repo, number)
 	if err != nil {
 		return nil, "", err
@@ -518,7 +518,7 @@ func rework(ctx context.Context, c github.Client, repo string, number int) ([]wo
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
 // request, oldest first. An issue that was not woken reads nothing.
-func guidance(ctx context.Context, c github.Client, repo string, number int) ([]workflow.Item, error) {
+func guidance(ctx context.Context, c ghClient, repo string, number int) ([]workflow.Item, error) {
 	comments, err := c.ListComments(ctx, repo, number)
 	if err != nil {
 		return nil, err
@@ -547,7 +547,7 @@ func guidance(ctx context.Context, c github.Client, repo string, number int) ([]
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
 // handoff that sent the pull request to review. A report from an earlier round is stale and left out.
-func ciFeedback(ctx context.Context, c github.Client, repo string, number int) (string, error) {
+func ciFeedback(ctx context.Context, c ghClient, repo string, number int) (string, error) {
 	comments, err := c.ListComments(ctx, repo, number)
 	if err != nil {
 		return "", err
@@ -616,7 +616,7 @@ func outputProblem(file string, err error) error {
 // rejectOutput posts every problem with a rejected output file in one comment, then returns the
 // failure the run reports. Nothing in the file is applied: the issue goes to failed instead.
 func rejectOutput(
-	ctx context.Context, c github.Client, repo string, number int, role workflow.Role, err error,
+	ctx context.Context, c ghClient, repo string, number int, role workflow.Role, err error,
 ) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
@@ -703,7 +703,7 @@ func (s session) reply(
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if
 // any, the review feedback on it, and the commit the agent starts from.
 func (s session) prepare(
-	ctx context.Context, c github.Client, repo, branch string,
+	ctx context.Context, c ghClient, repo, branch string,
 ) (pr *github.PullRequest, feedback, start string, err error) {
 	if err := s.clone(ctx, repo); err != nil {
 		return nil, "", "", err
@@ -761,7 +761,7 @@ func (s session) upsertPR(
 // checkoutBranch checks out the issue's branch. With an open pull request it builds on the reviewed
 // commits instead of discarding them, and returns the latest review as feedback.
 func (s session) checkoutBranch(
-	ctx context.Context, c github.Client, repo, branch string,
+	ctx context.Context, c ghClient, repo, branch string,
 ) (*github.PullRequest, string, error) {
 	pr, err := c.ExistingPR(ctx, repo, branch)
 	if err != nil {
@@ -807,7 +807,7 @@ func (s session) requireNewCommits(ctx context.Context, start, branch string, pr
 
 // openPR opens the pull request for the branch, linked to the issue, and comments its link.
 func openPR(
-	ctx context.Context, c github.Client, repo string, issue workflow.Issue, branch string,
+	ctx context.Context, c ghClient, repo string, issue workflow.Issue, branch string,
 	out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
 	base, err := c.DefaultBranch(ctx, repo)
@@ -989,7 +989,7 @@ func readResearcherOutput(path string) (workflow.ResearcherOutput, error) {
 // parentMap finds the map a research ticket belongs to: its sub-issue parent when the repository has
 // them, otherwise the "Part of #N" line at the top of the ticket. A parent that is not a map fails
 // closed, so the decision line is never written to an unrelated issue.
-func parentMap(ctx context.Context, c github.Client, repo string, issue workflow.Issue) (workflow.Issue, error) {
+func parentMap(ctx context.Context, c ghClient, repo string, issue workflow.Issue) (workflow.Issue, error) {
 	parent, supported, err := c.Parent(ctx, repo, issue.Number)
 	if err != nil {
 		return workflow.Issue{}, fmt.Errorf("read the parent of #%d: %w", issue.Number, err)
@@ -1241,7 +1241,7 @@ func reviewRun(
 }
 
 // reviewTarget is the open pull request for branch and the branch it merges into.
-func reviewTarget(ctx context.Context, c github.Client, repo, branch string) (*github.PullRequest, string, error) {
+func reviewTarget(ctx context.Context, c ghClient, repo, branch string) (*github.PullRequest, string, error) {
 	pr, err := c.ExistingPR(ctx, repo, branch)
 	if err != nil {
 		return nil, "", err
@@ -1322,7 +1322,7 @@ func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The
 // verdict leaves only through the output file, so nothing else can decide it.
 func postVerdict(
-	ctx context.Context, d Deps, c github.Client, repo string, pr int, sha string,
+	ctx context.Context, d Deps, c ghClient, repo string, pr int, sha string,
 	out workflow.ReviewerOutput, issue workflow.Issue, limit int,
 ) (int, error) {
 	reviews, err := c.Reviews(ctx, repo, pr)
@@ -1372,7 +1372,7 @@ func postVerdict(
 // approvalReviewer is the human writer an approval asks to merge: the issue's author when a human
 // wrote it, otherwise the latest human writer who commented. Empty means no human writer was found.
 func approvalReviewer(
-	ctx context.Context, d Deps, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c ghClient, repo string, issue workflow.Issue,
 	comments []workflow.Item,
 ) (string, error) {
 	if issue.Author != "" && !workflow.BotAuthored(issue.Author) {

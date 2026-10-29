@@ -238,7 +238,7 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 }
 
 // ListLabeled lists the oldest open issues carrying label.
-func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow.Issue, error) {
+func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
 		stateParam: {stateOpen}, "labels": {label}, sortParam: {sortCreated},
 		directionParam: {ascending}, "per_page": {fmt.Sprint(IssuesPerPage)},
@@ -246,34 +246,34 @@ func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow
 
 	var issues []workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/issues?"+q.Encode(), nil, &issues)
+	err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/issues?"+q.Encode(), nil, &issues)
 
 	return issues, err
 }
 
 // ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
 // the caller skips them.
-func (c Client) ListOpenIssues(ctx context.Context, repo string) ([]workflow.Issue, error) {
+func (c Client) ListOpenIssues(ctx context.Context, repo workflow.Repo) ([]workflow.Issue, error) {
 	q := url.Values{stateParam: {stateOpen}, sortParam: {sortCreated}, directionParam: {ascending}}
 
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
 }
 
 // ListIssues lists a repository's issues in state ("open", "closed" or StateAll), newest first. Pull
 // requests are included in the answer and the caller skips them.
-func (c Client) ListIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+func (c Client) ListIssues(ctx context.Context, repo workflow.Repo, state string) ([]workflow.Issue, error) {
 	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {descending}}
 
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
 }
 
 // ListOldestIssues lists a repository's issues in state, oldest first, so an issue that has been there
 // since the repository was assigned is still found on a repository with more issues than one scan
 // holds.
-func (c Client) ListOldestIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+func (c Client) ListOldestIssues(ctx context.Context, repo workflow.Repo, state string) ([]workflow.Issue, error) {
 	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {ascending}}
 
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
 }
 
 // Label is the part of a repository label foreman reads.
@@ -284,8 +284,8 @@ type Label struct {
 
 // EnsureLabels creates each label the repository lacks. A label another poll created between the
 // read and the write is already there, so its 422 is not an error.
-func (c Client) EnsureLabels(ctx context.Context, repo string, labels []string) error {
-	existing, err := Paged[Label](ctx, c, "/repos/"+repo+"/labels")
+func (c Client) EnsureLabels(ctx context.Context, repo workflow.Repo, labels []string) error {
+	existing, err := Paged[Label](ctx, c, "/repos/"+repo.String()+"/labels")
 	if err != nil {
 		return err
 	}
@@ -300,7 +300,7 @@ func (c Client) EnsureLabels(ctx context.Context, repo string, labels []string) 
 			continue
 		}
 
-		err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/labels", labelRequest{Name: name}, nil)
+		err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/labels", labelRequest{Name: name}, nil)
 		if err != nil && !isStatus(err, http.StatusUnprocessableEntity) {
 			return err
 		}
@@ -310,13 +310,13 @@ func (c Client) EnsureLabels(ctx context.Context, repo string, labels []string) 
 }
 
 // ListComments lists an issue's comments, oldest first.
-func (c Client) ListComments(ctx context.Context, repo string, number int) ([]workflow.Item, error) {
-	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number))
+func (c Client) ListComments(ctx context.Context, ref workflow.IssueRef) ([]workflow.Item, error) {
+	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number))
 }
 
 // CollaboratorPermission reads a user's permission on the repository. A user who is not a
 // collaborator has none; any other failure is returned, so the caller can fail closed.
-func (c Client) CollaboratorPermission(ctx context.Context, repo, login string) (string, error) {
+func (c Client) CollaboratorPermission(ctx context.Context, repo workflow.Repo, login string) (string, error) {
 	var got struct {
 		Permission string `json:"permission"`
 	}
@@ -337,10 +337,10 @@ func (c Client) CollaboratorPermission(ctx context.Context, repo, login string) 
 
 // OpenBlockers lists the open issues blocking number. supported is false when the repository has no
 // issue dependencies, so the caller falls back to the issue's "Blocked by:" line.
-func (c Client) OpenBlockers(ctx context.Context, repo string, number int) ([]workflow.Issue, bool, error) {
+func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]workflow.Issue, bool, error) {
 	var blocking []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, number)
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodGet, path, nil, &blocking)
 	if isStatus(err, http.StatusNotFound) {
@@ -363,44 +363,44 @@ func (c Client) OpenBlockers(ctx context.Context, repo string, number int) ([]wo
 }
 
 // GetIssue reads one issue.
-func (c Client) GetIssue(ctx context.Context, repo string, number int) (workflow.Issue, error) {
+func (c Client) GetIssue(ctx context.Context, ref workflow.IssueRef) (workflow.Issue, error) {
 	var issue workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), nil, &issue)
+	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number), nil, &issue)
 
 	return issue, err
 }
 
 // CreateIssue opens an issue with the labels foreman derived and returns it.
 func (c Client) CreateIssue(
-	ctx context.Context, repo, title, body string, labels []string,
+	ctx context.Context, repo workflow.Repo, title, body string, labels []string,
 ) (workflow.Issue, error) {
 	var issue workflow.Issue
 
-	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues",
+	err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/issues",
 		createIssueRequest{Title: title, Body: body, Labels: labels}, &issue)
 
 	return issue, err
 }
 
 // UpdateIssueBody replaces an issue's body.
-func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, body string) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+func (c Client) UpdateIssueBody(ctx context.Context, ref workflow.IssueRef, body string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
 		issueBodyRequest{Body: body}, nil)
 }
 
 // CloseIssue closes an issue.
-func (c Client) CloseIssue(ctx context.Context, repo string, number int) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+func (c Client) CloseIssue(ctx context.Context, ref workflow.IssueRef) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
 		issueStateRequest{State: stateClosed}, nil)
 }
 
 // SubIssueNumbers lists the issues linked as sub-issues of parent. supported is false when the
 // repository has no sub-issues, so the caller can fall back to a "Part of #N" line.
-func (c Client) SubIssueNumbers(ctx context.Context, repo string, parent int) ([]int, bool, error) {
+func (c Client) SubIssueNumbers(ctx context.Context, ref workflow.IssueRef) ([]int, bool, error) {
 	var children []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, parent)
+	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodGet, path, nil, &children)
 	if isStatus(err, http.StatusNotFound) {
@@ -421,8 +421,8 @@ func (c Client) SubIssueNumbers(ctx context.Context, repo string, parent int) ([
 
 // AddSubIssue links child, by database id, as a sub-issue of parent. GitHub's 422 for an existing
 // link is not an error: applying the same proposal again changes nothing.
-func (c Client) AddSubIssue(ctx context.Context, repo string, parent int, childID int64) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, parent)
+func (c Client) AddSubIssue(ctx context.Context, ref workflow.IssueRef, childID int64) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodPost, path, subIssueRequest{SubIssueID: childID}, nil)
 	if isStatus(err, http.StatusUnprocessableEntity) {
@@ -433,14 +433,14 @@ func (c Client) AddSubIssue(ctx context.Context, repo string, parent int, childI
 }
 
 // IssueID reads an issue's database id, which a dependency link names.
-func (c Client) IssueID(ctx context.Context, repo string, number int) (int64, error) {
-	issue, err := c.GetIssue(ctx, repo, number)
+func (c Client) IssueID(ctx context.Context, ref workflow.IssueRef) (int64, error) {
+	issue, err := c.GetIssue(ctx, ref)
 	if err != nil {
 		return 0, err
 	}
 
 	if issue.ID == 0 {
-		return 0, fmt.Errorf("issue %s#%d has no database id", repo, number)
+		return 0, fmt.Errorf("issue %s#%d has no database id", ref.Repo, ref.Number)
 	}
 
 	return issue.ID, nil
@@ -448,8 +448,8 @@ func (c Client) IssueID(ctx context.Context, repo string, number int) (int64, er
 
 // AddBlockedBy blocks child, by database id, on blocker. GitHub's 422 for an existing edge is not an
 // error: applying the same proposal again changes nothing.
-func (c Client) AddBlockedBy(ctx context.Context, repo string, child int, blockerID int64) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, child)
+func (c Client) AddBlockedBy(ctx context.Context, ref workflow.IssueRef, blockerID int64) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodPost, path, dependencyRequest{IssueID: blockerID}, nil)
 	if isStatus(err, http.StatusUnprocessableEntity) {
@@ -461,10 +461,10 @@ func (c Client) AddBlockedBy(ctx context.Context, repo string, child int, blocke
 
 // BlockedByNumbers lists every issue blocking number, open or closed, for an idempotent apply.
 // supported is false when the repository has no issue dependencies.
-func (c Client) BlockedByNumbers(ctx context.Context, repo string, number int) ([]int, bool, error) {
+func (c Client) BlockedByNumbers(ctx context.Context, ref workflow.IssueRef) ([]int, bool, error) {
 	var blockers []workflow.Issue
 
-	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, number)
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodGet, path, nil, &blockers)
 	if isStatus(err, http.StatusNotFound) {
@@ -485,10 +485,10 @@ func (c Client) BlockedByNumbers(ctx context.Context, repo string, number int) (
 
 // Parent reads the issue's parent, when the repository supports sub-issues. supported is false when
 // the endpoint is missing, so the caller can fall back to the body's "Part of #N" convention.
-func (c Client) Parent(ctx context.Context, repo string, number int) (workflow.Issue, bool, error) {
+func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Issue, bool, error) {
 	var parent workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", repo, number), nil, &parent)
+	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", ref.Repo, ref.Number), nil, &parent)
 	if isStatus(err, http.StatusNotFound) {
 		return workflow.Issue{}, false, nil
 	}
@@ -502,63 +502,63 @@ func (c Client) Parent(ctx context.Context, repo string, number int) (workflow.I
 
 // PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
 // branch updates that comment rather than adding another.
-func (c Client) PostResolution(ctx context.Context, repo string, number int, branch, text string) error {
+func (c Client) PostResolution(ctx context.Context, ref workflow.IssueRef, branch, text string) error {
 	marker := workflow.ResearchMarker(branch)
 
-	comments, err := c.ListComments(ctx, repo, number)
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return err
 	}
 
 	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
 			bodyRequest{Body: text}, nil)
 	}
 
-	return c.Comment(ctx, repo, number, text)
+	return c.Comment(ctx, ref, text)
 }
 
 // CloseResolved records a resolved ticket's final transition, releases its claim and closes it. A
 // closed ticket carries no factory label.
-func (c Client) CloseResolved(ctx context.Context, repo string, number int, t workflow.Transition) error {
+func (c Client) CloseResolved(ctx context.Context, ref workflow.IssueRef, t workflow.Transition) error {
 	marker, err := workflow.RenderTransition(t)
 	if err != nil {
 		return err
 	}
 
-	if err := c.Comment(ctx, repo, number, marker); err != nil {
+	if err := c.Comment(ctx, ref, marker); err != nil {
 		return err
 	}
 
-	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
+	if err := c.removeLabel(ctx, ref, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
 		// A 404 means a person already removed it: fine, still close the ticket.
 		return err
 	}
 
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", ref.Repo, ref.Number),
 		map[string]string{stateParam: stateClosed}, nil)
 }
 
 // Comment posts a comment on an issue.
-func (c Client) Comment(ctx context.Context, repo string, number int, text string) error {
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number),
+func (c Client) Comment(ctx context.Context, ref workflow.IssueRef, text string) error {
+	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number),
 		bodyRequest{Body: text}, nil)
 }
 
 // AddLabel adds one label to an issue.
-func (c Client) AddLabel(ctx context.Context, repo string, number int, label string) error {
-	return c.addLabel(ctx, repo, number, label)
+func (c Client) AddLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
+	return c.addLabel(ctx, ref, label)
 }
 
 // addLabel adds one label to an issue.
-func (c Client) addLabel(ctx context.Context, repo string, number int, label string) error {
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", repo, number),
+func (c Client) addLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
+	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", ref.Repo, ref.Number),
 		labelsRequest{Labels: []string{label}}, nil)
 }
 
 // removeLabel removes one label from an issue.
-func (c Client) removeLabel(ctx context.Context, repo string, number int, label string) error {
-	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", repo, number, url.PathEscape(label))
+func (c Client) removeLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", ref.Repo, ref.Number, url.PathEscape(label))
 
 	return c.Call(ctx, http.MethodDelete, path, nil, nil)
 }
@@ -566,17 +566,17 @@ func (c Client) removeLabel(ctx context.Context, repo string, number int, label 
 // Claim posts the transition marker, then takes the queued label off, adds the running label, and
 // reads the issue back to check the claim stuck. It is false when the queued label is already gone:
 // another poll got there first, so this claim fails closed.
-func (c Client) Claim(ctx context.Context, repo string, number int, t workflow.Transition) (bool, error) {
+func (c Client) Claim(ctx context.Context, ref workflow.IssueRef, t workflow.Transition) (bool, error) {
 	marker, err := workflow.RenderTransition(t)
 	if err != nil {
 		return false, err
 	}
 
-	if err := c.Comment(ctx, repo, number, marker); err != nil {
+	if err := c.Comment(ctx, ref, marker); err != nil {
 		return false, err
 	}
 
-	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil {
+	if err := c.removeLabel(ctx, ref, string(t.From)); err != nil {
 		if isStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
@@ -584,17 +584,17 @@ func (c Client) Claim(ctx context.Context, repo string, number int, t workflow.T
 		return false, err
 	}
 
-	if err := c.addLabel(ctx, repo, number, string(t.To)); err != nil {
+	if err := c.addLabel(ctx, ref, string(t.To)); err != nil {
 		return false, err
 	}
 
-	issue, err := c.GetIssue(ctx, repo, number)
+	issue, err := c.GetIssue(ctx, ref)
 	if err != nil {
 		return false, err
 	}
 
 	if !workflow.HasLabel(issue, string(t.To)) {
-		return false, fmt.Errorf("claim of %s#%d did not stick", repo, number)
+		return false, fmt.Errorf("claim of %s#%d did not stick", ref.Repo, ref.Number)
 	}
 
 	return true, nil
@@ -603,7 +603,7 @@ func (c Client) Claim(ctx context.Context, repo string, number int, t workflow.T
 // Finish posts the transition marker and its outcome, swaps src for dst, and tolerates a label a
 // person already moved. It returns the comment's id, which a Planner retro is keyed by.
 func (c Client) Finish(
-	ctx context.Context, repo string, number int, t workflow.Transition, text string,
+	ctx context.Context, ref workflow.IssueRef, t workflow.Transition, text string,
 ) (int64, error) {
 	marker, err := workflow.RenderTransition(t)
 	if err != nil {
@@ -615,32 +615,32 @@ func (c Client) Finish(
 		body += "\n\n" + text
 	}
 
-	comment, err := c.CommentReturningID(ctx, repo, number, body)
+	comment, err := c.CommentReturningID(ctx, ref, body)
 	if err != nil {
 		return 0, err
 	}
 
-	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
+	if err := c.removeLabel(ctx, ref, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
 		// A 404 means a person already removed it: fine, still record the outcome.
 		return 0, err
 	}
 
-	return comment, c.addLabel(ctx, repo, number, string(t.To))
+	return comment, c.addLabel(ctx, ref, string(t.To))
 }
 
 // CommentReturningID posts a comment and returns its id.
-func (c Client) CommentReturningID(ctx context.Context, repo string, number int, text string) (int64, error) {
+func (c Client) CommentReturningID(ctx context.Context, ref workflow.IssueRef, text string) (int64, error) {
 	var comment workflow.Item
 
-	err := c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number),
+	err := c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number),
 		bodyRequest{Body: text}, &comment)
 
 	return comment.ID, err
 }
 
 // Timeline lists an issue's timeline events, oldest first.
-func (c Client) Timeline(ctx context.Context, repo string, number int) ([]workflow.TimelineEvent, error) {
-	return Paged[workflow.TimelineEvent](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/timeline", repo, number))
+func (c Client) Timeline(ctx context.Context, ref workflow.IssueRef) ([]workflow.TimelineEvent, error) {
+	return Paged[workflow.TimelineEvent](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/timeline", ref.Repo, ref.Number))
 }
 
 // PullRequest is the part of a pull request foreman reads.
@@ -656,12 +656,12 @@ type PullRequest struct {
 }
 
 // ExistingPR finds the open pull request for a branch, or nil.
-func (c Client) ExistingPR(ctx context.Context, repo, branch string) (*PullRequest, error) {
-	owner, _, _ := strings.Cut(repo, "/")
+func (c Client) ExistingPR(ctx context.Context, repo workflow.Repo, branch string) (*PullRequest, error) {
+	owner, _, _ := strings.Cut(repo.String(), "/")
 	q := url.Values{stateParam: {stateOpen}, "head": {owner + ":" + branch}}
 
 	var pulls []PullRequest
-	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
+	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
 		return nil, err
 	}
 
@@ -673,10 +673,10 @@ func (c Client) ExistingPR(ctx context.Context, repo, branch string) (*PullReque
 }
 
 // CreatePR opens a pull request.
-func (c Client) CreatePR(ctx context.Context, repo, title, head, base, body string) (PullRequest, error) {
+func (c Client) CreatePR(ctx context.Context, repo workflow.Repo, title, head, base, body string) (PullRequest, error) {
 	var pr PullRequest
 
-	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/pulls",
+	err := c.Call(ctx, http.MethodPost, "/repos/"+repo.String()+"/pulls",
 		pullRequestRequest{Title: title, Head: head, Base: base, Body: body}, &pr)
 
 	return pr, err
@@ -691,10 +691,10 @@ type Repository struct {
 }
 
 // Repository reads a repository's visibility and default branch.
-func (c Client) Repository(ctx context.Context, repo string) (Repository, error) {
+func (c Client) Repository(ctx context.Context, repo workflow.Repo) (Repository, error) {
 	var r Repository
 
-	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
+	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String(), nil, &r); err != nil {
 		return Repository{}, err
 	}
 
@@ -702,7 +702,7 @@ func (c Client) Repository(ctx context.Context, repo string) (Repository, error)
 }
 
 // DefaultBranch reads the repository's default branch.
-func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) {
+func (c Client) DefaultBranch(ctx context.Context, repo workflow.Repo) (string, error) {
 	r, err := c.Repository(ctx, repo)
 	if err != nil {
 		return "", err
@@ -717,7 +717,7 @@ func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) 
 
 // CheckRuns lists the check runs GitHub reports for a commit, across up to MaxPages pages. The list
 // endpoint wraps its items in an envelope, so it is paged by hand rather than by Paged.
-func (c Client) CheckRuns(ctx context.Context, repo, ref string) ([]workflow.CheckRun, error) {
+func (c Client) CheckRuns(ctx context.Context, repo workflow.Repo, ref string) ([]workflow.CheckRun, error) {
 	var out []workflow.CheckRun
 
 	for page := 1; page <= MaxPages; page++ {
@@ -742,7 +742,7 @@ func (c Client) CheckRuns(ctx context.Context, repo, ref string) ([]workflow.Che
 }
 
 // CommitStatuses lists the commit statuses GitHub reports for a commit.
-func (c Client) CommitStatuses(ctx context.Context, repo, ref string) ([]workflow.CommitStatus, error) {
+func (c Client) CommitStatuses(ctx context.Context, repo workflow.Repo, ref string) ([]workflow.CommitStatus, error) {
 	path := fmt.Sprintf("/repos/%s/commits/%s/statuses", repo, url.PathEscape(ref))
 
 	return Paged[workflow.CommitStatus](ctx, c, path)
@@ -750,7 +750,7 @@ func (c Client) CommitStatuses(ctx context.Context, repo, ref string) ([]workflo
 
 // JobLog reads the plain-text log of one Actions job. The endpoint redirects to a download at another
 // host, which the HTTP client follows without the token.
-func (c Client) JobLog(ctx context.Context, repo string, id int64) (string, error) {
+func (c Client) JobLog(ctx context.Context, repo workflow.Repo, id int64) (string, error) {
 	raw, err := c.text(ctx, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repo, id))
 	if err != nil {
 		return "", err
@@ -792,13 +792,13 @@ func (c Client) text(ctx context.Context, path string) ([]byte, error) {
 }
 
 // Reviews lists a pull request's reviews.
-func (c Client) Reviews(ctx context.Context, repo string, pr int) ([]workflow.Item, error) {
-	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr))
+func (c Client) Reviews(ctx context.Context, ref workflow.IssueRef) ([]workflow.Item, error) {
+	return Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/pulls/%d/reviews", ref.Repo, ref.Number))
 }
 
 // LatestReviewBody is the body of the last review foreman posted, or empty.
-func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (string, error) {
-	reviews, err := c.Reviews(ctx, repo, pr)
+func (c Client) LatestReviewBody(ctx context.Context, ref workflow.IssueRef) (string, error) {
+	reviews, err := c.Reviews(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -814,28 +814,30 @@ func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (stri
 // PostRetro posts a run's retro on the issue it worked, keyed by issue, agent role and run key. A
 // repeat for the same key updates that comment rather than adding another.
 func (c Client) PostRetro(
-	ctx context.Context, repo string, number int, role workflow.Role, key string, body string,
+	ctx context.Context, ref workflow.IssueRef, role workflow.Role, key string, body string,
 ) error {
-	marker := workflow.RetroMarker(number, role, key)
+	marker := workflow.RetroMarker(ref.Number, role, key)
 
-	comments, err := c.ListComments(ctx, repo, number)
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return err
 	}
 
 	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
 			bodyRequest{Body: body}, nil)
 	}
 
-	return c.Comment(ctx, repo, number, body)
+	return c.Comment(ctx, ref, body)
 }
 
 // PostReview posts a native pull request review on a commit, carrying the verdict. A review GitHub
 // refuses because the App authored the pull request is posted as a comment review instead, so the
 // findings still reach the pull request.
-func (c Client) PostReview(ctx context.Context, repo string, pr int, sha, body string, verdict workflow.Verdict) error {
-	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr)
+func (c Client) PostReview(
+	ctx context.Context, ref workflow.IssueRef, sha, body string, verdict workflow.Verdict,
+) error {
+	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", ref.Repo, ref.Number)
 
 	err := c.Call(ctx, http.MethodPost, path,
 		reviewRequest{CommitID: sha, Body: body, Event: verdict.Event()}, nil)
@@ -854,27 +856,27 @@ func (c Client) PostReview(ctx context.Context, repo string, pr int, sha, body s
 }
 
 // UpdatePR replaces a pull request's title and body.
-func (c Client) UpdatePR(ctx context.Context, repo string, pr int, title, text string) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, pr),
+func (c Client) UpdatePR(ctx context.Context, ref workflow.IssueRef, title, text string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", ref.Repo, ref.Number),
 		pullRequestBody{Title: title, Body: text}, nil)
 }
 
 // RequestReviewers asks people to review a pull request. An empty list asks nobody, so foreman never
 // calls GitHub with nothing to do.
-func (c Client) RequestReviewers(ctx context.Context, repo string, pr int, reviewers []string) error {
+func (c Client) RequestReviewers(ctx context.Context, ref workflow.IssueRef, reviewers []string) error {
 	if len(reviewers) == 0 {
 		return nil
 	}
 
-	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, pr),
+	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", ref.Repo, ref.Number),
 		reviewersRequest{Reviewers: reviewers}, nil)
 }
 
 // PostReplies comments on the pull request, keyed by the commit the replies answer, so a repeat
 // updates that comment instead of adding another.
-func (c Client) PostReplies(ctx context.Context, repo string, pr int, sha, text string) error {
+func (c Client) PostReplies(ctx context.Context, ref workflow.IssueRef, sha, text string) error {
 	marker := workflow.RepliesMarker(sha)
-	path := fmt.Sprintf("/repos/%s/issues/%d/comments", repo, pr)
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number)
 
 	comments, err := Paged[workflow.Item](ctx, c, path)
 	if err != nil {
@@ -882,9 +884,9 @@ func (c Client) PostReplies(ctx context.Context, repo string, pr int, sha, text 
 	}
 
 	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
 			bodyRequest{Body: text}, nil)
 	}
 
-	return c.Comment(ctx, repo, pr, text)
+	return c.Comment(ctx, ref, text)
 }

@@ -8,7 +8,25 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
+
+// testRepo is the emulator repository, parsed.
+func testRepo() workflow.Repo {
+	GinkgoHelper()
+
+	repo, err := workflow.ParseRepo("o/r")
+	Expect(err).NotTo(HaveOccurred())
+
+	return repo
+}
+
+// ref names issue or pull request number in the emulator repository.
+func ref(number int) workflow.IssueRef {
+	GinkgoHelper()
+
+	return workflow.IssueRef{Repo: testRepo(), Number: number}
+}
 
 // emulator is the one GitHub emulator the package's specs share; each spec gets a fresh repository.
 var emulator *ghtest.Emulate //nolint:gochecknoglobals // the package's specs share one emulator process

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 )
 
@@ -21,7 +20,7 @@ type devEnv struct {
 // accept-flake-config is off, so a flake cannot grant itself settings, and the evaluation is told not
 // to write a lock file: the default branch is used exactly as committed.
 func (d Deps) toolchain(
-	ctx context.Context, c github.Client, repo, token, branch string, f sandboxFiles,
+	ctx context.Context, c ghClient, repo, token, branch string, f sandboxFiles,
 ) (string, error) {
 	if branch == "" {
 		var err error

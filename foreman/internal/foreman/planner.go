@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
@@ -181,7 +180,7 @@ func applyPlannerRound(
 // approves it. It returns false when the latest round is not a stored final round or the reply is not
 // approval, so the ordinary wake rule runs instead.
 func approvePending(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string, issue workflow.Issue,
 	thread []workflow.Item, latest workflow.Marker,
 ) (bool, error) {
 	if latest.Role != workflow.Planner || latest.To != workflow.Waiting {
@@ -214,7 +213,7 @@ func approvePending(
 
 // lastWriterComment is the latest comment by a writer after marker, which the human gate reads.
 func lastWriterComment(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string,
+	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string,
 	thread []workflow.Item, marker workflow.Marker,
 ) (workflow.Item, bool) {
 	var (
@@ -234,7 +233,7 @@ func lastWriterComment(
 // applyProposal makes an approved proposal true. Every step is idempotent: applying the same
 // proposal again reuses the issues it created and adds only what is missing.
 func applyProposal(
-	ctx context.Context, d Deps, c github.Client, repo string, from int, specComment int64,
+	ctx context.Context, d Deps, c ghClient, repo string, from int, specComment int64,
 	p workflow.PlannerProposal,
 ) error {
 	switch p.Shape {
@@ -255,7 +254,7 @@ func applyProposal(
 const closedState = "closed"
 
 // applySingle hands the issue itself to the Implementer. The spec stays in the final-round comment.
-func applySingle(ctx context.Context, c github.Client, repo string, from int, runID string) error {
+func applySingle(ctx context.Context, c ghClient, repo string, from int, runID string) error {
 	comments, err := c.ListComments(ctx, repo, from)
 	if err != nil {
 		return err
@@ -279,7 +278,7 @@ func applySingle(ctx context.Context, c github.Client, repo string, from int, ru
 // applySlices creates one sub-issue per slice in factory:implement, links the spec, adds the blocking
 // edges, closes the original with a slice list, and keeps its slug map for a repeat to reuse.
 func applySlices(
-	ctx context.Context, c github.Client, repo string, from int, runID string, specComment int64,
+	ctx context.Context, c ghClient, repo string, from int, runID string, specComment int64,
 	p workflow.PlannerProposal,
 ) error {
 	existing, err := planTickets(ctx, c, repo, from, p.Issues,
@@ -306,7 +305,7 @@ func applySlices(
 // applyMap rewrites an approved map's issue in the wayfinder layout, routes its tickets under it and
 // moves the issue to factory:done. A repeat reuses every issue, link and comment it made.
 func applyMap(
-	ctx context.Context, c github.Client, repo string, from int, runID string, p workflow.PlannerProposal,
+	ctx context.Context, c ghClient, repo string, from int, runID string, p workflow.PlannerProposal,
 ) error {
 	if p.Map == nil {
 		return errors.New("a map proposal carries no map")
@@ -344,7 +343,7 @@ func applyMap(
 // rewriteMapBody lays the map out over the writer's text, once. It also creates the wayfinder:map
 // label the issue is about to carry.
 func rewriteMapBody(
-	ctx context.Context, c github.Client, repo string, issue workflow.Issue, m workflow.PlannerMap,
+	ctx context.Context, c ghClient, repo string, issue workflow.Issue, m workflow.PlannerMap,
 ) error {
 	if !isMapBody(issue) {
 		if err := c.UpdateIssueBody(ctx, repo, issue.Number, workflow.RenderMap(issue.Body, m)); err != nil {
@@ -356,7 +355,7 @@ func rewriteMapBody(
 }
 
 // finishMap moves the map to factory:done once, keyed by its applied marker.
-func finishMap(ctx context.Context, c github.Client, repo string, from int, runID string) error {
+func finishMap(ctx context.Context, c ghClient, repo string, from int, runID string) error {
 	comments, err := c.ListComments(ctx, repo, from)
 	if err != nil {
 		return err
@@ -388,7 +387,7 @@ func isMapBody(issue workflow.Issue) bool {
 // decision line joins the map's Decisions so far, and the ticket is closed. Every step is keyed, so
 // applying the same resolution again changes nothing.
 func applyResolution(
-	ctx context.Context, c github.Client, repo string, from int, runID string, p workflow.PlannerProposal,
+	ctx context.Context, c ghClient, repo string, from int, runID string, p workflow.PlannerProposal,
 ) error {
 	if p.Resolution == nil {
 		return errors.New("a resolution proposal carries no resolution")
@@ -437,7 +436,7 @@ func applyResolution(
 // appendDecision adds the ticket's entry to its map's Decisions so far, writing only when the line
 // is new.
 func appendDecision(
-	ctx context.Context, c github.Client, repo string, parent, ticket workflow.Issue, line string,
+	ctx context.Context, c ghClient, repo string, parent, ticket workflow.Issue, line string,
 ) error {
 	entry := workflow.DecisionEntry(ticket.Title, workflow.IssueURL(repo, ticket.Number), line)
 
@@ -454,7 +453,7 @@ func appendDecision(
 }
 
 // postResolution posts the resolution comment once, keyed to the ticket it resolves.
-func postResolution(ctx context.Context, c github.Client, repo string, from int, answer string) error {
+func postResolution(ctx context.Context, c ghClient, repo string, from int, answer string) error {
 	comments, err := c.ListComments(ctx, repo, from)
 	if err != nil {
 		return err
@@ -489,7 +488,7 @@ func implementLabels(workflow.PlannedIssue) ([]string, error) {
 }
 
 // ensureTicketLabels creates every label the proposal's tickets carry the first time it sees them.
-func ensureTicketLabels(ctx context.Context, c github.Client, repo string, issues []workflow.PlannedIssue) error {
+func ensureTicketLabels(ctx context.Context, c ghClient, repo string, issues []workflow.PlannedIssue) error {
 	var labels []string
 
 	for _, planned := range issues {
@@ -515,7 +514,7 @@ func ensureTicketLabels(ctx context.Context, c github.Client, repo string, issue
 // planTickets creates each proposed issue that is not planned yet, returning every one keyed by its
 // slug. body and labels are the shape's rules for an issue.
 func planTickets(
-	ctx context.Context, c github.Client, repo string, from int, issues []workflow.PlannedIssue,
+	ctx context.Context, c ghClient, repo string, from int, issues []workflow.PlannedIssue,
 	body func(workflow.PlannedIssue) string, labels func(workflow.PlannedIssue) ([]string, error),
 ) (map[string]workflow.Issue, error) {
 	existing, err := plannedIssues(ctx, c, repo, from)
@@ -546,7 +545,7 @@ func planTickets(
 
 // linkTickets links every planned issue under parent and adds its blocking edges.
 func linkTickets(
-	ctx context.Context, c github.Client, repo string, parent int,
+	ctx context.Context, c ghClient, repo string, parent int,
 	planned map[string]workflow.Issue, issues []workflow.PlannedIssue,
 ) error {
 	for _, p := range issues {
@@ -587,7 +586,7 @@ func sliceBody(repo string, from int, specComment int64, planned workflow.Planne
 
 // finishSlices posts the slice list, moves the original to done and closes it.
 func finishSlices(
-	ctx context.Context, c github.Client, repo string, from int, runID string, refs []workflow.SliceRef,
+	ctx context.Context, c ghClient, repo string, from int, runID string, refs []workflow.SliceRef,
 ) error {
 	comments, err := c.ListComments(ctx, repo, from)
 	if err != nil {
@@ -608,7 +607,7 @@ func finishSlices(
 }
 
 // plannedIssues finds the issues already created from from, by their idempotency markers.
-func plannedIssues(ctx context.Context, c github.Client, repo string, from int) (map[string]workflow.Issue, error) {
+func plannedIssues(ctx context.Context, c ghClient, repo string, from int) (map[string]workflow.Issue, error) {
 	issues, err := c.ListOpenIssues(ctx, repo)
 	if err != nil {
 		return nil, err
@@ -646,7 +645,7 @@ func blockerNumber(blocker string, planned map[string]workflow.Issue) (int, erro
 
 // ensureSubIssue links child as a sub-issue of parent. A repository without sub-issues gets a
 // "Part of #N" line at the top of the child's body instead.
-func ensureSubIssue(ctx context.Context, c github.Client, repo string, parent int, child workflow.Issue) error {
+func ensureSubIssue(ctx context.Context, c ghClient, repo string, parent int, child workflow.Issue) error {
 	numbers, supported, err := c.SubIssueNumbers(ctx, repo, parent)
 	if err != nil {
 		return err
@@ -670,7 +669,7 @@ func ensureSubIssue(ctx context.Context, c github.Client, repo string, parent in
 
 // ensureBlockedBy blocks child on blocker. A repository without dependencies gets a "Blocked by:"
 // line at the top of the child's body instead.
-func ensureBlockedBy(ctx context.Context, c github.Client, repo string, child, blocker int) error {
+func ensureBlockedBy(ctx context.Context, c ghClient, repo string, child, blocker int) error {
 	numbers, supported, err := c.BlockedByNumbers(ctx, repo, child)
 	if err != nil {
 		return err
@@ -693,7 +692,7 @@ func ensureBlockedBy(ctx context.Context, c github.Client, repo string, child, b
 }
 
 // issueID reads an issue's database id, reading the issue again when the list did not carry one.
-func issueID(ctx context.Context, c github.Client, repo string, issue workflow.Issue) (int64, error) {
+func issueID(ctx context.Context, c ghClient, repo string, issue workflow.Issue) (int64, error) {
 	if issue.ID != 0 {
 		return issue.ID, nil
 	}
@@ -702,7 +701,7 @@ func issueID(ctx context.Context, c github.Client, repo string, issue workflow.I
 }
 
 // ensureBodyLine puts line at the top of an issue's body unless it is already there.
-func ensureBodyLine(ctx context.Context, c github.Client, repo string, number int, line string) error {
+func ensureBodyLine(ctx context.Context, c ghClient, repo string, number int, line string) error {
 	issue, err := c.GetIssue(ctx, repo, number)
 	if err != nil {
 		return err

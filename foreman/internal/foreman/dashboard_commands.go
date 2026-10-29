@@ -14,7 +14,7 @@ import (
 type commandRun struct {
 	d     Deps
 	cfg   config.Config
-	c     github.Client
+	c     ghClient
 	perms *permissions
 	repo  string
 	// role is the App that polls here: it files a promoted issue in another repository too.
@@ -385,14 +385,14 @@ func (r *commandRun) fileLesson(
 
 // clientFor returns a client for repo: this poll's client where the command stays in the repository, and
 // one minted for the polling App where the promotion leaves it.
-func (r *commandRun) clientFor(ctx context.Context, repo string) (github.Client, error) {
+func (r *commandRun) clientFor(ctx context.Context, repo string) (ghClient, error) {
 	if repo == r.repo {
 		return r.c, nil
 	}
 
 	token, err := r.d.mintToken(ctx, r.role, repo)
 	if err != nil {
-		return github.Client{}, fmt.Errorf("mint a token for %s: %w", repo, err)
+		return ghClient{}, fmt.Errorf("mint a token for %s: %w", repo, err)
 	}
 
 	return r.d.client(token), nil
@@ -416,7 +416,7 @@ func (r *commandRun) isPrivate(ctx context.Context) (bool, error) {
 
 // listedPromoted finds the issue a group was promoted as, in another repository.
 func listedPromoted(
-	ctx context.Context, c github.Client, repo string, group workflow.GroupID,
+	ctx context.Context, c ghClient, repo string, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -430,7 +430,7 @@ func listedPromoted(
 
 // listedPublished finds the issue a group's lesson was published as, in another repository.
 func listedPublished(
-	ctx context.Context, c github.Client, repo string, group workflow.GroupID,
+	ctx context.Context, c ghClient, repo string, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -463,7 +463,7 @@ func findMarked(
 
 // settleCommand minimizes a dealt-with command as resolved, and deletes it when the App may not minimize
 // it. Whether the App may is read live; a check that cannot be read falls back to deleting too.
-func settleCommand(ctx context.Context, d Deps, c github.Client, repo string, comment workflow.Item) error {
+func settleCommand(ctx context.Context, d Deps, c ghClient, repo string, comment workflow.Item) error {
 	if comment.NodeID != "" && minimizeComment(ctx, d, c, comment) {
 		return nil
 	}
@@ -472,7 +472,7 @@ func settleCommand(ctx context.Context, d Deps, c github.Client, repo string, co
 }
 
 // minimizeComment minimizes one comment when the App may, reporting whether it managed to.
-func minimizeComment(ctx context.Context, d Deps, c github.Client, comment workflow.Item) bool {
+func minimizeComment(ctx context.Context, d Deps, c ghClient, comment workflow.Item) bool {
 	can, err := c.CanMinimizeComment(ctx, comment.NodeID)
 	if err != nil {
 		d.log().Warn("cannot read whether a command comment can be minimized; deleting it instead",

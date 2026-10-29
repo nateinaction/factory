@@ -103,8 +103,8 @@ type Deps struct {
 }
 
 // client returns a GitHub client for token.
-func (d Deps) client(token string) github.Client {
-	return github.NewClient(d.Settings.API, token, d.HTTP)
+func (d Deps) client(token string) ghClient {
+	return ghClient{github.NewClient(d.Settings.API, token, d.HTTP)}
 }
 
 // gitProgram is the git binary foreman runs on the host, outside every sandbox.

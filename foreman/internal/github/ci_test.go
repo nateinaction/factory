@@ -45,7 +45,7 @@ var _ = Describe("reading CI", func() {
 			},
 		})
 
-		checks, err := c.CheckRuns(ctx, "o/r", sha)
+		checks, err := c.CheckRuns(ctx, testRepo(), sha)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(checks).To(HaveLen(2))
 		Expect(checks[0]).To(And(
@@ -62,7 +62,7 @@ var _ = Describe("reading CI", func() {
 			{"context": "ci/test", "state": "success"},
 		})
 
-		statuses, err := c.CommitStatuses(ctx, "o/r", sha)
+		statuses, err := c.CommitStatuses(ctx, testRepo(), sha)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(statuses).To(HaveLen(2))
 		Expect(statuses[0]).To(Equal(workflow.CommitStatus{
@@ -78,7 +78,7 @@ var _ = Describe("reading CI", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		log, err := c.JobLog(ctx, "o/r", 9)
+		log, err := c.JobLog(ctx, testRepo(), 9)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(log).To(Equal("line one\nline two\n"))
 	})
@@ -86,7 +86,7 @@ var _ = Describe("reading CI", func() {
 	It("fails closed when a job log cannot be read", func() {
 		p.Status("GET /repos/o/r/actions/jobs/9/logs", http.StatusNotFound)
 
-		_, err := c.JobLog(ctx, "o/r", 9)
+		_, err := c.JobLog(ctx, testRepo(), 9)
 		Expect(err).To(MatchError(ContainSubstring("404")))
 		Expect(err.Error()).NotTo(ContainSubstring("secret-token"))
 	})
