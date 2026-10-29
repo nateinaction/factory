@@ -96,7 +96,7 @@ func (h *cliHarness) execute(args ...string) int {
 
 	cmd, err := executeCommand(context.Background(), root, args, h.sudo)
 
-	return exit(h.logger, cmd, err)
+	return exit(context.Background(), h.logger, cmd, err)
 }
 
 // writeConfig writes text as the Ansible role config and returns its path.
