@@ -54,6 +54,26 @@
         - "/tmp/dagu-{{ dagu_version }}-{{ dagu_arch }}.tar.gz"
       when: not ansible_check_mode
 
+- name: Create dagu's config directory
+  ansible.builtin.file:
+    path: "{{ dagu_home }}/.config/dagu"
+    state: directory
+    owner: "{{ dagu_user }}"
+    group: "{{ dagu_user }}"
+    mode: "0755"
+
+# One queue per agent role. The scheduler owns queue capacity, so only the server needs this file;
+# a worker's own concurrency is --worker.max-active-runs in its unit.
+- name: Configure the agent role queues
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ dagu_home }}/.config/dagu/config.yaml"
+    owner: "{{ dagu_user }}"
+    group: "{{ dagu_user }}"
+    mode: "0644"
+  notify: Restart dagu
+  when: dagu_mode == 'server'
+
 - name: Install the dagu systemd unit
   ansible.builtin.template:
     src: dagu.service.j2

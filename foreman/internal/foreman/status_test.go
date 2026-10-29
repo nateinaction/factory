@@ -84,10 +84,19 @@ var _ = Describe("Status", func() {
 		Expect(out).To(ContainSubstring("Queues"))
 		Expect(out).To(MatchRegexp(`(?m)^planner\s+1\s*$`))
 		Expect(out).To(MatchRegexp(`(?m)^implementer\s+0\s*$`))
-		Expect(out).To(ContainSubstring("Agent roles with no host\nplanner\n"))
+		Expect(out).To(ContainSubstring("Agent roles with no host\nROLE     QUEUED\nplanner  1\n"))
 		Expect(out).To(ContainSubstring("Recent usage"))
 		Expect(out).To(MatchRegexp(
 			`(?m)^o/r\s+#6\s+reviewer\s+prov/review\s+factory-2\s+10\s+2\s+5\s+15/200000\s+0\.25\s+2026-10-28T09:50:00Z\s*$`))
+	})
+
+	It("names an agent role no worker host takes even before its first run", func() {
+		answerDagu("Succeeded - 2026-10-28 09:50:00\n\ndag: factory-reviewer\n\nResult: Succeeded\n")
+
+		cfg.UnhostedRoles = []workflow.Role{workflow.Curator}
+
+		Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
+		Expect(h.out.String()).To(MatchRegexp(`(?m)^Agent roles with no host\nROLE\s+QUEUED\n(?:.*\n)*curator\s+0\s*$`))
 	})
 
 	It("makes no writes", func() {

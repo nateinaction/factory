@@ -273,7 +273,7 @@ func (r statusReport) render() string {
 	b.WriteString("\nQueues\n")
 	b.WriteString(renderQueues(r.runs))
 	b.WriteString("\nAgent roles with no host\n")
-	b.WriteString(renderNoHost(r.runs))
+	b.WriteString(renderNoHost(r.runs, r.cfg))
 	b.WriteString("\nRecent usage\n")
 	b.WriteString(renderUsage(r.usage))
 
@@ -332,9 +332,10 @@ func renderQueues(runs []factoryRun) string {
 	return table(rows)
 }
 
-// renderNoHost names the agent roles with queued work that no worker has ever executed. A queued run
-// that no worker has picked up is the visible sign of the spec's "no host for an agent role".
-func renderNoHost(runs []factoryRun) string {
+// renderNoHost names the agent roles no worker host takes, with how much work waits for each. A role
+// is listed when the config says no host takes it, or when a queued run no worker has ever picked up
+// shows the same thing: that is the spec's "no host for an agent role".
+func renderNoHost(runs []factoryRun, cfg config.Config) string {
 	queued := map[workflow.Role]int{}
 	hosted := map[workflow.Role]bool{}
 
@@ -348,19 +349,20 @@ func renderNoHost(runs []factoryRun) string {
 		}
 	}
 
-	var roles []string
+	rows := make([][]string, 0, 1+len(workflow.KnownRoles()))
+	rows = append(rows, []string{headerRole, "QUEUED"})
 
 	for _, role := range workflow.KnownRoles() {
-		if queued[role] > 0 && !hosted[role] {
-			roles = append(roles, string(role))
+		if cfg.Unhosted(role) || (queued[role] > 0 && !hosted[role]) {
+			rows = append(rows, []string{string(role), strconv.Itoa(queued[role])})
 		}
 	}
 
-	if len(roles) == 0 {
+	if len(rows) == 1 {
 		return noRows
 	}
 
-	return strings.Join(roles, "\n") + "\n"
+	return table(rows)
 }
 
 // renderUsage draws the newest usage records.

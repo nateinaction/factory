@@ -139,6 +139,14 @@ type Config struct {
 	ReviewRoundLimit int `json:"review_round_limit" mapstructure:"review_round_limit"`
 	// CIPendingDeadlineMinutes is how long an issue waits in factory:review with pending CI before it fails.
 	CIPendingDeadlineMinutes int `json:"ci_pending_deadline_minutes" mapstructure:"ci_pending_deadline_minutes"`
+	// UnhostedRoles are the agent roles no worker host takes, rendered by Ansible from the worker
+	// hosts' role labels. Empty means every agent role has a host.
+	UnhostedRoles []workflow.Role `json:"unhosted_roles" mapstructure:"unhosted_roles"`
+}
+
+// Unhosted reports whether no worker host takes role. Its issues stay queued.
+func (c Config) Unhosted(role workflow.Role) bool {
+	return slices.Contains(c.UnhostedRoles, role)
 }
 
 // CIPendingDeadline is how long pending CI may keep an issue queued before it fails.
@@ -205,7 +213,22 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes)
+	if err := validateCIPendingDeadline(path, c.CIPendingDeadlineMinutes); err != nil {
+		return err
+	}
+
+	return validateUnhosted(path, c.UnhostedRoles)
+}
+
+// validateUnhosted rejects an unhosted role the workflow does not know.
+func validateUnhosted(path string, roles []workflow.Role) error {
+	for _, r := range roles {
+		if _, err := workflow.ParseRole(string(r)); err != nil {
+			return fmt.Errorf("config %s: unhosted roles: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 // validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.

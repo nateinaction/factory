@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/dagu"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -129,11 +130,43 @@ func pollQueues() []queueStep {
 	return out
 }
 
+// PollRunLimit bounds how many dagu runs a poll reads to know which agent roles are busy.
+const PollRunLimit = 1000
+
+// queuedIssue is one claimable issue, with the repository and client that found it.
+type queuedIssue struct {
+	repo   string
+	issue  workflow.Issue
+	client github.Client
+}
+
+// firstIssue reports whether a comes before b: the oldest creation first, an undated issue after
+// every dated one, then the repository name and the issue number.
+func firstIssue(a, b queuedIssue) bool {
+	if !a.issue.CreatedAt.Equal(b.issue.CreatedAt) {
+		if a.issue.CreatedAt.IsZero() {
+			return false
+		}
+
+		if b.issue.CreatedAt.IsZero() {
+			return true
+		}
+
+		return a.issue.CreatedAt.Before(b.issue.CreatedAt)
+	}
+
+	if a.repo != b.repo {
+		return a.repo < b.repo
+	}
+
+	return a.issue.Number < b.issue.Number
+}
+
 // Poll is deterministic and cheap: no model involved. It first brings every assigned repository's
 // labels, routing, waking and recovery up to date, and calls any dead run failed, then claims at most
 // one issue and queues its run. It looks only at repositories where one of the roles' Apps is
-// installed, and in each only at the queues of agent roles whose Apps are installed there; every
-// claim uses its own agent role's token.
+// installed, and claims for an agent role only when that role's DAG has nothing waiting in dagu, in
+// scheduling order. Every claim uses its own agent role's token.
 func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	assigned := Assigned(ctx, d, cfg.Roles)
 
@@ -146,20 +179,79 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		}
 	}
 
-	for _, q := range pollQueues() {
-		for _, repo := range repos {
-			if !slices.Contains(assigned[repo], q.role) {
-				continue // that agent role isn't here: its issues wait in the queue
-			}
+	// An agent role no worker host takes leaves its issues queued. One warning per poll, and nothing
+	// fails: the queue stays visible and pausable until a host takes the role.
+	warnUnhosted(d, cfg)
 
-			code, done, err := pollQueue(ctx, d, cfg, perms, repo, q)
-			if done || err != nil {
-				return code, err
-			}
+	busy, err := busyRoles(ctx, d, d.Settings.DAGPrefix)
+	if err != nil {
+		return 1, err
+	}
+
+	for _, q := range pollQueues() {
+		if cfg.Unhosted(q.role) {
+			continue
+		}
+
+		// A role whose DAG has a run waiting or running is not claimed for, so a running label always
+		// means a run is happening.
+		if busy[q.role] {
+			d.log().Info("leaving an agent role's queue while its DAG is busy", "role", q.role)
+
+			continue
+		}
+
+		code, done, err := claimFromQueue(ctx, d, cfg, perms, assigned, repos, q)
+		if done || err != nil {
+			return code, err
 		}
 	}
 
 	return 0, writeLine(d.Out, "nothing ready")
+}
+
+// warnUnhosted logs one warning for every agent role no worker host takes. It fails nothing: the
+// role's issues stay in their queued label until a host takes the role.
+func warnUnhosted(d Deps, cfg config.Config) {
+	for _, role := range workflow.KnownRoles() {
+		if cfg.Unhosted(role) {
+			d.log().Warn("no worker host takes this agent role; its issues stay queued", "role", role)
+		}
+	}
+}
+
+// busyRoles reads dagu's active runs, read-only, and names the agent roles whose DAG dagu can still
+// move. A dagu read that fails is an error: the poll must never claim while it cannot tell.
+func busyRoles(ctx context.Context, d Deps, prefix string) (map[workflow.Role]bool, error) {
+	out, err := d.run(ctx, proc.Cmd{
+		Argv: dagu.ActiveHistoryArgv(d.Settings.Dagu, PollRunLimit), Capture: true, Timeout: DaguTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the busy agent roles from dagu: %w", err)
+	}
+
+	runs, err := dagu.ParseHistory([]byte(out))
+	if err != nil {
+		return nil, err
+	}
+
+	busy := map[workflow.Role]bool{}
+
+	for _, run := range runs {
+		name, ok := strings.CutPrefix(run.Name, prefix)
+		if !ok || !run.Active() {
+			continue
+		}
+
+		role, err := workflow.ParseRole(name)
+		if err != nil {
+			continue // another DAG that happens to share the prefix
+		}
+
+		busy[role] = true
+	}
+
+	return busy, nil
 }
 
 // pollingRole is the App that places new issues in their first queue: the first installed agent role
@@ -522,76 +614,94 @@ func blocked(ctx context.Context, c github.Client, repo string, issue workflow.I
 	return false, nil
 }
 
-// pollQueue looks at one queue of one repository with the owning agent role's token. done is true when
-// the poll is over: an issue was claimed or lost, or the CI gate moved one. A token that can't be
-// minted makes the repository unassigned for this role.
-func pollQueue(
-	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo string, q queueStep,
+// claimFromQueue gathers every eligible issue in one agent role's queue across the repositories where
+// its App is installed, then claims the oldest one. A repository whose token cannot be minted is
+// unassigned for this role. done is true when the poll is over: an issue was claimed or lost, or the
+// CI gate moved one.
+func claimFromQueue(
+	ctx context.Context, d Deps, cfg config.Config, perms *permissions, assigned Assignment,
+	repos []string, q queueStep,
 ) (code int, done bool, err error) {
-	token, err := d.mintToken(ctx, q.role, repo)
-	if err != nil {
-		d.log().Warn("cannot mint token; treating the repository as unassigned",
-			"role", q.role, "repo", repo, "error", err)
+	candidates := make([]queuedIssue, 0)
 
-		return 0, false, nil
-	}
+	for _, repo := range repos {
+		if !slices.Contains(assigned[repo], q.role) {
+			continue // that agent role isn't here: its issues wait in the queue
+		}
 
-	c := d.client(token)
+		token, err := d.mintToken(ctx, q.role, repo)
+		if err != nil {
+			d.log().Warn("cannot mint token; treating the repository as unassigned",
+				"role", q.role, "repo", repo, "error", err)
 
-	issues, err := c.ListLabeled(ctx, repo, string(q.src))
-	if err != nil {
-		return 1, true, err
-	}
-
-	issue, claim, acted := claimable(ctx, d, cfg, c, perms, repo, q, issues)
-	if acted {
-		return 0, true, nil
-	}
-
-	if !claim {
-		return 0, false, nil
-	}
-
-	code, err = claimAndEnqueue(ctx, d, c, repo, issue, q)
-
-	return code, true, err
-}
-
-// claimable is the oldest issue in the queue that is eligible, and through the review queue's CI
-// gate. claim is false when nothing may be claimed. acted is true when the CI gate moved the issue
-// without a run, which ends the poll.
-func claimable(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions, repo string,
-	q queueStep, issues []workflow.Issue,
-) (issue workflow.Issue, claim, acted bool) {
-	for _, issue := range issues {
-		if !eligible(ctx, d, c, perms, repo, issue) {
 			continue
 		}
 
-		if q.role != workflow.Reviewer {
-			return issue, true, false
+		c := d.client(token)
+
+		issues, err := c.ListLabeled(ctx, repo, string(q.src))
+		if err != nil {
+			return 1, true, err
 		}
 
-		claim, moved, err := ciGate(ctx, d, cfg, c, repo, issue)
-		if err != nil {
+		for _, issue := range issues {
+			if eligible(ctx, d, c, perms, repo, issue) {
+				candidates = append(candidates, queuedIssue{repo: repo, issue: issue, client: c})
+			}
+		}
+	}
+
+	return claimOldest(ctx, d, cfg, q, candidates)
+}
+
+// claimOldest claims the oldest candidate in one agent role's queue. The Reviewer's CI gate runs
+// first: pending CI leaves that issue queued for a later candidate, while an issue the gate moved ends
+// the poll with no model run.
+func claimOldest(
+	ctx context.Context, d Deps, cfg config.Config, q queueStep, candidates []queuedIssue,
+) (code int, done bool, err error) {
+	slices.SortStableFunc(candidates, compareIssues)
+
+	for _, candidate := range candidates {
+		if q.role != workflow.Reviewer {
+			code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
+
+			return code, true, err
+		}
+
+		claim, moved, gateErr := ciGate(ctx, d, cfg, candidate.client, candidate.repo, candidate.issue)
+		if gateErr != nil {
 			d.log().Warn("skipping an issue whose CI cannot be read",
-				"repo", repo, "issue", issue.Number, "error", err)
+				"repo", candidate.repo, "issue", candidate.issue.Number, "error", gateErr)
 
 			continue
 		}
 
 		if moved {
-			return workflow.Issue{}, false, true
+			return 0, true, nil
 		}
 
 		if claim {
-			return issue, true, false
+			code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
+
+			return code, true, err
 		}
 		// Pending CI leaves the issue queued; a later issue may still be claimable.
 	}
 
-	return workflow.Issue{}, false, false
+	return 0, false, nil
+}
+
+// compareIssues orders two candidates for sorting: firstIssue's order as a three-way comparison.
+func compareIssues(a, b queuedIssue) int {
+	switch {
+	case firstIssue(a, b):
+		return -1
+	case firstIssue(b, a):
+		return 1
+	}
+
+	return 0
 }
 
 // eligible reports whether the poll may work an issue at all: not a pull request, not paused, not

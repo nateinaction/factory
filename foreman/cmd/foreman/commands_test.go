@@ -68,6 +68,14 @@ func newCLIHarness() *cliHarness {
 	dir := GinkgoT().TempDir()
 
 	h := &cliHarness{runner: &recordingRunner{}, home: dir, dir: dir}
+	// dagu answers an empty run history, so a poll sees every agent role idle.
+	h.runner.reply = func(c proc.Cmd) (string, error) {
+		if len(c.Argv) > 1 && c.Argv[1] == "history" {
+			return "[]", nil
+		}
+
+		return "", nil
+	}
 	h.logger = slog.New(slog.NewTextHandler(&h.logs, nil))
 	h.deps = &foreman.Deps{Runner: h.runner, Out: &h.out, Log: h.logger}
 
@@ -159,12 +167,16 @@ var _ = Describe("the foreman command", func() {
 			Entry(nil, "start"), Entry(nil, "run"),
 		)
 
-		It("polls the agent roles the config names", func() {
+		It("polls the agent roles the config names, after reading dagu read-only", func() {
 			Expect(h.execute("poll", "--config", configPath)).To(BeZero())
 			Expect(h.out.String()).To(ContainSubstring("nothing ready"))
 			Expect(h.runner.lines()).To(ConsistOf(
 				ContainSubstring("repositories --app implementer"),
 				ContainSubstring("repositories --app reviewer"),
+				And(
+					ContainSubstring("/usr/local/bin/dagu history"),
+					ContainSubstring("--status queued,running,waiting,not_started"),
+				),
 			))
 		})
 	})

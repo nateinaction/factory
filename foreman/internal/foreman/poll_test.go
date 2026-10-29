@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -344,6 +345,118 @@ var _ = Describe("Poll", func() {
 			Expect(h.runner.find("enqueue")).To(BeEmpty())
 			Expect(h.logs.String()).To(ContainSubstring("blockers cannot be read"))
 		})
+	})
+
+	Describe("scheduling across hosts", func() {
+		// busyDagu answers the poll's read-only dagu history with runs.
+		busyDagu := func(runs string) {
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if len(c.Argv) > 1 && c.Argv[1] == "history" {
+					return runs, nil
+				}
+
+				return base(c)
+			})
+		}
+
+		It("leaves an agent role queued while its DAG has a run waiting", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}},
+			})
+			busyDagu(`[{"name":"factory-implementer","dagRunId":"r1","status":"running"}]`)
+
+			expectNothingReady()
+			Expect(h.runner.find("enqueue")).To(BeEmpty(), "claimed while the role's DAG was busy")
+			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplement), "a waiting issue lost its queued label")
+			Expect(h.markerComments(5)).To(BeEmpty())
+			Expect(h.logs.String()).To(ContainSubstring("while its DAG is busy"))
+		})
+
+		It("still claims another agent role whose DAG is idle", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelReview:    {{"number": 12}},
+				workflow.LabelImplement: {{"number": 5}},
+			})
+			busyDagu(`[{"name":"factory-implementer","dagRunId":"r1","status":"queued"}]`)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+			Expect(h.runner.find("enqueue")).To(HaveLen(1))
+			Expect(joined(h.runner.find("enqueue")[0])).To(ContainSubstring("factory-reviewer"))
+			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplement))
+		})
+
+		It("claims the oldest issue across repositories, not the first repository", func() {
+			h.installed = map[workflow.Role][]string{workflow.Implementer: {"o/oldest-a", "o/oldest-b"}}
+			h.queueRepo("o/oldest-b", map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}},
+			})
+
+			// Give the second repository's issue a later creation time, so only creation order can
+			// pick o/b.
+			time.Sleep(5 * time.Millisecond)
+
+			h.queueRepo("o/oldest-a", map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 1}},
+			})
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			enqueued := h.runner.find("enqueue")
+			Expect(enqueued).To(HaveLen(1))
+			Expect(joined(enqueued[0])).To(ContainSubstring("REPO=o/oldest-b ISSUE=5"))
+
+			older, err := emulator.Issue(context.Background(), "o/oldest-b", 5)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(older.Labels).To(HaveLen(1))
+			Expect(older.Labels[0].Name).To(Equal(workflow.LabelImplementing))
+
+			newer, err := emulator.Issue(context.Background(), "o/oldest-a", 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newer.Labels).To(HaveLen(1))
+			Expect(newer.Labels[0].Name).To(Equal(workflow.LabelImplement))
+		})
+
+		It("warns once per poll for an agent role no worker host takes, and fails nothing", func() {
+			cfg := pollConfig(workflow.Implementer, workflow.Reviewer)
+			cfg.UnhostedRoles = []workflow.Role{workflow.Implementer}
+
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}},
+			})
+
+			code, err := Poll(context.Background(), h.deps, cfg)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero(), "a role with no host must not fail the poll")
+			Expect(h.runner.find("enqueue")).To(BeEmpty())
+			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplement), "a queued issue lost its label")
+			Expect(strings.Count(h.logs.String(), "no worker host takes this agent role")).To(Equal(1))
+
+			h.out.Reset()
+			Expect(Poll(context.Background(), h.deps, cfg)).Error().NotTo(HaveOccurred())
+			Expect(strings.Count(h.logs.String(), "no worker host takes this agent role")).To(Equal(2))
+		})
+
+		DescribeTable("orders issues by creation and then repository and number",
+			func(a, b queuedIssue, want bool) {
+				Expect(firstIssue(a, b)).To(Equal(want))
+			},
+			Entry("an older issue first",
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 1, CreatedAt: time.Unix(1, 0)}},
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 2, CreatedAt: time.Unix(2, 0)}},
+				true),
+			Entry("the repository name breaks a tie",
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 9}},
+				queuedIssue{repo: "o/b", issue: workflow.Issue{Number: 1}},
+				true),
+			Entry("the issue number breaks a tie in one repository",
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 1}},
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 2}},
+				true),
+			Entry("an undated issue goes last",
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 1, CreatedAt: time.Unix(2, 0)}},
+				queuedIssue{repo: "o/a", issue: workflow.Issue{Number: 2}},
+				true),
+		)
 	})
 
 	Describe("assignment and identity", func() {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -133,6 +134,93 @@ func freePort() string {
 
 	return address
 }
+
+var _ = Describe("acceptance: two sandboxed runs at once", func() {
+	It("runs two runs on one host without either seeing the other", func() {
+		srtBinary, err := exec.LookPath("srt")
+		if err != nil {
+			Skip("srt is not installed on this host; the run-cap acceptance test needs the pinned backend")
+		}
+
+		root := GinkgoT().TempDir()
+		dirs := []string{filepath.Join(root, "run-a"), filepath.Join(root, "run-b")}
+
+		for i, dir := range dirs {
+			Expect(os.MkdirAll(dir, 0o700)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(dir, "secret"), []byte(fmt.Sprintf("secret-%d", i)), 0o600)).
+				To(Succeed())
+		}
+
+		// Each run gets the spec foreman builds for one run: its own directory writable, the other
+		// run's directory hidden. Two of them at once is what a run cap above 1 means.
+		settings := func(dir, other string) string {
+			path := filepath.Join(root, filepath.Base(dir)+".srt.json")
+
+			raw, err := sandbox.Settings(sandbox.Spec{
+				ReadWrite: []string{dir}, Hidden: []string{other}, Network: openNetwork(),
+			}, loopbackPort(freePort()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(path, raw, 0o600)).To(Succeed())
+
+			return path
+		}
+
+		// Each run reads the other's secret (it must fail), writes its own marker, and reads it back.
+		script := func(own, other string) string {
+			return fmt.Sprintf("cat %s 2>/dev/null || echo hidden; echo %s > %s; cat %s",
+				filepath.Join(other, "secret"), filepath.Base(own), filepath.Join(own, "out"),
+				filepath.Join(own, "out"))
+		}
+
+		type result struct {
+			out []byte
+			err error
+		}
+
+		type job struct {
+			settings string
+			script   string
+		}
+
+		jobs := make([]job, 0, len(dirs))
+
+		for i, dir := range dirs {
+			other := dirs[(i+1)%len(dirs)]
+			jobs = append(jobs, job{settings: settings(dir, other), script: script(dir, other)})
+		}
+
+		results := make([]result, len(dirs))
+
+		var wg sync.WaitGroup
+
+		wg.Add(len(dirs))
+
+		for i, j := range jobs {
+			go func(i int, j job) {
+				defer GinkgoRecover()
+				defer wg.Done()
+
+				out, err := exec.CommandContext( //nolint:gosec // the acceptance test runs the pinned backend
+					GinkgoT().Context(), srtBinary,
+					"--settings", j.settings, "--", "sh", "-c", j.script,
+				).CombinedOutput()
+
+				results[i] = result{out: out, err: err}
+			}(i, j)
+		}
+
+		wg.Wait()
+
+		for i, got := range results {
+			other := (i + 1) % len(dirs)
+
+			Expect(got.err).NotTo(HaveOccurred(), string(got.out))
+			Expect(string(got.out)).To(ContainSubstring("hidden"), "a run saw the other run")
+			Expect(string(got.out)).NotTo(ContainSubstring(fmt.Sprintf("secret-%d", other)))
+			Expect(string(got.out)).To(ContainSubstring(filepath.Base(dirs[i])), "a run could not write its own directory")
+		}
+	})
+})
 
 var _ = Describe("acceptance: opencode run under srt", func() {
 	It("runs the model inside the sandbox on an arm64 worker host", func() {

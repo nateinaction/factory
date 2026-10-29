@@ -28,11 +28,25 @@ for role in planner researcher implementer reviewer curator; do
     grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE}" "$dag"
   check "$role DAG declares REPO" grep -Eq 'name: REPO' "$dag"
   check "$role DAG declares ISSUE" grep -Eq 'name: ISSUE' "$dag"
-  check "$role DAG targets agent workers" grep -Fq 'runner: agent' "$dag"
+  check "$role DAG has its own queue" grep -Fq "queue: factory-$role" "$dag"
+  check "$role DAG selects a host that takes the role" grep -Fq "$role: \"true\"" "$dag"
+  check "$role queue rendered for dagu" grep -Fq "name: factory-$role" "$out/dagu-config.yaml"
 done
 
-check "poll DAG runs foreman poll" grep -Fq '/usr/local/bin/foreman poll' "$out/factory-poll.yaml"
-check "poll DAG runs one at a time" grep -Fq 'max_active_runs: 1' "$out/factory-poll.yaml"
+check "the poll DAG runs foreman poll" grep -Fq '/usr/local/bin/foreman poll' "$out/factory-poll.yaml"
+check "the poll DAG runs one poll at a time" grep -Fq 'max_active_runs: 1' "$out/factory-poll.yaml"
+check "an unset host role list takes every agent role" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); roles={"planner","researcher","implementer","reviewer","curator"}; labels=d["worker_labels"].split(","); assert {l.split("=")[0] for l in labels[1:]} == roles, labels' \
+  "$out/scheduling.json"
+check "no agent role is unhosted when every worker takes all" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert d["unhosted_roles"] == [], d' "$out/scheduling.json"
+check "the per-host run cap defaults to one" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert int(d["run_cap"]) == 1, d; assert int(d["queue_capacity"]) == 1, d' \
+  "$out/scheduling.json"
+check "a worker runs at most the run cap at once" grep -Fq -- '--worker.max-active-runs 1' "$out/dagu-worker.service"
+check "a worker labelled every agent role" grep -Fq -- '--worker.labels runner=agent,planner=true,researcher=true,implementer=true,reviewer=true,curator=true' "$out/dagu-worker.service"
+check "foreman's config names the unhosted roles" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert "unhosted_roles" in d, d' "$out/config.json"
 check "no old name in any rendered file" bash -c '! grep -rq finances-agent "$1"' _ "$out"
 
 check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$out/dagu-agent.sudoers"
@@ -42,6 +56,30 @@ check "sudoers has exactly one permitted command" bash -c \
 if command -v visudo >/dev/null 2>&1; then
   check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
 fi
+
+# A host that lists its roles takes only those: the labels select only them, and every other role is
+# reported as unhosted so the poll warns and leaves its issues queued.
+narrow="$out/narrow"
+mkdir -p "$narrow"
+if ! RENDER_DIR="$narrow" RENDER_HOST_ROLES=reviewer RENDER_RUN_CAP=2 ansible-playbook "$root/tests/render.yml" >"$narrow/.log" 2>&1; then
+  cat "$narrow/.log" >&2
+  echo "FAIL narrow render playbook" >&2
+  failures=$((failures + 1))
+fi
+
+check "a host takes only the roles it lists" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); labels=d["worker_labels"].split(","); assert {l.split("=")[0] for l in labels[1:]} == {"reviewer"}, labels' \
+  "$narrow/scheduling.json"
+check "an agent role no host takes is named" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert set(d["unhosted_roles"]) == {"planner","researcher","implementer","curator"}, d' \
+  "$narrow/scheduling.json"
+check "foreman's config names the roles no host takes" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert set(d["unhosted_roles"]) == {"planner","researcher","implementer","curator"}, d' \
+  "$narrow/config.json"
+check "a raised run cap lets a worker run two at once" grep -Fq -- '--worker.max-active-runs 2' "$narrow/dagu-worker.service"
+check "a raised run cap raises the queue capacity" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert int(d["run_cap"]) == 2, d; assert int(d["queue_capacity"]) == 2, d' \
+  "$narrow/scheduling.json"
 
 # The harness adapter's config: one named opencode agent per agent role, each with its own model alias.
 check "opencode.json and config.json agree with factory_models" python3 -I "$root/tests/models_check.py" "$out"

@@ -58,6 +58,11 @@ func (r Run) Active() bool {
 	return false
 }
 
+// ActiveStatuses are the run statuses Active accepts, as `dagu history --status` names them.
+func ActiveStatuses() []string {
+	return []string{StatusQueued, StatusRunning, StatusWaiting, StatusNotStarted}
+}
+
 // Param reads one parameter from the run's params. A key is present only when it is set.
 func (r Run) Param(key string) (string, bool) {
 	for field := range strings.FieldsSeq(r.Params) {
@@ -103,6 +108,15 @@ func ParseHistory(out []byte) ([]Run, error) {
 // HistoryArgv is the command that lists recent runs, newest first.
 func HistoryArgv(binary string, limit int) []string {
 	return []string{binary, "history", "--format", "json", "--limit", fmt.Sprint(limit)}
+}
+
+// ActiveHistoryArgv is the command that lists only the runs dagu can still move: the ones that keep
+// an agent role's DAG busy.
+func ActiveHistoryArgv(binary string, limit int) []string {
+	return []string{
+		binary, "history", "--status", strings.Join(ActiveStatuses(), ","),
+		"--format", "json", "--limit", fmt.Sprint(limit),
+	}
 }
 
 // StatusArgv is the command that renders one run's tree.

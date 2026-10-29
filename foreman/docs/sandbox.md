@@ -95,12 +95,17 @@ was logged.
 The spec also checks srt's filesystem boundary: a path outside the run cannot be read, while a file
 in the run directory can be written and read back.
 
-**Result on this macOS/arm64 development host:** **both specs passed** with the pinned opencode
+A third spec runs two sandboxed runs at the same time, each with its own run directory and the other's
+hidden, and checks neither can see the other. That is the safety a per-host run cap above 1 rests on:
+`factory_agent_run_cap` sets the worker's `--worker.max-active-runs`, and the sandbox keeps concurrent
+runs apart.
+
+**Result on this macOS/arm64 development host:** **the specs passed** with the pinned opencode
 **1.19.3** and srt **0.0.81**, run from the dev shell:
 
 ```sh
 nix develop --command sh -c 'export PATH=/path/to/opencode-1.19.3:$PATH; go test ./internal/foreman -args -ginkgo.focus=acceptance'
-# Ran 2 of 84 Specs ... SUCCESS! -- 2 Passed
+# Ran 3 of 84 Specs ... SUCCESS! -- 3 Passed
 ```
 
 The run needed the placeholder `apiKey` in `OPENCODE_CONFIG_CONTENT` that opencode 1.19.3 requires
