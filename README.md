@@ -57,6 +57,19 @@ live in this repo.
    agent role (see "Identity and tokens" in
    [#33](https://github.com/nateinaction/factory/issues/33)). The Implementer and
    Reviewer need Contents, Issues and Pull requests set to write.
+
+   | App | Contents | Pull requests | Issues |
+   |---|---|---|---|
+   | Planner | read | none | write |
+   | Researcher | write | none | write |
+   | Implementer | write | write | write |
+   | Reviewer | write | write | write |
+   | Curator | none | none | write |
+
+   Every App also has Metadata read; the Implementer and Reviewer have Checks,
+   Actions and Commit statuses read, and no other App has them. The Curator
+   works only from issues and comments, so it has no Contents: its runs clone
+   nothing and read no repository files, even in a private repository.
 2. Save each private key somewhere outside the repo.
 3. `cp secrets/github_app.example.yml secrets/github_app.yml` and list the Apps you
    created, by agent role. `secrets/*` is gitignored.

@@ -13,7 +13,6 @@ The run's prompt names them:
 
 - **The retro log**, whole, with each finding's target, group key, severity, claim, evidence, and the agent role and run that reported it.
 - **The dashboard's state**: every group with its count, the reports behind it, whether it is ready, and what writers have already done (promoted, merged, ignored, rejected).
-- **A read-only clone** of the default branch, for checking a claim against the code it names.
 
 ## What you may propose
 
@@ -30,7 +29,7 @@ The run's prompt names them:
 - Re-propose a pair a writer rejected. The dashboard state lists rejections; a rejected pair never appears again.
 - Promote a `docs:`-target part of a private repository, or publish anything from one.
 - Guess at evidence. A proposal cites the report ids it rests on; if the log doesn't support it, drop it.
-- Write to GitHub, push, or change the clone.
+- Write to GitHub or push.
 
 ## Output
 

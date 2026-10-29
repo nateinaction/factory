@@ -191,8 +191,8 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 
 // curatorRolePrompt is the Curator's fixed instruction.
 const curatorRolePrompt = "Use the `curate` skill on the retro dashboard given under \"Issue material\". " +
-	"The repository is a read-only clone of the default branch: do not change it, do not commit, push " +
-	"or comment, and do not ask questions, because foreman makes every write from your output file. " +
+	"You have no access to the repository's code, and your working directory is empty: do not commit, " +
+	"push or comment, and do not ask questions, because foreman makes every write from your output file. " +
 	"Write the result as JSON with \"version\": 1, \"merges\", \"links\" and \"issues\". " +
 	"A merge is {\"id\": \"<stable key>\", \"groups\": [\"<target>/<key>\", \"<target>/<key>\"], " +
 	"\"reason\": \"<one line>\"}; its two groups share one target and the first is the one kept. " +
@@ -292,13 +292,13 @@ func Researcher(
 		workflow.Truncate(issue.Body, workflow.BodyLimitChars), Thread(thread), outPath))
 }
 
-// Curator is the Curator's prompt: the retro log with evidence and the dashboard state under the
-// repository docs, and the output file's path.
+// Curator is the Curator's prompt: the retro log with evidence and the dashboard state, and the
+// output file's path. The Curator cannot read the repository, so it carries no repository docs.
 func Curator(
-	docs []Doc, ref workflow.IssueRef, private bool, reports []workflow.DashboardReport,
+	ref workflow.IssueRef, private bool, reports []workflow.DashboardReport,
 	view workflow.DashboardView, outPath string,
 ) string {
-	return Build(curatorRolePrompt, docs, fmt.Sprintf("%s\n\nWrite the JSON to %s.",
+	return Build(curatorRolePrompt, nil, fmt.Sprintf("%s\n\nWrite the JSON to %s.",
 		workflow.CuratorBrief(ref, private, reports, view), outPath))
 }
 

@@ -143,11 +143,10 @@ var _ = Describe("the Curator", func() {
 		Expect(state.Curator.LastRun).NotTo(BeZero(), "the run did not record that it happened")
 		Expect(state.Curator.Claim).To(BeZero(), "the run did not clear its claim")
 
-		// A read-only clone of the default branch, and no retro: the Curator runs none. The toolchain
-		// clone is the second shallow clone.
-		clones := h.runner.find("clone --depth 1 --branch main")
-		Expect(clones).To(HaveLen(2))
-		Expect(joined(clones[0])).To(ContainSubstring("work/curator-" + fmt.Sprint(number)))
+		// The Curator holds no Contents permission, so it clones nothing and resolves no toolchain
+		// from the repository; and it runs no retro.
+		Expect(h.runner.find("git clone")).To(BeEmpty(), "the Curator cloned the repository")
+		Expect(h.runner.find("print-dev-env")).To(BeEmpty(), "the Curator resolved a dev environment")
 		Expect(h.runner.find("--session")).To(BeEmpty(), "the Curator ran a retro")
 		Expect(h.opencodeCalls()).To(HaveLen(1))
 
