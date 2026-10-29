@@ -30,7 +30,7 @@ func Logs(ctx context.Context, d Deps, ref workflow.IssueRef, follow bool) (int,
 		return 1, err
 	}
 
-	run, ok := latestRun(factoryRuns(runs, d.Settings.DAGPrefix), repo, number)
+	run, ok := latestRun(factoryRuns(runs, d.Settings.DAGPrefix), ref)
 	if !ok {
 		return 1, fmt.Errorf("no dagu run for %s issue %d", repo, number)
 	}
@@ -57,9 +57,9 @@ func Logs(ctx context.Context, d Deps, ref workflow.IssueRef, follow bool) (int,
 }
 
 // latestRun picks the newest run for the issue. dagu lists runs newest first.
-func latestRun(runs []factoryRun, repo string, number int) (factoryRun, bool) {
+func latestRun(runs []factoryRun, ref workflow.IssueRef) (factoryRun, bool) {
 	for _, run := range runs {
-		if run.repo == repo && run.issue == number {
+		if run.repo == ref.Repo.String() && run.issue == ref.Number {
 			return run, true
 		}
 	}

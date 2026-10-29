@@ -37,7 +37,7 @@ func Run(
 		return 1, err
 	}
 
-	spec := runSpec{repo: ref.Repo, number: ref.Number, agent: agent, retro: retro, limit: limit}
+	spec := runSpec{ref: ref, agent: agent, retro: retro, limit: limit}
 
 	ar, ok := agentRoleFor(role)
 	if !ok {
@@ -53,10 +53,8 @@ func Run(
 // It travels through the run's helpers as one value, so adding a setting does not widen every
 // signature that carries it.
 type runSpec struct {
-	// repo is owner/name.
-	repo workflow.Repo
-	// number is the issue the run works.
-	number int
+	// ref is the issue the run works.
+	ref workflow.IssueRef
 	// agent holds the agent role's model, egress and run budget.
 	agent config.AgentConfig
 	// retro is the budget the run's retro gets.
@@ -71,7 +69,7 @@ func withSandboxRun(
 	d Deps, spec runSpec, role workflow.Role,
 	work func(files sandboxFiles) (runResult, []string, error),
 ) (code int, err error) {
-	files, err := newSandboxFiles(d.Settings.WorkRoot, role, spec.number)
+	files, err := newSandboxFiles(d.Settings.WorkRoot, role, spec.ref.Number)
 	if err != nil {
 		return 1, err
 	}
@@ -79,7 +77,7 @@ func withSandboxRun(
 	defer func() { err = errors.Join(err, files.remove()) }()
 
 	result, domains, err := work(files)
-	d.logUsage(opencode.NewUsageReport(role, spec.repo.String(), spec.number, d.Host, spec.agent, result.usage).
+	d.logUsage(opencode.NewUsageReport(role, spec.ref, d.Host, spec.agent, result.usage).
 		WithDomains(domains))
 
 	return result.code, err
@@ -406,7 +404,7 @@ func buildImplementerPrompt(
 		return "", err
 	}
 
-	thread, ci, err := rework(ctx, c, repo, issue.Number)
+	thread, ci, err := rework(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return "", err
 	}
@@ -416,32 +414,32 @@ func buildImplementerPrompt(
 
 // rework reads what a run that was sent back must answer: every comment since the marker that woke
 // the issue, and the CI failure report when that is why it came back.
-func rework(ctx context.Context, c github.Client, repo workflow.Repo, number int) ([]workflow.Item, string, error) {
-	thread, err := guidance(ctx, c, repo, number)
+func rework(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, string, error) {
+	thread, err := guidance(ctx, c, ref)
 	if err != nil {
 		return nil, "", err
 	}
 
-	ci, err := ciFeedback(ctx, c, repo, number)
+	ci, err := ciFeedback(ctx, c, ref)
 
 	return thread, ci, err
 }
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
 // request, oldest first. An issue that was not woken reads nothing.
-func guidance(ctx context.Context, c github.Client, repo workflow.Repo, number int) ([]workflow.Item, error) {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
+func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, error) {
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 
-	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(number))
+	pr, err := c.ExistingPR(ctx, ref.Repo, workflow.BranchName(ref.Number))
 	if err != nil {
 		return nil, err
 	}
 
 	if pr != nil {
-		onPR, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
+		onPR, err := c.ListComments(ctx, workflow.IssueRef{Repo: ref.Repo, Number: pr.Number})
 		if err != nil {
 			return nil, err
 		}
@@ -458,8 +456,8 @@ func guidance(ctx context.Context, c github.Client, repo workflow.Repo, number i
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
 // handoff that sent the pull request to review. A report from an earlier round is stale and left out.
-func ciFeedback(ctx context.Context, c github.Client, repo workflow.Repo, number int) (string, error) {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
+func ciFeedback(ctx context.Context, c github.Client, ref workflow.IssueRef) (string, error) {
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -577,7 +575,7 @@ func (s session) reply(
 
 	ref := workflow.IssueRef{Repo: repo, Number: pr.Number}
 
-	return j.c.PostReplies(ctx, ref, sha, workflow.RenderReplies(sha, out.Replies))
+	return j.c.UpsertComment(ctx, ref, workflow.RepliesMarker(sha), workflow.RenderReplies(sha, out.Replies))
 }
 
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if
@@ -717,17 +715,17 @@ func openPR(
 func (s session) applyResearch(
 	ctx context.Context, j job, spec runSpec, branch string, out workflow.ResearcherOutput,
 ) (string, error) {
-	parent, err := parentMap(ctx, j.c, spec.repo, j.issue)
+	parent, err := parentMap(ctx, j.c, spec.ref.Repo, j.issue)
 	if err != nil {
 		return "", err
 	}
 
-	sha, err := s.publishResearch(ctx, spec.number, branch)
+	sha, err := s.publishResearch(ctx, spec.ref.Number, branch)
 	if err != nil {
 		return "", err
 	}
 
-	return sha, s.resolveResearch(ctx, j, spec.repo, branch, parent, out)
+	return sha, s.resolveResearch(ctx, j, spec.ref.Repo, branch, parent, out)
 }
 
 // parentMap finds the map a research ticket belongs to: its sub-issue parent when the repository has
@@ -868,7 +866,7 @@ func (s session) resolveResearch(
 ) error {
 	ref := workflow.IssueRef{Repo: repo, Number: j.issue.Number}
 
-	if err := j.c.PostResolution(ctx, ref, branch,
+	if err := j.c.UpsertComment(ctx, ref, workflow.ResearchMarker(branch),
 		workflow.RenderResolution(ref.Repo, branch, out.Resolution)); err != nil {
 		return err
 	}

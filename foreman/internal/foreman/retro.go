@@ -115,10 +115,12 @@ func (s session) retro(
 		return res.Usage, err
 	}
 
-	body, err := workflow.RenderRetro(workflow.RetroMarker(number, role, key), findings)
+	marker := workflow.RetroMarker(number, role, key)
+
+	body, err := workflow.RenderRetro(marker, findings)
 	if err != nil {
 		return res.Usage, err
 	}
 
-	return res.Usage, c.PostRetro(ctx, workflow.IssueRef{Repo: repo, Number: number}, role, key, body)
+	return res.Usage, c.UpsertComment(ctx, workflow.IssueRef{Repo: repo, Number: number}, marker, body)
 }

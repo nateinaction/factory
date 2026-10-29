@@ -417,10 +417,10 @@ func (r UsageReport) WithDomains(domains []string) UsageReport {
 // NewUsageReport builds the report. Domains stays missing until the egress proxy reports them
 // through WithDomains.
 func NewUsageReport(
-	role workflow.Role, repo string, number int, host string, a config.AgentConfig, u Usage,
+	role workflow.Role, ref workflow.IssueRef, host string, a config.AgentConfig, u Usage,
 ) UsageReport {
 	r := UsageReport{
-		Event: "usage", Repository: repo, Issue: number, AgentRole: role, Model: a.Model, WorkerHost: host,
+		Event: "usage", Repository: ref.Repo.String(), Issue: ref.Number, AgentRole: role, Model: a.Model, WorkerHost: host,
 		Input: u.Input, Output: u.Output, Cached: u.Cached, ContextCap: a.ContextCap, PeakContext: u.PeakContext,
 		Cost: u.Cost, Missing: []string{},
 	}

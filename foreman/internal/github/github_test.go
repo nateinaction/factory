@@ -110,11 +110,11 @@ var _ = Describe("Client", func() {
 		})
 	})
 
-	Describe("ListOpenIssues", func() {
+	Describe("ListIssues", func() {
 		It("lists every open issue with its author and labels", func() {
 			number := issue(workflow.LabelTask)
 
-			issues, err := c.ListOpenIssues(ctx, testRepo())
+			issues, err := c.ListIssues(ctx, testRepo(), github.StateOpen, github.Oldest)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(issues).To(HaveLen(1))
 			Expect(issues[0].Number).To(Equal(number))
@@ -354,9 +354,10 @@ var _ = Describe("Client", func() {
 		})
 	})
 
-	Describe("PostRetro", func() {
+	Describe("UpsertComment with a retro marker", func() {
+		marker := func(number int) string { return workflow.RetroMarker(number, workflow.Reviewer, "abc") }
 		body := func(number int, claim string) string {
-			text, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Reviewer, "abc"),
+			text, err := workflow.RenderRetro(marker(number),
 				[]workflow.RetroFinding{{
 					Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
 					Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
@@ -370,7 +371,7 @@ var _ = Describe("Client", func() {
 		It("creates one comment on the issue it worked, keyed by issue, agent role and run key", func() {
 			number := issue()
 
-			Expect(c.PostRetro(ctx, ref(number), workflow.Reviewer, "abc", body(number, "first"))).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), marker(number), body(number, "first"))).To(Succeed())
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(ConsistOf(
 				ContainSubstring("<!-- factory:retro issue=" + itoa(number) + " role=reviewer key=abc -->")))
 		})
@@ -378,8 +379,8 @@ var _ = Describe("Client", func() {
 		It("updates the keyed comment on a repeat, posting no second one", func() {
 			number := issue()
 
-			Expect(c.PostRetro(ctx, ref(number), workflow.Reviewer, "abc", body(number, "first"))).To(Succeed())
-			Expect(c.PostRetro(ctx, ref(number), workflow.Reviewer, "abc", body(number, "again"))).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), marker(number), body(number, "first"))).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), marker(number), body(number, "again"))).To(Succeed())
 
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(
 				HaveLen(1), "posted a duplicate")
@@ -472,7 +473,7 @@ var _ = Describe("Client", func() {
 		It("comments the replies on the pull request, keyed by commit", func() {
 			pr := pullRequest()
 
-			Expect(c.PostReplies(ctx, ref(pr.Number), "sha", "replies")).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(pr.Number), workflow.RepliesMarker("sha"), "replies")).To(Succeed())
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(ConsistOf(
 				ContainSubstring("replies")))
 		})
@@ -483,7 +484,7 @@ var _ = Describe("Client", func() {
 			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(pr.Number)+"/comments",
 				ghtest.AdminToken, map[string]string{"body": body}, nil)).To(Succeed())
 
-			Expect(c.PostReplies(ctx, ref(pr.Number), "sha", "again")).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(pr.Number), workflow.RepliesMarker("sha"), "again")).To(Succeed())
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(BeEmpty(), "posted a duplicate")
 			Expect(p.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
 		})
@@ -610,8 +611,8 @@ var _ = Describe("Client", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			body := workflow.RenderResolution(repo, "research/emulate", "It works.")
-			Expect(c.PostResolution(ctx, ref(number), "research/emulate", body)).To(Succeed())
-			Expect(c.PostResolution(ctx, ref(number), "research/emulate", body+"\n\nmore")).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), workflow.ResearchMarker("research/emulate"), body)).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), workflow.ResearchMarker("research/emulate"), body+"\n\nmore")).To(Succeed())
 
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(ConsistOf(
 				ContainSubstring(workflow.ResearchMarker("research/emulate"))))

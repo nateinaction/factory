@@ -33,8 +33,8 @@ const (
 	userAgent = "foreman"
 	// apiVersion pins GitHub's REST API version.
 	apiVersion = "2022-11-28"
-	// stateOpen is the query value that lists open issues only.
-	stateOpen = "open"
+	// StateOpen is the query value that lists open issues only.
+	StateOpen = "open"
 	// StateAll is the query value that lists issues in any state.
 	StateAll = "all"
 	// stateClosed is the state value that closes an issue.
@@ -240,7 +240,7 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 // ListLabeled lists the oldest open issues carrying label.
 func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
-		stateParam: {stateOpen}, "labels": {label}, sortParam: {sortCreated},
+		stateParam: {StateOpen}, "labels": {label}, sortParam: {sortCreated},
 		directionParam: {Oldest}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
 
@@ -249,12 +249,6 @@ func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label strin
 	err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/issues?"+q.Encode(), nil, &issues)
 
 	return issues, err
-}
-
-// ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
-// the caller skips them.
-func (c Client) ListOpenIssues(ctx context.Context, repo workflow.Repo) ([]workflow.Issue, error) {
-	return c.ListIssues(ctx, repo, stateOpen, Oldest)
 }
 
 // ListIssues lists a repository's issues in state ("open", "closed" or StateAll), ordered by creation
@@ -486,12 +480,6 @@ func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Iss
 	return parent, true, nil
 }
 
-// PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
-// branch updates that comment rather than adding another.
-func (c Client) PostResolution(ctx context.Context, ref workflow.IssueRef, branch, text string) error {
-	return c.UpsertComment(ctx, ref, workflow.ResearchMarker(branch), text)
-}
-
 // UpsertComment writes text as the one comment on ref that starts with marker: it edits that comment
 // when one exists and creates it otherwise, so writing the same marked comment again changes nothing.
 func (c Client) UpsertComment(ctx context.Context, ref workflow.IssueRef, marker, text string) error {
@@ -643,7 +631,7 @@ type PullRequest struct {
 // ExistingPR finds the open pull request for a branch, or nil.
 func (c Client) ExistingPR(ctx context.Context, repo workflow.Repo, branch string) (*PullRequest, error) {
 	owner, _, _ := strings.Cut(repo.String(), "/")
-	q := url.Values{stateParam: {stateOpen}, "head": {owner + ":" + branch}}
+	q := url.Values{stateParam: {StateOpen}, "head": {owner + ":" + branch}}
 
 	var pulls []PullRequest
 	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo.String()+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
@@ -796,14 +784,6 @@ func (c Client) LatestReviewBody(ctx context.Context, ref workflow.IssueRef) (st
 	return ours[len(ours)-1].Body, nil
 }
 
-// PostRetro posts a run's retro on the issue it worked, keyed by issue, agent role and run key. A
-// repeat for the same key updates that comment rather than adding another.
-func (c Client) PostRetro(
-	ctx context.Context, ref workflow.IssueRef, role workflow.Role, key string, body string,
-) error {
-	return c.UpsertComment(ctx, ref, workflow.RetroMarker(ref.Number, role, key), body)
-}
-
 // PostReview posts a native pull request review on a commit, carrying the verdict. A review GitHub
 // refuses because the App authored the pull request is posted as a comment review instead, so the
 // findings still reach the pull request.
@@ -843,10 +823,4 @@ func (c Client) RequestReviewers(ctx context.Context, ref workflow.IssueRef, rev
 
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", ref.Repo, ref.Number),
 		reviewersRequest{Reviewers: reviewers}, nil)
-}
-
-// PostReplies comments on the pull request, keyed by the commit the replies answer, so a repeat
-// updates that comment instead of adding another.
-func (c Client) PostReplies(ctx context.Context, ref workflow.IssueRef, sha, text string) error {
-	return c.UpsertComment(ctx, ref, workflow.RepliesMarker(sha), text)
 }

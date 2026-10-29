@@ -479,7 +479,7 @@ func finishSlices(
 func plannedIssues(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int,
 ) (map[string]workflow.Issue, error) {
-	issues, err := c.ListOpenIssues(ctx, repo)
+	issues, err := c.ListIssues(ctx, repo, github.StateOpen, github.Oldest)
 	if err != nil {
 		return nil, err
 	}
@@ -523,7 +523,7 @@ func ensureSubIssue(ctx context.Context, c github.Client, repo workflow.Repo, pa
 	}
 
 	if !supported {
-		return ensureBodyLine(ctx, c, repo, child.Number, fmt.Sprintf("Part of #%d", parent))
+		return ensureBodyLine(ctx, c, workflow.IssueRef{Repo: repo, Number: child.Number}, fmt.Sprintf("Part of #%d", parent))
 	}
 
 	if slices.Contains(numbers, child.Number) {
@@ -547,7 +547,7 @@ func ensureBlockedBy(ctx context.Context, c github.Client, repo workflow.Repo, c
 	}
 
 	if !supported {
-		return ensureBodyLine(ctx, c, repo, child, fmt.Sprintf("Blocked by: #%d", blocker))
+		return ensureBodyLine(ctx, c, workflow.IssueRef{Repo: repo, Number: child}, fmt.Sprintf("Blocked by: #%d", blocker))
 	}
 
 	if slices.Contains(numbers, blocker) {
@@ -572,8 +572,8 @@ func issueID(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 }
 
 // ensureBodyLine puts line at the top of an issue's body unless it is already there.
-func ensureBodyLine(ctx context.Context, c github.Client, repo workflow.Repo, number int, line string) error {
-	issue, err := c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
+func ensureBodyLine(ctx context.Context, c github.Client, ref workflow.IssueRef, line string) error {
+	issue, err := c.GetIssue(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -582,7 +582,7 @@ func ensureBodyLine(ctx context.Context, c github.Client, repo workflow.Repo, nu
 		return nil
 	}
 
-	return c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: number}, line+"\n\n"+issue.Body)
+	return c.UpdateIssueBody(ctx, ref, line+"\n\n"+issue.Body)
 }
 
 // hasMarker reports whether a comment starts with marker.

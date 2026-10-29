@@ -13,7 +13,7 @@ import (
 // prepareImplementer checks out the issue's branch, builds the prompt from the clone's docs and the
 // review feedback, and applies the Implementer's output once the agent returns.
 func prepareImplementer(ctx context.Context, rc runCtx) (prepared, error) {
-	repo, number := rc.spec.repo, rc.spec.number
+	repo, number := rc.spec.ref.Repo, rc.spec.ref.Number
 	branch := workflow.BranchName(number)
 
 	pr, feedback, start, err := rc.s.prepare(ctx, rc.j.c, repo, branch)
@@ -49,7 +49,7 @@ func prepareImplementer(ctx context.Context, rc runCtx) (prepared, error) {
 // the Researcher's findings once the agent returns. The clone and the reads are foreman's, outside
 // the sandbox; only the model and its retro run inside.
 func prepareResearcher(ctx context.Context, rc runCtx) (prepared, error) {
-	if err := rc.s.clone(ctx, rc.spec.repo); err != nil {
+	if err := rc.s.clone(ctx, rc.spec.ref.Repo); err != nil {
 		return prepared{}, err
 	}
 
@@ -58,13 +58,13 @@ func prepareResearcher(ctx context.Context, rc runCtx) (prepared, error) {
 		return prepared{}, err
 	}
 
-	thread, err := guidance(ctx, rc.j.c, rc.spec.repo, rc.spec.number)
+	thread, err := guidance(ctx, rc.j.c, rc.spec.ref)
 	if err != nil {
 		return prepared{}, err
 	}
 
 	return prepared{
-		prompt:  prompt.Researcher(docs, rc.spec.repo.String(), rc.j.issue, thread, rc.paths.out),
+		prompt:  prompt.Researcher(docs, rc.spec.ref.Repo.String(), rc.j.issue, thread, rc.paths.out),
 		failKey: headKeyOf,
 		after: func(ctx context.Context, s session, _ opencode.Result) outcome {
 			return researchAfter(ctx, rc, s)
@@ -96,8 +96,8 @@ func researchAfter(ctx context.Context, rc runCtx, s session) outcome {
 // prepareReviewer checks out the pull request's branch and writes the issue where the Reviewer reads
 // it. The verdict is the output's, and the retro is keyed by the reviewed commit.
 func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
-	repo := rc.spec.repo
-	branch := workflow.BranchName(rc.spec.number)
+	repo := rc.spec.ref.Repo
+	branch := workflow.BranchName(rc.spec.ref.Number)
 
 	pr, base, err := reviewTarget(ctx, rc.j.c, repo, branch)
 	if err != nil {
@@ -139,12 +139,12 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 // one round once the agent returns. The retro is the epilogue of the final-round run only, keyed by
 // the id of the comment that stored the proposal.
 func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
-	branch, err := rc.j.c.DefaultBranch(ctx, rc.spec.repo)
+	branch, err := rc.j.c.DefaultBranch(ctx, rc.spec.ref.Repo)
 	if err != nil {
 		return prepared{}, err
 	}
 
-	if err := rc.s.cloneDefault(ctx, rc.spec.repo, branch); err != nil {
+	if err := rc.s.cloneDefault(ctx, rc.spec.ref.Repo, branch); err != nil {
 		return prepared{}, err
 	}
 
@@ -153,13 +153,13 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 		return prepared{}, err
 	}
 
-	comments, err := rc.j.c.ListComments(ctx, workflow.IssueRef{Repo: rc.spec.repo, Number: rc.spec.number})
+	comments, err := rc.j.c.ListComments(ctx, workflow.IssueRef{Repo: rc.spec.ref.Repo, Number: rc.spec.ref.Number})
 	if err != nil {
 		return prepared{}, err
 	}
 
 	return prepared{
-		prompt:          prompt.Planner(docs, rc.spec.repo.String(), rc.j.issue, comments, rc.paths.out),
+		prompt:          prompt.Planner(docs, rc.spec.ref.Repo.String(), rc.j.issue, comments, rc.paths.out),
 		toolchainBranch: branch,
 		after: func(ctx context.Context, _ session, _ opencode.Result) outcome {
 			out, err := readOutput(rc.paths.out, workflow.PlannerOutputFile, workflow.ParsePlannerOutput)
@@ -167,7 +167,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 				return rejected(ctx, rc, err)
 			}
 
-			commentID, final, err := applyPlannerRound(ctx, rc.j, rc.d.runID(), rc.spec.repo, rc.spec.number, out)
+			commentID, final, err := applyPlannerRound(ctx, rc.j, rc.d.runID(), rc.spec.ref.Repo, rc.spec.ref.Number, out)
 			if err != nil || !final {
 				return outcome{err: err}
 			}
@@ -180,7 +180,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 // prepareCurator clones the default branch read-only, reads the retro log and the dashboard state, and
 // applies the Curator's proposals once the agent returns. It runs no retro.
 func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
-	repo := rc.spec.repo
+	repo := rc.spec.ref.Repo
 
 	branch, err := rc.j.c.DefaultBranch(ctx, repo)
 	if err != nil {
@@ -202,7 +202,7 @@ func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 	}
 
 	view := workflow.BuildDashboard(reports, state, rc.d.now())
-	ref := workflow.IssueRef{Repo: repo, Number: rc.spec.number}
+	ref := workflow.IssueRef{Repo: repo, Number: rc.spec.ref.Number}
 
 	return prepared{
 		prompt:          prompt.Curator(docs, ref, private, reports, view, rc.paths.out),
@@ -215,7 +215,7 @@ func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 				return outcome{err: err}
 			}
 
-			return outcome{err: s.applyCurator(ctx, rc.j, repo, rc.spec.number, out, private)}
+			return outcome{err: s.applyCurator(ctx, rc.j, repo, rc.spec.ref.Number, out, private)}
 		},
 	}, nil
 }

@@ -197,12 +197,12 @@ func pipeline(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, sec secrets,
 	baseURL, proxyAddr string, network sandbox.Network, files sandboxFiles,
 ) (runResult, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, role, spec.agent, spec.number, files.db(role))
+	j, err := loadJob(ctx, d, sec, baseURL, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role))
 	if err != nil {
 		return runResult{}, err
 	}
 
-	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.number)
+	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.ref.Number)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -216,11 +216,11 @@ func pipeline(
 
 	extra := slices.Clone(prep.extraWrite)
 	if rr.retro {
-		extra = append(extra, retroPath(d.Settings.WorkRoot, spec.number, role))
+		extra = append(extra, retroPath(d.Settings.WorkRoot, spec.ref.Number, role))
 	}
 
 	s, err := d.sandboxedWithToolchain(
-		ctx, rc.s, j, sec, spec.repo, prep.toolchainBranch, files, role, paths.workdir, paths.out, extra,
+		ctx, rc.s, j, sec, spec.ref.Repo, prep.toolchainBranch, files, role, paths.workdir, paths.out, extra,
 		network, proxyAddr,
 	)
 	if err != nil {
@@ -239,7 +239,7 @@ func pipeline(
 
 	if oc.retro {
 		usage = usage.Add(s.retroEpilogue(
-			ctx, j, spec.repo, spec.number, role, res.Session, oc.key, oc.err, spec.retro,
+			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.key, oc.err, spec.retro,
 		))
 	}
 
@@ -255,7 +255,7 @@ func failedRetro(
 	}
 
 	return s.retroEpilogue(
-		ctx, rc.j, rc.spec.repo, rc.spec.number, rc.role, res.Session, prep.failKey(ctx, s), err, rc.spec.retro,
+		ctx, rc.j, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, res.Session, prep.failKey(ctx, s), err, rc.spec.retro,
 	)
 }
 
@@ -265,7 +265,7 @@ func headKeyOf(ctx context.Context, s session) string { return s.headKey(ctx) }
 // rejected is the outcome of a run whose output file was rejected: nothing is applied and no retro
 // runs.
 func rejected(ctx context.Context, rc runCtx, err error) outcome {
-	return outcome{err: rejectOutput(ctx, rc.j.c, rc.spec.repo, rc.spec.number, rc.role, err)}
+	return outcome{err: rejectOutput(ctx, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err)}
 }
 
 // readOutput reads a role's output file and parses it strictly. A file foreman cannot read is an

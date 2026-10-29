@@ -60,7 +60,7 @@ func redrawDashboard(
 	}
 
 	// The claim is already in the body, so a failed enqueue is retried once the claim ages out.
-	if err := enqueueCurator(ctx, d, repo, number); err != nil {
+	if err := enqueueCurator(ctx, d, workflow.IssueRef{Repo: repo, Number: number}); err != nil {
 		d.log().Warn("cannot queue the Curator run", "repo", repo, "issue", number, "error", err)
 	}
 
@@ -123,10 +123,10 @@ func curatorWanted(
 }
 
 // enqueueCurator queues one Curator run for a repository's dashboard.
-func enqueueCurator(ctx context.Context, d Deps, repo workflow.Repo, number int) error {
+func enqueueCurator(ctx context.Context, d Deps, ref workflow.IssueRef) error {
 	_, err := d.run(ctx, proc.Cmd{Argv: []string{
 		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(workflow.Curator), "--",
-		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(number),
+		"REPO=" + ref.Repo.String(), "ISSUE=" + strconv.Itoa(ref.Number),
 	}})
 
 	return err

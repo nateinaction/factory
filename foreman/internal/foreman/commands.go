@@ -306,7 +306,7 @@ func prepareRepo(
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 
-	issues, err := c.ListOpenIssues(ctx, repo)
+	issues, err := c.ListIssues(ctx, repo, github.StateOpen, github.Oldest)
 	if err != nil {
 		return err
 	}
@@ -935,8 +935,8 @@ func claimed(issue workflow.Issue) bool {
 }
 
 // headSHA is the commit the issue's open pull request is at, or empty before one exists.
-func headSHA(ctx context.Context, c github.Client, repo workflow.Repo, number int) (string, error) {
-	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(number))
+func headSHA(ctx context.Context, c github.Client, ref workflow.IssueRef) (string, error) {
+	pr, err := c.ExistingPR(ctx, ref.Repo, workflow.BranchName(ref.Number))
 	if err != nil {
 		return "", err
 	}
@@ -953,7 +953,7 @@ func headSHA(ctx context.Context, c github.Client, repo workflow.Repo, number in
 func claimAndEnqueue(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue, q queueStep,
 ) (int, error) {
-	sha, err := headSHA(ctx, c, repo, issue.Number)
+	sha, err := headSHA(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return 1, err
 	}
@@ -1030,31 +1030,30 @@ func failureText(role workflow.Role, code int) string {
 func finishRun(
 	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
 ) error {
-	repo, number := ref.Repo, ref.Number
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
-	token, err := d.mintToken(ctx, role, repo)
+	token, err := d.mintToken(ctx, role, ref.Repo)
 	if err == nil {
 		c := d.client(token)
 		if dst == workflow.Closed {
-			return c.CloseResolved(ctx, workflow.IssueRef{Repo: repo, Number: number}, t)
+			return c.CloseResolved(ctx, ref, t)
 		}
 
 		// The commit is recorded when it can be read; the transition itself is what matters.
-		if sha, shaErr := headSHA(ctx, c, repo, number); shaErr == nil {
+		if sha, shaErr := headSHA(ctx, c, ref); shaErr == nil {
 			t.SHA = sha
 		} else {
 			d.log().Warn("cannot read the pull request head for the transition marker",
-				"repo", repo, "issue", number, "error", shaErr)
+				"repo", ref.Repo, "issue", ref.Number, "error", shaErr)
 		}
 
-		_, err := c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: number}, t, text)
+		_, err := c.Finish(ctx, ref, t, text)
 
 		return err
 	}
 
 	d.log().Error("cannot mint the owning App's token; reporting the failure as another App",
-		"role", role, "repo", repo, "issue", number, "error", err)
+		"role", role, "repo", ref.Repo, "issue", ref.Number, "error", err)
 
 	t.To = workflow.Failed
 
@@ -1065,17 +1064,17 @@ func finishRun(
 			continue
 		}
 
-		otherToken, mintErr := d.mintToken(ctx, other, repo)
+		otherToken, mintErr := d.mintToken(ctx, other, ref.Repo)
 		if mintErr != nil {
 			continue // that App isn't installed here or has no credential: try the next
 		}
 
-		_, err := d.client(otherToken).Finish(ctx, workflow.IssueRef{Repo: repo, Number: number}, t, notice)
+		_, err := d.client(otherToken).Finish(ctx, ref, t, notice)
 
 		return err
 	}
 
-	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", repo, number, err)
+	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", ref.Repo, ref.Number, err)
 }
 
 // factoryExit is the exit code of `foreman run <role> <repo> <n>` as the factory user, with the token file
