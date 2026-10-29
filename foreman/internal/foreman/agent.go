@@ -19,6 +19,11 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
+	// A budget with nothing left never starts the model: the deadline has already passed.
+	if err := ctx.Err(); err != nil {
+		return opencode.Result{}, fmt.Errorf("%s: %w", r.Role, err)
+	}
+
 	deadline, _ := ctx.Deadline() // WithTimeout always sets one
 
 	var res opencode.Result

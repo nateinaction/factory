@@ -83,8 +83,6 @@ const (
 	// LabelPaused takes an issue out of the factory's hands. It is the only label a human sets.
 	LabelPaused = "factory:paused"
 
-	// LabelRetro labels the retro ticket, which is not a factory label.
-	LabelRetro = "retro"
 	// LabelMap labels a wayfinder map, whose tickets are worked instead.
 	LabelMap = "wayfinder:map"
 	// LabelResearchTicket marks a ticket for the Researcher.
@@ -97,8 +95,6 @@ const (
 	LabelWayfinderPrototype = "wayfinder:prototype"
 	// LabelTask marks a task ticket.
 	LabelTask = "task"
-	// RetroTitle is the retro ticket's title.
-	RetroTitle = "Agent retros"
 	// DashboardTitle is the retro dashboard's title; the dashboard is never routed.
 	DashboardTitle = "Retro dashboard"
 )
@@ -357,10 +353,10 @@ func FactoryLabelled(issue Issue) bool {
 	return false
 }
 
-// NeverRouted reports whether an issue is one the factory never routes: a wayfinder map, the retro
-// dashboard, or the retro log ticket.
+// NeverRouted reports whether an issue is one the factory never routes: a wayfinder map or the retro
+// dashboard.
 func NeverRouted(issue Issue) bool {
-	return HasLabel(issue, LabelMap) || issue.Title == DashboardTitle || issue.Title == RetroTitle
+	return HasLabel(issue, LabelMap) || issue.Title == DashboardTitle
 }
 
 // Route returns the first queue for a new issue, or false for an issue the factory never routes. A
@@ -698,11 +694,6 @@ func ReviewMarker(sha string) string {
 
 // ReviewMarkerPrefix starts every review foreman posts.
 const ReviewMarkerPrefix = "<!-- agent-review:"
-
-// RetroMarker keys a retro comment to an issue and commit.
-func RetroMarker(number int, sha string) string {
-	return fmt.Sprintf("<!-- agent-retro:%d:%s -->", number, sha)
-}
 
 // Blocking keeps the findings that must be fixed before the pull request is accepted.
 func Blocking(findings []ReviewFinding) []ReviewFinding {

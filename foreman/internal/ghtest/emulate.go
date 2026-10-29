@@ -305,6 +305,24 @@ func (e *Emulate) CommentAs(ctx context.Context, repo string, number int, token,
 	return e.Do(ctx, http.MethodPost, path, token, map[string]string{bodyField: text}, nil)
 }
 
+// Comment is one issue comment, as setup reads it back.
+type Comment struct {
+	// ID identifies the comment.
+	ID int64 `json:"id"`
+	// Body is the comment's text.
+	Body string `json:"body"`
+}
+
+// Comments returns an issue's comments, oldest first.
+func (e *Emulate) Comments(ctx context.Context, repo string, number int) ([]Comment, error) {
+	var out []Comment
+
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number)
+	err := e.Do(ctx, http.MethodGet, path, AdminToken, nil, &out)
+
+	return out, err
+}
+
 // SetPermission grants a user a permission on repo, as the repository's admin.
 func (e *Emulate) SetPermission(ctx context.Context, repo, login, permission string) error {
 	path := "/repos/" + repo + "/collaborators/" + url.PathEscape(login)
@@ -365,24 +383,6 @@ func (e *Emulate) HasIssue(ctx context.Context, repo string, number int) (bool, 
 	}
 
 	return false, err
-}
-
-// FindIssueByLabel returns the first open issue carrying label, or 0 when there is none.
-func (e *Emulate) FindIssueByLabel(ctx context.Context, repo, label string) (int, error) {
-	var issues []struct {
-		Number int
-	}
-
-	path := "/repos/" + repo + "/issues?state=open&labels=" + url.QueryEscape(label)
-	if err := e.Do(ctx, http.MethodGet, path, AdminToken, nil, &issues); err != nil {
-		return 0, err
-	}
-
-	if len(issues) == 0 {
-		return 0, nil
-	}
-
-	return issues[0].Number, nil
 }
 
 // PullRequests lists the open pull requests of repo.

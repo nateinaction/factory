@@ -6,6 +6,7 @@ package opencode
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -83,6 +84,25 @@ func (e *ModelError) Error() string {
 
 // Unwrap exposes the cause.
 func (e *ModelError) Unwrap() error { return e.Cause }
+
+// RetroAllowed reports whether a failed run still gets its retro. A context overflow, running out of
+// credits and an unknown model are the exceptions: there is nothing left to resume, or nothing to
+// spend on a retro.
+func RetroAllowed(err error) bool {
+	var me *ModelError
+	if !errors.As(err, &me) {
+		return true
+	}
+
+	switch me.Kind {
+	case FailOverflow, FailCredits, FailUnknownModel:
+		return false
+	case FailRateLimit, FailServer, FailTimeout, FailStepCap, FailOther:
+		return true
+	}
+
+	return true
+}
 
 // Usage is what a run spent. A nil field is one the adapter could not report; it is never zero.
 type Usage struct {

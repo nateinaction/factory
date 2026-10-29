@@ -80,8 +80,11 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 5)).
 			Error().NotTo(HaveOccurred())
 		calls := h.opencodeCalls()
-		Expect(calls).To(HaveLen(1))
-		Expect(calls[0].Env).To(HaveKeyWithValue("OPENCODE_DB", ":memory:"))
+		Expect(calls).To(HaveLen(2), "the review and its retro")
+
+		for _, c := range calls {
+			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DB", ":memory:"))
+		}
 	})
 
 	It("gives the run the agent role's wall-clock deadline", func() {
@@ -109,7 +112,7 @@ var _ = Describe("the opencode adapter", func() {
 		agent.Steps = 3
 		_, err := h.runImpl(agent)
 		Expect(err).To(MatchError(ContainSubstring("step cap")))
-		Expect(h.opencodeCalls()).To(HaveLen(1), "a step cap is not retried")
+		Expect(h.runCalls()).To(HaveLen(1), "a step cap is not retried")
 	})
 
 	It("keeps a run that stays below its step cap", func() {
@@ -144,7 +147,7 @@ var _ = Describe("the opencode adapter", func() {
 		agent.Compaction = false
 		_, err := h.runImpl(agent)
 		Expect(err).To(MatchError(ContainSubstring("context overflow")))
-		Expect(h.opencodeCalls()).To(HaveLen(1))
+		Expect(h.runCalls()).To(HaveLen(1))
 	})
 
 	DescribeTable("retries rate limits, 5xx and timeouts up to twice, and nothing else",
@@ -152,7 +155,7 @@ var _ = Describe("the opencode adapter", func() {
 			h.answerOpencode(out)
 			_, err := h.runImpl(testAgent())
 			Expect(err).To(MatchError(ContainSubstring(kind)))
-			Expect(h.opencodeCalls()).To(HaveLen(calls))
+			Expect(h.runCalls()).To(HaveLen(calls))
 			Expect(err.Error()).NotTo(Or(ContainSubstring("boom"), ContainSubstring("or-key")), "failure text leaks")
 		},
 		Entry("rate limit", errStream("APIError", 429), 3, "rate limit"),
@@ -249,7 +252,8 @@ var _ = Describe("the opencode adapter", func() {
 
 			lines := h.usageLines()
 			Expect(lines).To(HaveLen(1))
-			Expect(lines[0]).To(HaveKeyWithValue("input_tokens", 1000.0))
+			// The failed run and the retro that follows it both spent a step of 1000 input tokens.
+			Expect(lines[0]).To(HaveKeyWithValue("input_tokens", 2000.0))
 		})
 	})
 

@@ -77,7 +77,8 @@ var _ = Describe("names and markers", func() {
 
 	It("keys reviews and retros by commit", func() {
 		Expect(workflow.ReviewMarker("abc")).To(Equal("<!-- agent-review:abc -->"))
-		Expect(workflow.RetroMarker(5, "abc")).To(Equal("<!-- agent-retro:5:abc -->"))
+		Expect(workflow.RetroMarker(5, workflow.Implementer, "abc")).To(
+			Equal("<!-- factory:retro issue=5 role=implementer key=abc -->"))
 	})
 
 	It("makes a pull request body close the issue, without doubling a link the model wrote", func() {

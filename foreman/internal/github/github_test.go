@@ -325,44 +325,41 @@ var _ = Describe("Client", func() {
 		})
 	})
 
-	Describe("RetroTicket", func() {
-		It("reuses the open one", func() {
-			number := issue(workflow.LabelRetro)
-
-			Expect(c.RetroTicket(ctx, "o/r")).To(Equal(number))
-		})
-
-		It("creates it on first use", func() {
-			number, err := c.RetroTicket(ctx, "o/r")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(number).NotTo(BeZero())
-			Expect(p.Bodies("POST", "/repos/o/r/issues")[0]).To(And(
-				ContainSubstring(`"title":"Agent retros"`), ContainSubstring(`"labels":["retro"]`),
-			))
-		})
-	})
-
 	Describe("PostRetro", func() {
-		var ticket int
+		body := func(number int, claim string) string {
+			text, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Reviewer, "abc"),
+				[]workflow.RetroFinding{{
+					Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
+					Claim: claim, Evidence: "e",
+				}})
+			Expect(err).NotTo(HaveOccurred())
 
-		BeforeEach(func() {
-			ticket = issue(workflow.LabelRetro)
+			return text
+		}
+
+		It("creates one comment on the issue it worked, keyed by issue, agent role and run key", func() {
+			number := issue()
+
+			Expect(c.PostRetro(ctx, "o/r", number, workflow.Reviewer, "abc", body(number, "first"))).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(ConsistOf(
+				ContainSubstring("<!-- factory:retro issue=" + itoa(number) + " role=reviewer key=abc -->")))
 		})
 
-		It("creates a comment keyed by issue and commit", func() {
-			Expect(c.PostRetro(ctx, "o/r", 5, "abc", "lessons")).To(Succeed())
-			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(ticket)+"/comments")[0]).To(
-				ContainSubstring(`<!-- agent-retro:5:abc -->\n## Retro: #5\n\nlessons`))
-		})
+		It("updates the keyed comment on a repeat, posting no second one", func() {
+			number := issue()
 
-		It("updates the keyed comment on a repeat", func() {
-			body := workflow.RetroMarker(5, "abc") + "\nold"
-			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(ticket)+"/comments",
-				ghtest.AdminToken, map[string]string{"body": body}, nil)).To(Succeed())
+			Expect(c.PostRetro(ctx, "o/r", number, workflow.Reviewer, "abc", body(number, "first"))).To(Succeed())
+			Expect(c.PostRetro(ctx, "o/r", number, workflow.Reviewer, "abc", body(number, "again"))).To(Succeed())
 
-			Expect(c.PostRetro(ctx, "o/r", 5, "abc", "again")).To(Succeed())
-			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(ticket)+"/comments")).To(BeEmpty(), "posted a duplicate")
-			Expect(p.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(
+				HaveLen(1), "posted a duplicate")
+
+			comments, err := emulator.Comments(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(1))
+			Expect(p.Bodies("PATCH", "/repos/o/r/issues/comments/"+strconv.FormatInt(comments[0].ID, 10))).To(
+				ConsistOf(ContainSubstring("again")))
 		})
 	})
 

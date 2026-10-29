@@ -116,15 +116,18 @@ path; the Reviewer takes over from `factory:review`.
 3. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
    with the `implement` skill, pushes, and opens a PR. If the PR already exists
    (a rework), it continues from that branch with the latest review in the
-   prompt. Then it continues the same opencode session with the `retro` skill
-   and posts the result as a comment on the open issue labelled `retro` (it
-   creates "Agent retros" the first time). The retro is best effort: a failure
-   is logged and does not fail the run. The issue becomes `factory:review`.
+   prompt. Then it continues the same opencode session, by explicit session id,
+   with the `retro` skill: the retro writes `retro.json`, and foreman posts it
+   whole as a marker comment on the issue, keyed by agent role and commit SHA. A
+   repeat for the same key updates that comment. The retro has its own step cap
+   and deadline and is best effort: a dropped or invalid retro is logged and
+   does not fail the run. The issue becomes `factory:review`.
 4. Review (`review-run`): checks out the PR branch, runs the `code-review` skill
    against the issue as spec, and posts the findings on the PR as a review. With
    no high or medium findings it approves and the issue becomes `factory:done`.
    Otherwise the issue goes back to `factory:implement` for another implement
-   pass, up to 3 reviews, after which it is `factory:failed`.
+   pass, up to 3 reviews, after which it is `factory:failed`. A retro follows
+   the verdict, keyed by the reviewed PR head SHA.
 5. Any failure leaves the issue `factory:failed` with a marker and a comment. A
    writer's comment sends it back to the agent role that failed.
 

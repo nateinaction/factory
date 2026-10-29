@@ -31,7 +31,7 @@ func Run(
 	case workflow.Implementer:
 		return exitCode(runImplementer(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Reviewer:
-		code, err := runReviewer(ctx, d, repo, agent, number)
+		code, err := runReviewer(ctx, d, repo, agent, retro, number)
 
 		return exitCode(err, code)
 	case workflow.Planner, workflow.Researcher, workflow.Curator:
@@ -330,7 +330,9 @@ func implementRun(
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
-		return res.Usage, err
+		return res.Usage.Add(s.retroEpilogue(
+			ctx, j, repo, number, workflow.Implementer, res.Session, s.headKey(ctx), err, retro,
+		)), err
 	}
 
 	out, err := readImplementerOutput(paths.out, pr != nil)
@@ -339,15 +341,14 @@ func implementRun(
 	}
 
 	if err := s.applyImplementer(ctx, j, repo, branch, start, pr, out); err != nil {
-		return res.Usage, err
+		return res.Usage.Add(s.retroEpilogue(
+			ctx, j, repo, number, workflow.Implementer, res.Session, s.headKey(ctx), err, retro,
+		)), err
 	}
-	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
-	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session, retro)
-	if err != nil {
-		d.log().Warn("retro failed", "repo", repo, "issue", number, "error", err)
-	}
-
-	return res.Usage.Add(retroUsage), nil
+	// The output is applied: the retro is the run's epilogue and never changes its outcome.
+	return res.Usage.Add(s.retroEpilogue(
+		ctx, j, repo, number, workflow.Implementer, res.Session, s.headKey(ctx), nil, retro,
+	)), nil
 }
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
@@ -644,47 +645,10 @@ func openPR(
 	return &pr, nil
 }
 
-// retro resumes the finished session, by its explicit id, for its retro and posts it on the retro ticket.
-func (s session) retro(
-	ctx context.Context, c github.Client, repo string, number int, session string, budget config.Budget,
-) (opencode.Usage, error) {
-	if session == "" {
-		return opencode.Usage{}, errors.New("the run reported no session to resume")
-	}
-
-	out, err := freshPath(s.d.Settings.WorkRoot, fmt.Sprintf("issue-%d.retro.md", number))
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Retro(repo, number, out), Session: session,
-		Timeout: budget.Deadline(), Steps: budget.Steps,
-	})
-	if err != nil {
-		return res.Usage, err
-	}
-
-	raw, err := readScratch(out)
-	if err != nil {
-		return res.Usage, err
-	}
-
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
-		return res.Usage, errors.New("the retro wrote nothing")
-	}
-
-	sha, err := s.head(ctx)
-	if err != nil {
-		return res.Usage, err
-	}
-
-	return res.Usage, c.PostRetro(ctx, repo, number, sha, text)
-}
-
 // runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
-func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int) (int, error) {
+func runReviewer(
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+) (int, error) {
 	var (
 		usage opencode.Usage
 		code  int
@@ -693,7 +657,7 @@ func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentCon
 	err := withState(d.Settings.WorkRoot, workflow.Reviewer, number, func(db string) error {
 		var err error
 
-		code, usage, err = review(ctx, d, repo, agent, number, db)
+		code, usage, err = review(ctx, d, repo, agent, retro, number, db)
 
 		return err
 	})
@@ -708,7 +672,7 @@ func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentCon
 
 // review clones the pull request's branch, runs the review, posts it, and returns the verdict code.
 func review(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (int, opencode.Usage, error) {
 	sec, err := readSecrets(d.Settings, workflow.Reviewer)
 	if err != nil {
@@ -718,7 +682,7 @@ func review(
 	var code int
 
 	usage, err := d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, number, db)
+		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
 		code = runCode
 
 		return u, e
@@ -730,7 +694,7 @@ func review(
 // reviewRun is the Reviewer's work, with its proxy already up.
 func reviewRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, number int, db string,
+	agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (int, opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number, db)
 	if err != nil {
@@ -763,8 +727,11 @@ func reviewRun(
 		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, paths.spec, paths.out),
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
+	// The retro is keyed by the reviewed PR head SHA, on every path that reached the model.
 	if err != nil {
-		return 1, res.Usage, err
+		return 1, res.Usage.Add(s.retroEpilogue(
+			ctx, j, repo, number, workflow.Reviewer, res.Session, sha, err, retro,
+		)), err
 	}
 
 	out, err := readReviewerOutput(paths.out)
@@ -774,7 +741,9 @@ func reviewRun(
 
 	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue)
 
-	return code, res.Usage, err
+	return code, res.Usage.Add(s.retroEpilogue(
+		ctx, j, repo, number, workflow.Reviewer, res.Session, sha, err, retro,
+	)), err
 }
 
 // reviewTarget is the open pull request for branch and the branch it merges into.
