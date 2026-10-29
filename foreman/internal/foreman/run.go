@@ -3,6 +3,8 @@ package foreman
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -89,7 +91,7 @@ func withSandboxRun(
 // or unproxied fallback.
 func withRunSecrets(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role,
-	work func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (runResult, error),
+	work func(sec secrets, baseURL, token, proxyAddr string, network sandbox.Network) (runResult, error),
 ) (runResult, []string, error) {
 	network, err := sandbox.ParseNetwork(spec.agent.Egress.AllowedDomains)
 	if err != nil {
@@ -101,8 +103,8 @@ func withRunSecrets(
 		return runResult{}, nil, err
 	}
 
-	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (runResult, error) {
-		return work(sec, baseURL, proxyAddr, network)
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, token, proxyAddr string) (runResult, error) {
+		return work(sec, baseURL, token, proxyAddr, network)
 	})
 }
 
@@ -176,6 +178,8 @@ type session struct {
 	settings string
 	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
 	key string
+	// token is the run's proxy token, kept only to scrub it from anything echoed.
+	token string
 }
 
 // git runs git in the clone.
@@ -212,6 +216,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
 		key:      j.sec.openrouterKey,
+		token:    j.token,
 	}
 }
 
@@ -246,6 +251,7 @@ const gitPush = "push"
 type job struct {
 	sec   secrets
 	env   map[string]string
+	token string
 	c     github.Client
 	issue workflow.Issue
 }
@@ -254,10 +260,10 @@ type job struct {
 // proxy. The secrets are already read: the key belongs to the proxy, never to the model. The model's
 // one GitHub credential is a read-only token of its own App's, scoped to the repository.
 func loadJob(
-	ctx context.Context, d Deps, sec secrets, baseURL string, repo workflow.Repo, role workflow.Role,
+	ctx context.Context, d Deps, sec secrets, baseURL, token string, repo workflow.Repo, role workflow.Role,
 	agent config.AgentConfig, number int, db string,
 ) (job, error) {
-	env, err := opencode.Env(baseURL, db, agent)
+	env, err := opencode.Env(baseURL, token, db, agent)
 	if err != nil {
 		return job{}, err
 	}
@@ -276,7 +282,7 @@ func loadJob(
 		return job{}, err
 	}
 
-	return job{sec: sec, env: env, c: c, issue: issue}, nil
+	return job{sec: sec, env: env, token: token, c: c, issue: issue}, nil
 }
 
 // withProxy runs fn with the run's OpenRouter key proxy and its egress proxy up, and stops both when
@@ -285,19 +291,24 @@ func loadJob(
 // never an unsandboxed fallback.
 func (d Deps) withProxy(
 	ctx context.Context, network sandbox.Network, key string,
-	fn func(baseURL, proxyAddr string) (runResult, error),
+	fn func(baseURL, token, proxyAddr string) (runResult, error),
 ) (runResult, []string, error) {
-	p, err := d.proxy(key)
+	token, err := d.token()
 	if err != nil {
 		return runResult{}, nil, err
 	}
 
-	e, err := d.egress(ctx, network, p.URL())
+	p, err := d.proxy(key, token)
+	if err != nil {
+		return runResult{}, nil, err
+	}
+
+	e, err := d.egress(ctx, network, p.URL(), token)
 	if err != nil {
 		return runResult{}, nil, errors.Join(err, p.Close())
 	}
 
-	result, err := fn(e.URL(), e.Address())
+	result, err := fn(e.URL(), token, e.Address())
 	// Read the usage before stopping: a response still being relayed when the model exits cannot be
 	// counted, and Close is what ends it.
 	read := p.Usage()
@@ -312,15 +323,15 @@ func (d Deps) withProxy(
 
 // egress starts the run's egress proxy with the agent role's policy, forwarding its API calls to
 // apiURL.
-func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
+func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
-		start = func(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
-			return egress.StartWithLogger(ctx, policy, apiURL, d.egressAddr(), d.log())
+		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
+			return egress.StartWithLogger(ctx, policy, apiURL, token, d.egressAddr(), d.log())
 		}
 	}
 
-	return start(ctx, policy, apiURL)
+	return start(ctx, policy, apiURL, token)
 }
 
 // egressAddr is the loopback address the egress proxy binds.
@@ -349,10 +360,12 @@ func proxyPort(addr string) int {
 }
 
 // proxy starts the run's OpenRouter proxy with key on the configured loopback address.
-func (d Deps) proxy(key string) (Forwarder, error) {
+func (d Deps) proxy(key, token string) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
-		start = func(key, addr string) (Forwarder, error) { return openrouter.Start(key, addr) }
+		start = func(key, token, addr string) (Forwarder, error) {
+			return openrouter.Start(key, token, addr)
+		}
 	}
 
 	addr := d.ProxyAddr
@@ -360,7 +373,34 @@ func (d Deps) proxy(key string) (Forwarder, error) {
 		addr = openrouter.Loopback
 	}
 
-	return start(key, addr)
+	return start(key, token, addr)
+}
+
+// tokenBytes is the entropy of the per-run proxy token.
+const tokenBytes = 32
+
+// token mints the run's random proxy token, or reads the injected one. An empty token is an error:
+// both proxies would refuse every request.
+func (d Deps) token() (string, error) {
+	if d.Token != nil {
+		token, err := d.Token()
+		if err != nil {
+			return "", fmt.Errorf("mint proxy token: %w", err)
+		}
+
+		if token == "" {
+			return "", fmt.Errorf("mint proxy token: empty")
+		}
+
+		return token, nil
+	}
+
+	raw := make([]byte, tokenBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("mint proxy token: %w", err)
+	}
+
+	return hex.EncodeToString(raw), nil
 }
 
 // reported is the proxy's usage as the adapter's type.
