@@ -97,12 +97,32 @@ var _ = Describe("Client", func() {
 	})
 
 	Describe("Paged", func() {
-		It("stops at MaxPages when every page is full", func() {
+		It("fails when the last allowed page is full", func() {
 			p.JSON("GET /full", make([]workflow.Item, github.PageSize))
 
 			items, err := github.Paged[workflow.Item](ctx, c, "/full")
+			Expect(items).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("/full")))
+			Expect(err).To(MatchError(ContainSubstring("over 5 pages")))
+			Expect(p.Calls()).To(HaveLen(github.MaxPages))
+		})
+
+		It("takes a listing whose last allowed page is short as complete", func() {
+			p.Handle("GET /nearly-full", func(w http.ResponseWriter, r *http.Request) {
+				page, err := strconv.Atoi(r.URL.Query().Get("page"))
+				Expect(err).NotTo(HaveOccurred())
+
+				size := github.PageSize
+				if page == github.MaxPages {
+					size = 1
+				}
+
+				ghtest.WriteJSON(w, make([]workflow.Item, size))
+			})
+
+			items, err := github.Paged[workflow.Item](ctx, c, "/nearly-full")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(items).To(HaveLen(github.MaxPages * github.PageSize))
+			Expect(items).To(HaveLen((github.MaxPages-1)*github.PageSize + 1))
 			Expect(p.Calls()).To(HaveLen(github.MaxPages))
 		})
 

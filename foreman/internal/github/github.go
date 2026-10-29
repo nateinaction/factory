@@ -265,8 +265,25 @@ type (
 	}
 )
 
-// Paged returns every item of a list endpoint, up to MaxPages pages.
+// Paged returns every item of a list endpoint, or an error when the listing is longer than MaxPages
+// pages.
 func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
+	return fetchPages(ctx, path, func(ctx context.Context, p string) ([]T, error) {
+		var got []T
+
+		err := c.Call(ctx, http.MethodGet, p, nil, &got)
+
+		return got, err
+	})
+}
+
+// fetchPages reads every page of the listing at path, asking fetch for one page's items at a time. A
+// short page ends the listing, and only a short last page makes it complete: a full page at the
+// MaxPages ceiling means more items exist that this listing will not see, so it fails closed rather
+// than return a truncated view.
+func fetchPages[T any](
+	ctx context.Context, path string, fetch func(context.Context, string) ([]T, error),
+) ([]T, error) {
 	var items []T
 
 	sep := "?"
@@ -275,20 +292,20 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 	}
 
 	for page := 1; page <= MaxPages; page++ {
-		var got []T
-
 		p := fmt.Sprintf("%s%sper_page=%d&page=%d", path, sep, PageSize, page)
-		if err := c.Call(ctx, http.MethodGet, p, nil, &got); err != nil {
+
+		got, err := fetch(ctx, p)
+		if err != nil {
 			return nil, err
 		}
 
 		items = append(items, got...)
 		if len(got) < PageSize {
-			break
+			return items, nil
 		}
 	}
 
-	return items, nil
+	return nil, fmt.Errorf("github GET %s: listing over %d pages of %d", path, MaxPages, PageSize)
 }
 
 // ListLabeled lists the oldest open issues carrying label.
@@ -783,28 +800,20 @@ func (c Client) DefaultBranch(ctx context.Context, repo workflow.Repo) (string, 
 }
 
 // CheckRuns lists the check runs GitHub reports for a commit, across up to MaxPages pages. The list
-// endpoint wraps its items in an envelope, so it is paged by hand rather than by Paged.
+// endpoint wraps its items in an envelope, so each page is unwrapped before fetchPages counts it.
 func (c Client) CheckRuns(ctx context.Context, repo workflow.Repo, ref string) ([]workflow.CheckRun, error) {
-	var out []workflow.CheckRun
+	return fetchPages(ctx, repoPath(repo, "commits", ref, "check-runs"),
+		func(ctx context.Context, p string) ([]workflow.CheckRun, error) {
+			var got struct {
+				CheckRuns []workflow.CheckRun `json:"check_runs"`
+			}
 
-	for page := 1; page <= MaxPages; page++ {
-		var got struct {
-			CheckRuns []workflow.CheckRun `json:"check_runs"`
-		}
+			if err := c.Call(ctx, http.MethodGet, p, nil, &got); err != nil {
+				return nil, err
+			}
 
-		path := fmt.Sprintf("%s?per_page=%d&page=%d", repoPath(repo, "commits", ref, "check-runs"), PageSize, page)
-
-		if err := c.Call(ctx, http.MethodGet, path, nil, &got); err != nil {
-			return nil, err
-		}
-
-		out = append(out, got.CheckRuns...)
-		if len(got.CheckRuns) < PageSize {
-			break
-		}
-	}
-
-	return out, nil
+			return got.CheckRuns, nil
+		})
 }
 
 // CommitStatuses lists the commit statuses GitHub reports for a commit.

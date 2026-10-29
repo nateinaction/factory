@@ -56,6 +56,23 @@ var _ = Describe("reading CI", func() {
 		))
 	})
 
+	It("fails closed when the check runs' last allowed page is full", func() {
+		p.Handle("GET /repos/o/r/commits/abc123/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+			checks := make([]map[string]string, github.PageSize)
+			for i := range checks {
+				checks[i] = map[string]string{"name": "build"}
+			}
+
+			ghtest.WriteJSON(w, map[string]any{"total_count": len(checks), "check_runs": checks})
+		})
+
+		checks, err := c.CheckRuns(ctx, testRepo(), sha)
+		Expect(checks).To(BeNil())
+		Expect(err).To(MatchError(ContainSubstring("check-runs")))
+		Expect(err).To(MatchError(ContainSubstring("over 5 pages")))
+		Expect(p.Calls()).To(HaveLen(github.MaxPages))
+	})
+
 	It("reads a commit's statuses", func() {
 		p.JSON("GET /repos/o/r/commits/abc123/statuses", []map[string]string{
 			{"context": "ci/lint", "state": "failure", "description": "lint failed"},
