@@ -52,6 +52,16 @@ factory_models:
 # output-token limit each model alias declares.
 factory_context_cap: 200000
 factory_max_output: 32000
+# Egress per agent role. An empty list is open egress, the default. A list limits that role to those
+# domains; foreman's loopback proxy refuses everything else and logs every domain the run contacts.
+# A restricted role must still name openrouter.ai, or it cannot reach its model. A repository cannot
+# change this.
+factory_egress:
+  planner: []
+  researcher: []
+  implementer: []
+  reviewer: []
+  curator: []
 opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
@@ -175,3 +185,9 @@ factory_dead_run_margin_minutes: 10
 # round limit; at the limit the issue goes to factory:failed instead.
 factory_ci_pending_deadline_minutes: 60
 factory_review_round_limit: 3
+
+# The sandbox backend, pinned to the same exact version as the flake's dev shell. srt is
+# @anthropic-ai/sandbox-runtime; it uses Seatbelt on macOS and bubblewrap on Linux. The nixpkgs
+# revision is the one in flake.lock, so the host and the dev shell get the same package.
+factory_nixpkgs_rev: "31ecbaca1bdefa45dffc409f0250bd8039ea0010"
+factory_srt_version: "0.0.81"

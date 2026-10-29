@@ -186,6 +186,9 @@ def main(out: str) -> None:
     assert CFG["dead_run_margin_minutes"] == DEAD_RUN_MARGIN, "dead-run margin"
     assert CFG["review_round_limit"] == REVIEW_ROUND_LIMIT, "review round limit"
     assert CFG["ci_pending_deadline_minutes"] == CI_PENDING_DEADLINE_MINUTES, "CI pending deadline"
+    for role in ROLES:
+        egress = CFG["agents"][role]["egress"]["allowed_domains"]
+        assert isinstance(egress, list), role + ": egress is not a list"
 
 
 main(sys.argv[1])

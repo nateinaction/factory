@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -43,7 +44,7 @@ var _ = Describe("the Planner", func() {
 	runPlanner := func() (int, error) {
 		h.writeToken(workflow.Planner, "repo-token\n")
 
-		return Run(context.Background(), h.deps, workflow.Planner, "o/r", testConfig(), 5)
+		return Run(context.Background(), h.deps, workflow.Planner, "o/r", testAgent(), testRetro(), 3, 5)
 	}
 
 	It("posts a round of questions, moves the issue to waiting and runs no retro", func() {
@@ -64,7 +65,8 @@ var _ = Describe("the Planner", func() {
 
 		Expect(h.opencodeCalls()).To(HaveLen(1), "the questions round has no retro")
 		Expect(h.runner.find("--session")).To(BeEmpty())
-		Expect(h.runner.find("git clone")).To(BeEmpty(), "the Planner never clones or commits")
+		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
+			"the Planner never clones the planned repository")
 		Expect(h.runner.find("commit -m")).To(BeEmpty())
 	})
 
@@ -262,8 +264,17 @@ var _ = Describe("applying an approved proposal", func() {
 
 		poll()
 
-		issues, err := emulator.Issues(context.Background(), "o/r")
+		all, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
+
+		var issues []ghtest.Issue
+
+		for _, issue := range all {
+			if issue.Title != workflow.DashboardTitle {
+				issues = append(issues, issue)
+			}
+		}
+
 		Expect(issues).To(HaveLen(2), "two slices; the original is closed")
 
 		slicesByKey := map[string]int{}
@@ -310,6 +321,6 @@ var _ = Describe("applying an approved proposal", func() {
 
 		again, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(again).To(HaveLen(len(issues)))
+		Expect(again).To(HaveLen(len(all)), "nothing new: no second slice and no second dashboard")
 	})
 })

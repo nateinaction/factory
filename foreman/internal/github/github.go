@@ -35,10 +35,22 @@ const (
 	apiVersion = "2022-11-28"
 	// stateOpen is the query value that lists open issues only.
 	stateOpen = "open"
+	// StateAll is the query value that lists issues in any state.
+	StateAll = "all"
 	// stateClosed is the state value that closes an issue.
 	stateClosed = "closed"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
+	// sortParam is the query parameter that picks the sort field.
+	sortParam = "sort"
+	// directionParam is the query parameter that picks the sort direction.
+	directionParam = "direction"
+	// sortCreated sorts by creation time.
+	sortCreated = "created"
+	// ascending is the oldest-first sort direction.
+	ascending = "asc"
+	// descending is the newest-first sort direction.
+	descending = "desc"
 )
 
 // Client calls GitHub's REST API with one token.
@@ -228,8 +240,8 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 // ListLabeled lists the oldest open issues carrying label.
 func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
-		stateParam: {stateOpen}, "labels": {label}, "sort": {"created"},
-		"direction": {"asc"}, "per_page": {fmt.Sprint(IssuesPerPage)},
+		stateParam: {stateOpen}, "labels": {label}, sortParam: {sortCreated},
+		directionParam: {ascending}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
 
 	var issues []workflow.Issue
@@ -242,7 +254,24 @@ func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow
 // ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
 // the caller skips them.
 func (c Client) ListOpenIssues(ctx context.Context, repo string) ([]workflow.Issue, error) {
-	q := url.Values{stateParam: {stateOpen}, "sort": {"created"}, "direction": {"asc"}}
+	q := url.Values{stateParam: {stateOpen}, sortParam: {sortCreated}, directionParam: {ascending}}
+
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// ListIssues lists a repository's issues in state ("open", "closed" or StateAll), newest first. Pull
+// requests are included in the answer and the caller skips them.
+func (c Client) ListIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {descending}}
+
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// ListOldestIssues lists a repository's issues in state, oldest first, so an issue that has been there
+// since the repository was assigned is still found on a repository with more issues than one scan
+// holds.
+func (c Client) ListOldestIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {ascending}}
 
 	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
 }
