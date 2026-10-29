@@ -64,9 +64,17 @@ func run() int {
 		return 1
 	}
 
-	cmd, err := root.ExecuteContextC(ctx)
+	cmd, err := executeCommand(ctx, root, os.Args[1:], underSudo(os.Getenv("SUDO_UID"), os.Getuid(), os.Geteuid()))
 
 	return exit(logger, cmd, err)
+}
+
+// underSudo reports whether sudo started this process. sudo exports SUDO_UID to the command it runs,
+// which catches `sudo -u factory` as well: that sets the real and effective uid to the target user, so
+// comparing them sees nothing. The comparison still catches a setuid root binary, which exports no
+// SUDO_UID.
+func underSudo(sudoUID string, realUID, effectiveUID int) bool {
+	return sudoUID != "" || realUID != effectiveUID
 }
 
 // exit maps the command's result to a process exit code, logging the failure once.
