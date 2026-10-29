@@ -289,6 +289,52 @@ var _ = Describe("Poll", func() {
 			Expect(h.logs.String()).To(ContainSubstring("repairing a stranded issue"))
 		})
 
+		It("re-applies the state with the token of the agent role that made the transition", func() {
+			h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 5}}})
+
+			marker, err := workflow.RenderTransition(workflow.Transition{
+				Role: workflow.Implementer, RunID: "old-run",
+				From: workflow.Implement, To: workflow.Implementing,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			h.comment(5, appLogin(workflow.Implementer), marker)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplementing))
+
+			// The poll reads as the Reviewer, so only the repair itself names the Implementer.
+			repaired := false
+
+			for _, call := range h.gh.Calls() {
+				if call.Method == http.MethodPost && call.Path == "/repos/o/r/issues/5/labels" {
+					repaired = true
+
+					Expect(call.Header.Get("Authorization")).To(Equal("Bearer minted-token-implementer"),
+						"repaired with a token other than the owning agent role's")
+				}
+			}
+
+			Expect(repaired).To(BeTrue(), "the stranded issue was not repaired")
+		})
+
+		It("leaves the issue stranded when the owning agent role's token cannot be minted", func() {
+			h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 5}}})
+
+			marker, err := workflow.RenderTransition(workflow.Transition{
+				Role: workflow.Implementer, RunID: "old-run",
+				From: workflow.Implement, To: workflow.Implementing,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			h.comment(5, appLogin(workflow.Implementer), marker)
+			h.failMint(workflow.Implementer, true)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+			Expect(h.labels(5)).NotTo(ContainElement(workflow.LabelImplementing),
+				"repaired a transition it could not mint the owning role's token for")
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/labels")).To(BeEmpty())
+			Expect(h.logs.String()).To(ContainSubstring("skipping an issue the poll cannot read"))
+		})
+
 		It("does not repair an issue that already carries the state", func() {
 			h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 5}}})
 

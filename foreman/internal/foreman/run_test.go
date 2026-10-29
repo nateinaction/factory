@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -464,6 +465,49 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+		})
+
+		It("does not ask an author without write access to review", func() {
+			h.reviewerGH(nil)
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty(),
+				"an outsider was asked to merge")
+			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+		})
+
+		It("asks the latest human writer when the issue's author cannot write", func() {
+			h.reviewerGH(nil)
+			h.comment(5, "o", "Let's take this one")
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(
+				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "a non-writer author was not backed by a writer")
+		})
+
+		It("fails closed when the author's permission cannot be read", func() {
+			h.reviewerGH(nil)
+			h.gh.Status("GET /repos/o/r/collaborators/factory/permission", http.StatusInternalServerError)
+			pr, _ := h.pullRequest()
+
+			_, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory"}, 3)
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 		})
 
 		It("keys the retro by the PR head SHA it reviewed", func() {
