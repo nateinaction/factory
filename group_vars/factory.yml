@@ -185,19 +185,20 @@ factory_agent_permissions:
     bash: *agent_shell_readonly_gh
 
 # Per agent role: opencode's step cap, and the wall-clock deadline foreman enforces. Hitting either
-# fails the run to factory:failed. Tunable here only; a repository cannot set them.
+# fails the run to factory:failed. Each role's `retro` is its retro's own step cap and deadline;
+# hitting either drops the retro and never fails the run. Every role sets all four numbers.
+# Tunable here only; a repository cannot set them.
 factory_agent_limits:
-  planner: { steps: 40, deadline_minutes: 20 }
-  researcher: { steps: 80, deadline_minutes: 45 }
-  implementer: { steps: 200, deadline_minutes: 90 }
-  reviewer: { steps: 60, deadline_minutes: 30 }
-  curator: { steps: 60, deadline_minutes: 30 }
-# A retro has its own budget. The shared default covers every agent role; an entry in
-# factory_retro_limits overrides it for that role, and may set only one of the two. Hitting either
-# limit drops the retro and never fails the run.
-factory_retro_steps: 20
-factory_retro_deadline_minutes: 15
-factory_retro_limits: {}
+  planner:
+    { steps: 40, deadline_minutes: 20, retro: { steps: 20, deadline_minutes: 15 } }
+  researcher:
+    { steps: 80, deadline_minutes: 45, retro: { steps: 20, deadline_minutes: 15 } }
+  implementer:
+    { steps: 200, deadline_minutes: 90, retro: { steps: 20, deadline_minutes: 15 } }
+  reviewer:
+    { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
+  curator:
+    { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
 # moves the issue to factory:failed. Nothing retries a dead run automatically.
 factory_dead_run_margin_minutes: 10
