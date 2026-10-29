@@ -336,6 +336,7 @@ var _ = Describe("the retro dashboard", func() {
 			Entry("no version", `"actions":[],"proposals":[]`),
 			Entry("a future version", `"version":2,"actions":[],"proposals":[]`),
 			Entry("an unknown field", `"version":1,"actions":[],"proposals":[],"extra":1`),
+			Entry("a repeated field", `"version":1,"actions":[],"proposals":[],"actions":[]`),
 			Entry("trailing data", `"version":1,"actions":[],"proposals":[]}{`),
 			Entry("an unknown action kind", `"version":1,"proposals":[],"actions":[`+
 				`{"kind":"burn","groups":[],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
@@ -353,6 +354,9 @@ var _ = Describe("the retro dashboard", func() {
 				`{"kind":"ignore","groups":[{"target":"skill:../x","group":"g"}],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
 			Entry("a group with a bad key", `"version":1,"proposals":[],"actions":[`+
 				`{"kind":"ignore","groups":[{"target":"skill:x","group":"G G"}],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("a group with an unknown field", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"ignore","groups":[{"target":"skill:x","group":"g","extra":1}],"by":"o",`+
+				`"at":"2026-10-01T10:00:00Z"}]`),
 			Entry("a group that is null", `"version":1,"proposals":[],"actions":[`+
 				`{"kind":"ignore","groups":[null],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
 			Entry("a proposal of one group", `"version":1,"actions":[],"proposals":[`+

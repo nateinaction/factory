@@ -1,12 +1,11 @@
 package workflow
 
 import (
-	"bytes"
 	"cmp"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -82,10 +81,7 @@ func (g GroupID) MarshalJSON() ([]byte, error) {
 func (g *GroupID) UnmarshalJSON(data []byte) error {
 	var w groupIDJSON
 
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&w); err != nil {
+	if err := jsonv2.Unmarshal(data, &w, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return fmt.Errorf("dashboard group is not valid: %w", err)
 	}
 
@@ -879,19 +875,13 @@ func ParseDashboard(body string) (DashboardState, error) {
 }
 
 // parseDashboardState reads the state block strictly: the types decode themselves, then one pass
-// validates what they cannot.
+// validates what they cannot. encoding/json/v2 refuses a repeated member, an unknown member and
+// trailing data in that decode.
 func parseDashboardState(text string) (DashboardState, error) {
 	var env dashboardEnvelope
 
-	dec := json.NewDecoder(strings.NewReader(text))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&env); err != nil { //nolint:musttag // fields tagged on the embedded state
+	if err := jsonv2.Unmarshal([]byte(text), &env, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return DashboardState{}, fmt.Errorf("dashboard state is not valid: %w", err)
-	}
-
-	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return DashboardState{}, errors.New("dashboard state is not valid: trailing data")
 	}
 
 	if env.Version != dashboardVersion {

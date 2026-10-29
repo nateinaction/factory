@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"encoding/json"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -139,6 +140,17 @@ var _ = Describe("planner-output.json", func() {
 		Expect(err.Error()).To(ContainSubstring("labels"))
 	})
 
+	It("rejects a file that repeats a key or carries trailing data", func() {
+		out := mustJSON(plannerFinal(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: validSpec},
+			readyToBuild))
+
+		_, err := workflow.ParsePlannerOutput(strings.Replace(out, `"kind"`, `"kind":"questions","kind"`, 1))
+		Expect(err).To(MatchError(ContainSubstring("repeats the key")))
+
+		_, err = workflow.ParsePlannerOutput(out + ` {}`)
+		Expect(err).To(MatchError(ContainSubstring("is not valid JSON")))
+	})
+
 	It("rejects a factory marker in the model's text", func() {
 		out := plannerFinal(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: validSpec},
 			readyToBuild+" <!-- factory:planned from=#1 key=a -->")
@@ -179,6 +191,18 @@ var _ = Describe("storing a final round's proposal", func() {
 		Expect(found).To(BeTrue())
 		Expect(err).To(HaveOccurred())
 	})
+
+	DescribeTable("fails closed on a stored proposal it cannot read whole",
+		func(text string) {
+			_, found, err := workflow.StoredProposal(workflow.MarkerPrefix + "proposal\n" + text + "\n-->")
+			Expect(found).To(BeTrue())
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("a repeated key", `{"shape":"single","spec":"## Spec\n\nx\n\n## Domain changes\n\nNone.",`+
+			`"spec":"## Spec\n\nx\n\n## Domain changes\n\nNone."}`),
+		Entry("an unknown field", `{"shape":"slices","labels":["x"]}`),
+		Entry("trailing data", `{"shape":"slices"} {}`),
+	)
 })
 
 var _ = Describe("the human gate", func() {
