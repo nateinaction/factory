@@ -21,7 +21,7 @@ var _ = Describe("Start", func() {
 
 	// start starts role on issue 5 of o/r.
 	start := func(role workflow.Role) (int, error) {
-		return Start(context.Background(), h.deps, role, "o/r", 5)
+		return Start(context.Background(), h.deps, testConfig(), role, "o/r", 5)
 	}
 
 	// expectTokenRemoved fails the spec when the token file outlived the run.
@@ -44,6 +44,8 @@ var _ = Describe("Start", func() {
 
 			sudo := h.runner.find("sudo")
 			Expect(sudo).To(HaveLen(1))
+			// The supervisor outlives the run, its retro and the git work around them.
+			Expect(sudo[0].Timeout).To(BeNumerically(">", testAgent().Deadline()+testRetro().Deadline()))
 			Expect(sudo[0].Argv).To(Equal([]string{
 				"sudo", "-n", "-u", "factory", "/usr/local/bin/foreman", "run", "implementer", "o/r", "5",
 			}))

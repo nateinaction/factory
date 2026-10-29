@@ -153,7 +153,34 @@ type harness struct {
 
 // testAgent() is the agent role settings tests run with.
 func testAgent() config.AgentConfig {
-	return config.AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
+	return config.AgentConfig{
+		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
+	}
+}
+
+// testRetro is the retro budget tests run with.
+func testRetro() config.Budget { return config.Budget{Steps: 20, DeadlineMinutes: 15} }
+
+// testConfig is a config file's worth of agent roles.
+func testConfig() config.Config {
+	agents := map[string]config.AgentConfig{}
+	for _, r := range workflow.KnownRoles() {
+		agents[string(r)] = testAgent()
+	}
+
+	return config.Config{Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro()}
+}
+
+// stepsStream is a run that finished after n steps, each reporting no error.
+func stepsStream(n int) string {
+	var b strings.Builder
+
+	for range n {
+		b.WriteString(`{"type":"step_start","sessionID":"ses_1"}` + "\n")
+		b.WriteString(`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1,"output":1}}}` + "\n")
+	}
+
+	return b.String()
 }
 
 // newHarness builds a harness whose runner answers the helpers every flow needs. Each spec gets a
@@ -314,9 +341,12 @@ func (h *harness) withConfigText(text string) {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
-	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
-	`"curator":{"model":"prov/model","context_cap":200000}}}`
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
+	`"retro":{"steps":20,"deadline_minutes":15}}`
 
 // writeToken leaves a token for the factory half of role.
 func (h *harness) writeToken(role workflow.Role, token string) {
@@ -575,7 +605,7 @@ func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
 	h.writeToken(workflow.Implementer, "repo-token\n")
 
-	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, 5)
+	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
 }
 
 // usageLines are the JSON lines on stdout that are usage reports.

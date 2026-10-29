@@ -96,19 +96,19 @@ var _ = Describe("the merge path", func() {
 		}),
 		Entry("start", func(h *harness) {
 			h.acceptWrites("5")
-			_, err := Start(context.Background(), h.deps, workflow.Reviewer, "o/r", 5)
+			_, err := Start(context.Background(), h.deps, testConfig(), workflow.Reviewer, "o/r", 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
-			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run reviewer", func(h *harness) {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), 5)
+			_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 	)

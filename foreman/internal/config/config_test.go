@@ -68,9 +68,12 @@ var _ = Describe("Settings.TokenPath", func() {
 })
 
 var _ = Describe("Load", func() {
-	agent := config.AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
+	agent := config.AgentConfig{
+		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
+	}
+	retro := config.Budget{Steps: 20, DeadlineMinutes: 15}
 
-	// every gives each of the five agent roles a model and a cap.
+	// every gives each of the five agent roles a model, a cap, a step cap and a deadline.
 	every := func() map[string]config.AgentConfig {
 		m := map[string]config.AgentConfig{}
 		for _, r := range workflow.KnownRoles() {
@@ -92,7 +95,9 @@ var _ = Describe("Load", func() {
 
 	// load writes a config with the given agents and loads it.
 	load := func(agents map[string]config.AgentConfig) error {
-		raw, err := json.Marshal(map[string]any{"roles": []workflow.Role{workflow.Implementer}, "agents": agents})
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": agents, "retro": retro,
+		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = config.Load(writeConfig(raw))
 
@@ -103,7 +108,7 @@ var _ = Describe("Load", func() {
 		Expect(load(every())).To(Succeed())
 	})
 
-	DescribeTable("requires a model and a cap for every agent role",
+	DescribeTable("requires a model, a cap, a step cap and a deadline for every agent role",
 		func(mutate func(map[string]config.AgentConfig)) {
 			m := every()
 			mutate(m)
@@ -112,7 +117,28 @@ var _ = Describe("Load", func() {
 		Entry("missing role", func(m map[string]config.AgentConfig) { delete(m, "curator") }),
 		Entry("no model", func(m map[string]config.AgentConfig) { m["planner"] = config.AgentConfig{ContextCap: 1} }),
 		Entry("no cap", func(m map[string]config.AgentConfig) { m["planner"] = config.AgentConfig{Model: "m"} }),
+		Entry("no steps", func(m map[string]config.AgentConfig) {
+			a := m["planner"]
+			a.Steps = 0
+			m["planner"] = a
+		}),
+		Entry("no deadline", func(m map[string]config.AgentConfig) {
+			a := m["planner"]
+			a.DeadlineMinutes = 0
+			m["planner"] = a
+		}),
 	)
+
+	It("requires a retro step cap and deadline", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"retro": config.Budget{Steps: 0, DeadlineMinutes: 0},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = config.Load(writeConfig(raw))
+		Expect(err).To(MatchError(ContainSubstring("retro")))
+	})
 
 	DescribeTable("rejects a malformed config",
 		func(raw string) {

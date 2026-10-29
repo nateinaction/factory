@@ -20,12 +20,6 @@ import (
 const (
 	// GitTimeout bounds git and the small helpers.
 	GitTimeout = proc.DefaultTimeout
-	// AgentTimeout bounds the Implementer's model run.
-	AgentTimeout = 3600 * time.Second
-	// RetroTimeout bounds the retro step.
-	RetroTimeout = 900 * time.Second
-	// ReviewTimeout bounds the Reviewer's model run.
-	ReviewTimeout = 1800 * time.Second
 	// MintTimeout bounds minting a token.
 	MintTimeout = 30 * time.Second
 )

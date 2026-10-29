@@ -43,9 +43,17 @@ const (
 	FailUnknownModel FailureKind = "unknown model"
 	// FailOverflow is a context overflow. With compaction off it fails the run, like a step cap.
 	FailOverflow FailureKind = "context overflow"
+	// FailStepCap is reaching the agent role's step cap. Never retried.
+	FailStepCap FailureKind = "step cap"
 	// FailOther is anything else, including a non-zero exit with no API error. Never retried.
 	FailOther FailureKind = "model error"
 )
+
+// StepCapReached reports whether a run of steps has used its whole budget of limit. A limit of zero
+// is never reached, so an unset cap cannot fail a run.
+func StepCapReached(steps, limit int) bool {
+	return limit > 0 && steps >= limit
+}
 
 // Retryable reports whether the kind is a transient failure.
 func (k FailureKind) Retryable() bool {
@@ -153,6 +161,8 @@ type Stream struct {
 	Session string
 	// Usage is summed over the stream's steps.
 	Usage Usage
+	// Steps is how many steps the run took.
+	Steps int
 	// Failure is the first API error in the stream; nil when there was none.
 	Failure *FailureKind
 }
@@ -174,20 +184,29 @@ func ParseStream(out string) Stream {
 			continue // not an event line
 		}
 
-		if e.SessionID != "" && s.Session == "" {
-			s.Session = e.SessionID
-		}
-
-		switch {
-		case e.Type == "step_finish" && e.Part.Tokens != nil:
-			s.Usage = s.Usage.Add(stepUsage(e))
-		case e.Type == "error" && e.Error != nil && s.Failure == nil:
-			k := classify(e.Error.Name, e.Error.Data.StatusCode)
-			s.Failure = &k
-		}
+		s.observe(e)
 	}
 
 	return s
+}
+
+// observe folds one event into the stream: its session, its step and its usage, or its first failure.
+func (s *Stream) observe(e event) {
+	if e.SessionID != "" && s.Session == "" {
+		s.Session = e.SessionID
+	}
+
+	if e.Type == "step_finish" {
+		s.Steps++
+	}
+
+	switch {
+	case e.Type == "step_finish" && e.Part.Tokens != nil:
+		s.Usage = s.Usage.Add(stepUsage(e))
+	case e.Type == "error" && e.Error != nil && s.Failure == nil:
+		k := classify(e.Error.Name, e.Error.Data.StatusCode)
+		s.Failure = &k
+	}
 }
 
 // stepUsage is one step's usage. A step's context is its input plus the cached tokens it read.
@@ -282,6 +301,8 @@ type Run struct {
 	Session string
 	// Timeout is the deadline across every attempt.
 	Timeout time.Duration
+	// Steps is the step cap across every attempt; zero leaves it uncapped.
+	Steps int
 }
 
 // Result is what an invocation reported.
@@ -290,6 +311,8 @@ type Result struct {
 	Session string
 	// Usage is summed over every attempt, including failed ones.
 	Usage Usage
+	// Steps is the steps every attempt took together.
+	Steps int
 }
 
 // Argv is the command line; the prompt is the last argument.

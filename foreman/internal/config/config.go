@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -76,7 +77,21 @@ func (s Settings) TokenPath(role workflow.Role) string {
 	return filepath.Join(s.TokenDir, "gh-token-"+string(role))
 }
 
-// AgentConfig is one agent role's model settings, rendered from `factory_models` by Ansible.
+// Budget is a run's step cap and wall-clock deadline: one agent role's run, or a retro.
+type Budget struct {
+	// Steps is opencode's step cap and foreman's count: reaching it fails the run.
+	Steps int `json:"steps" mapstructure:"steps"`
+	// DeadlineMinutes is the wall-clock limit, in minutes.
+	DeadlineMinutes int `json:"deadline_minutes" mapstructure:"deadline_minutes"`
+}
+
+// Deadline is the budget's wall-clock limit.
+func (b Budget) Deadline() time.Duration {
+	return time.Duration(b.DeadlineMinutes) * time.Minute
+}
+
+// AgentConfig is one agent role's model settings and limits, rendered from `factory_models` and
+// `factory_agent_limits` by Ansible.
 type AgentConfig struct {
 	// Model is the OpenRouter model id, for the usage report.
 	Model string `json:"model" mapstructure:"model"`
@@ -84,6 +99,8 @@ type AgentConfig struct {
 	ContextCap int `json:"context_cap" mapstructure:"context_cap"`
 	// Compaction is whether opencode compacts instead of overflowing.
 	Compaction bool `json:"compaction" mapstructure:"compaction"`
+	// Budget is the agent role's step cap and wall-clock deadline.
+	Budget `mapstructure:",squash"`
 }
 
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
@@ -92,6 +109,8 @@ type Config struct {
 	Roles []workflow.Role `json:"roles" mapstructure:"roles"`
 	// Agents holds each agent role's model settings, keyed by the role's name.
 	Agents map[string]AgentConfig `json:"agents" mapstructure:"agents"`
+	// Retro is the budget every retro gets, separate from the run's.
+	Retro Budget `json:"retro" mapstructure:"retro"`
 }
 
 // Load reads and validates the role config through viper. An unknown key is an error, never ignored:
@@ -131,11 +150,33 @@ func validate(path string, c Config) error {
 		return err
 	}
 
+	if err := validateRequired(path, c.Agents); err != nil {
+		return err
+	}
+
+	return validateRetro(path, c.Retro)
+}
+
+// validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
+func validateRequired(path string, agents map[string]AgentConfig) error {
 	for _, r := range workflow.KnownRoles() {
-		a, ok := c.Agents[string(r)]
+		a, ok := agents[string(r)]
 		if !ok || a.Model == "" || a.ContextCap <= 0 {
 			return fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
 		}
+
+		if a.Steps <= 0 || a.DeadlineMinutes <= 0 {
+			return fmt.Errorf("config %s: agent role %s needs a step cap and a deadline", path, r)
+		}
+	}
+
+	return nil
+}
+
+// validateRetro checks the retro has a step cap and a deadline.
+func validateRetro(path string, r Budget) error {
+	if r.Steps <= 0 || r.DeadlineMinutes <= 0 {
+		return fmt.Errorf("config %s: retro needs a step cap and a deadline", path)
 	}
 
 	return nil
