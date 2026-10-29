@@ -29,6 +29,16 @@ const (
 	MintTimeout = 30 * time.Second
 )
 
+// File modes for what foreman writes.
+const (
+	// privateDirMode is a scratch or state directory only its owner may enter.
+	privateDirMode = 0o700
+	// privateFileMode is a scratch file only its owner may read.
+	privateFileMode = 0o600
+	// tokenFileMode lets the factory group read the token left for the factory half.
+	tokenFileMode = 0o640
+)
+
 // Runner runs processes. The real one is proc.ExecRunner; tests substitute a fake.
 type Runner interface {
 	// Run starts the process and waits for it. A non-zero exit is a *proc.ExitError.
@@ -64,6 +74,7 @@ func (d Deps) run(ctx context.Context, c proc.Cmd) (string, error) {
 	if err != nil {
 		return out, fmt.Errorf("%s: %w", c.Argv[0], err)
 	}
+
 	return out, nil
 }
 
@@ -75,8 +86,11 @@ func (d Deps) logf(format string, args ...any) {
 
 // writeLine writes text and a newline.
 func writeLine(w io.Writer, text string) error {
-	_, err := fmt.Fprintln(w, text)
-	return err
+	if _, err := fmt.Fprintln(w, text); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+
+	return nil
 }
 
 // sleep waits for d or until ctx ends. Tests replace it through Deps.Sleep.
@@ -84,19 +98,22 @@ func (d Deps) sleep(ctx context.Context, wait time.Duration) error {
 	if d.Sleep != nil {
 		return d.Sleep(ctx, wait)
 	}
+
 	t := time.NewTimer(wait)
 	defer t.Stop()
+
 	select {
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("sleep: %w", ctx.Err())
 	}
 }
 
 // GitAuthEnv gives git its credentials through the environment, so they never appear in argv.
 func GitAuthEnv(token string) map[string]string {
 	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+
 	return map[string]string{
 		"GIT_CONFIG_COUNT":    "1",
 		"GIT_CONFIG_KEY_0":    "http.https://github.com/.extraheader",

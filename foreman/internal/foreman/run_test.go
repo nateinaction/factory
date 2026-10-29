@@ -23,7 +23,7 @@ var _ = Describe("Run", func() {
 
 	// run runs role on issue 5 of o/r.
 	run := func(role workflow.Role) (int, error) {
-		return Run(context.Background(), h.deps, role, "o/r", testAgent, 5)
+		return Run(context.Background(), h.deps, role, "o/r", testAgent(), 5)
 	}
 
 	Describe("the Implementer", func() {
@@ -77,8 +77,10 @@ var _ = Describe("Run", func() {
 				if strings.Contains(joined(c), "rev-list --count") {
 					return "0\n", nil
 				}
+
 				return base(c)
 			})
+
 			code, err := run(workflow.Implementer)
 			Expect(err).To(MatchError(ContainSubstring("no commits")))
 			Expect(code).NotTo(BeZero())
@@ -91,6 +93,7 @@ var _ = Describe("Run", func() {
 				if strings.Contains(joined(c), "--session") {
 					return "", errors.New("retro blew up")
 				}
+
 				return base(c)
 			})
 			Expect(run(workflow.Implementer)).To(BeZero())
@@ -121,7 +124,9 @@ var _ = Describe("Run", func() {
 		Expect(h.runner.find("checkout -B agent/issue-5 origin/agent/issue-5")).To(HaveLen(1))
 		oc := h.runner.find("opencode run --agent implementer")
 		Expect(oc).NotTo(BeEmpty())
-		Expect(joined(oc[0])).To(ContainSubstring("Review:\n"+workflow.ReviewMarker("old")+"\nFIX THE THING"), "feedback missing")
+		Expect(joined(oc[0])).To(
+			ContainSubstring("Review:\n"+workflow.ReviewMarker("old")+"\nFIX THE THING"), "feedback missing")
+
 		push := h.runner.find("noreply.github.com push")
 		Expect(push).To(HaveLen(1))
 		Expect(joined(push[0])).NotTo(ContainSubstring("--force"), "rework must fast-forward")
@@ -148,6 +153,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Timeout).To(beNear(ReviewTimeout))
 			Expect(oc[0].Env).To(HaveKeyWithValue("OPENROUTER_API_KEY", "or-key"))
+
 			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "review-5.spec.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))
@@ -179,6 +185,7 @@ var _ = Describe("Run", func() {
 		It("fails closed on a malformed review, posting nothing", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), `{"summary":"ok"}`)
+
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(HaveOccurred())
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
@@ -187,9 +194,29 @@ var _ = Describe("Run", func() {
 
 		It("fails closed when the model wrote no review", func() {
 			h.reviewerGH(nil)
+
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(HaveOccurred())
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
+		})
+
+		It("refuses a review file that links out of the scratch directory", func() {
+			h.reviewerGH(nil)
+
+			outside := filepath.Join(h.dir, "outside.json")
+			Expect(os.WriteFile(outside, []byte(cleanReview), 0o600)).To(Succeed())
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if c.Argv[0] == "opencode" {
+					Expect(os.Symlink(outside, h.reviewOut())).To(Succeed())
+				}
+
+				return base(c)
+			})
+
+			code, err := run(workflow.Reviewer)
+			Expect(err).To(MatchError(ContainSubstring("read review")))
+			Expect(code).NotTo(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(BeEmpty())
 		})
 
 		It("fails without an open pull request", func() {

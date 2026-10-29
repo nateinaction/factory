@@ -33,8 +33,10 @@ func run() int {
 	if hostErr != nil {
 		host = ""
 	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
 	d := foreman.Deps{
 		Settings: config.DefaultSettings(home, os.Getenv("FACTORY_AGENT_CONFIG")),
 		Runner:   proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
@@ -43,5 +45,6 @@ func run() int {
 		Err:      os.Stderr,
 		Host:     host,
 	}
+
 	return foreman.Main(ctx, os.Args[1:], d)
 }

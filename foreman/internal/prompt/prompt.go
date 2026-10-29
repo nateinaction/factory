@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -28,38 +28,44 @@ type Doc struct {
 	Text string
 }
 
-// repoDocPaths are the documents a repository steers runs with, in the order they are read.
-var repoDocPaths = []string{"AGENTS.md", "GLOSSARY.md"}
-
 // ReadRepoDocs reads the repository's steering documents in a fixed order: AGENTS.md, GLOSSARY.md,
-// then docs/agents/*.md by name. A missing document is skipped; the total is capped.
-func ReadRepoDocs(root string) ([]Doc, error) {
-	paths := append([]string{}, repoDocPaths...)
-	extra, err := filepath.Glob(filepath.Join(root, "docs", "agents", "*.md")) // Glob returns names sorted
+// then docs/agents/*.md by name. A missing document is skipped; the total is capped at DocsLimitChars
+// characters. The clone is untrusted, so every read goes through an os.Root: a document that is a
+// symlink out of the repository fails the read instead of putting a host file into the prompt.
+func ReadRepoDocs(dir string) ([]Doc, error) {
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open repository: %w", err)
 	}
-	for _, p := range extra {
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return nil, err
-		}
-		paths = append(paths, filepath.ToSlash(rel))
+	defer func() {
+		// Read-only handle: a failed close loses nothing.
+		_ = root.Close()
+	}()
+
+	extra, err := fs.Glob(root.FS(), "docs/agents/*.md") // Glob returns names sorted
+	if err != nil {
+		return nil, fmt.Errorf("list docs/agents: %w", err)
 	}
-	var docs []Doc
+
+	paths := append([]string{"AGENTS.md", "GLOSSARY.md"}, extra...)
+	docs := make([]Doc, 0, len(paths))
 	budget := DocsLimitChars
+
 	for _, rel := range paths {
-		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		raw, err := root.ReadFile(rel)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // a repository need not have every document; setup checks are a separate rule
 		}
+
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", rel, err)
 		}
+
 		text := workflow.Truncate(string(raw), budget)
-		budget -= len(text)
+		budget -= utf8.RuneCountInString(text)
 		docs = append(docs, Doc{Path: rel, Text: text})
 	}
+
 	return docs, nil
 }
 
@@ -69,11 +75,14 @@ func Build(rolePrompt string, docs []Doc, material string) string {
 	var b strings.Builder
 	b.WriteString(rolePrompt)
 	b.WriteString("\n\n# Repository docs\n")
+
 	for _, d := range docs {
 		fmt.Fprintf(&b, "\n## %s\n\n%s\n", d.Path, d.Text)
 	}
+
 	b.WriteString(IssueMaterialHeading)
 	b.WriteString(material)
+
 	return b.String()
 }
 
@@ -99,6 +108,7 @@ func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string)
 			"problems. Fix every high and medium finding below on top of the existing " +
 			"commits, then commit.\n\nReview:\n" + workflow.Truncate(feedback, workflow.BodyLimitChars)
 	}
+
 	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s",
 		repo, issue.Number, issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars), rework))
 }

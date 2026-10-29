@@ -67,70 +67,126 @@ func isStatus(err error, code int) bool {
 
 // Call makes one API request; in is sent as JSON and the answer is decoded into out, when both are given.
 func (c Client) Call(ctx context.Context, method, path string, in, out any) error {
+	req, err := c.newRequest(ctx, method, path, in)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("github %s %s: %w", method, path, err)
+	}
+
+	defer func() {
+		// The body is fully read or abandoned on error; a close failure changes nothing for the caller.
+		_ = resp.Body.Close()
+	}()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+
+	switch {
+	case err != nil:
+		return fmt.Errorf("github %s %s: read: %w", method, path, err)
+	case len(raw) > maxResponseBytes:
+		return fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
+	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
+		return &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
+	case out == nil || len(bytes.TrimSpace(raw)) == 0:
+		return nil
+	}
+
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
+	}
+
+	return nil
+}
+
+// newRequest builds an authenticated request with in, when given, as its JSON body.
+func (c Client) newRequest(ctx context.Context, method, path string, in any) (*http.Request, error) {
 	var body io.Reader
+
 	if in != nil {
 		var buf bytes.Buffer
+
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)
+
 		if err := enc.Encode(in); err != nil {
-			return fmt.Errorf("encode %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("encode %s %s: %w", method, path, err)
 		}
+
 		body = &buf
 	}
+
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return fmt.Errorf("build %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("build %s %s: %w", method, path, err)
 	}
+
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("github %s %s: %w", method, path, err)
-	}
-	defer func() {
-		// The body is fully read or abandoned on error; a close failure changes nothing for the caller.
-		_ = resp.Body.Close()
-	}()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return fmt.Errorf("github %s %s: read: %w", method, path, err)
-	}
-	if len(raw) > maxResponseBytes {
-		return fmt.Errorf("github %s %s: response over %d bytes", method, path, maxResponseBytes)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &HTTPError{Method: method, Path: path, Code: resp.StatusCode}
-	}
-	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("github %s %s: decode: %w", method, path, err)
-	}
-	return nil
+
+	return req, nil
 }
+
+// Request bodies foreman sends.
+type (
+	// bodyRequest sets a comment's body.
+	bodyRequest struct {
+		Body string `json:"body"`
+	}
+	// labelsRequest adds labels to an issue.
+	labelsRequest struct {
+		Labels []string `json:"labels"`
+	}
+	// issueRequest opens an issue.
+	issueRequest struct {
+		Title  string   `json:"title"`
+		Labels []string `json:"labels"`
+		Body   string   `json:"body"`
+	}
+	// pullRequestRequest opens a pull request.
+	pullRequestRequest struct {
+		Title string `json:"title"`
+		Head  string `json:"head"`
+		Base  string `json:"base"`
+		Body  string `json:"body"`
+	}
+	// reviewRequest posts a pull request review on a commit.
+	reviewRequest struct {
+		CommitID string `json:"commit_id"`
+		Body     string `json:"body"`
+		Event    string `json:"event"`
+	}
+)
 
 // Paged returns every item of a list endpoint, up to MaxPages pages.
 func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 	var items []T
+
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
+
 	for page := 1; page <= MaxPages; page++ {
 		var got []T
+
 		p := fmt.Sprintf("%s%sper_page=%d&page=%d", path, sep, PageSize, page)
 		if err := c.Call(ctx, http.MethodGet, p, nil, &got); err != nil {
 			return nil, err
 		}
+
 		items = append(items, got...)
 		if len(got) < PageSize {
 			break
 		}
 	}
+
 	return items, nil
 }
 
@@ -140,33 +196,40 @@ func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow
 		"state": {"open"}, "labels": {label}, "sort": {"created"},
 		"direction": {"asc"}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
+
 	var issues []workflow.Issue
+
 	err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/issues?"+q.Encode(), nil, &issues)
+
 	return issues, err
 }
 
 // GetIssue reads one issue.
 func (c Client) GetIssue(ctx context.Context, repo string, number int) (workflow.Issue, error) {
 	var issue workflow.Issue
+
 	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), nil, &issue)
+
 	return issue, err
 }
 
 // Comment posts a comment on an issue.
 func (c Client) Comment(ctx context.Context, repo string, number int, text string) error {
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number),
-		map[string]string{"body": text}, nil)
+		bodyRequest{Body: text}, nil)
 }
 
 // addLabel adds one label to an issue.
 func (c Client) addLabel(ctx context.Context, repo string, number int, label string) error {
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", repo, number),
-		map[string][]string{"labels": {label}}, nil)
+		labelsRequest{Labels: []string{label}}, nil)
 }
 
 // removeLabel removes one label from an issue.
 func (c Client) removeLabel(ctx context.Context, repo string, number int, label string) error {
-	return c.Call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/%d/labels/%s", repo, number, url.PathEscape(label)), nil, nil)
+	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", repo, number, url.PathEscape(label))
+
+	return c.Call(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // Claim swaps src for dst. It is false when src is already gone: someone else claimed the issue.
@@ -175,8 +238,10 @@ func (c Client) Claim(ctx context.Context, repo string, number int, src, dst str
 		if isStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
+
 		return false, err
 	}
+
 	return true, c.addLabel(ctx, repo, number, dst)
 }
 
@@ -186,9 +251,11 @@ func (c Client) Finish(ctx context.Context, repo string, number int, src, dst, t
 		// A 404 means a person already removed it: fine, still record the outcome.
 		return err
 	}
+
 	if err := c.addLabel(ctx, repo, number, dst); err != nil {
 		return err
 	}
+
 	return c.Comment(ctx, repo, number, text)
 }
 
@@ -202,22 +269,26 @@ type PullRequest struct {
 func (c Client) ExistingPR(ctx context.Context, repo, branch string) (*PullRequest, error) {
 	owner, _, _ := strings.Cut(repo, "/")
 	q := url.Values{"state": {"open"}, "head": {owner + ":" + branch}}
+
 	var pulls []PullRequest
 	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
 		return nil, err
 	}
+
 	if len(pulls) == 0 {
 		return nil, nil //nolint:nilnil // nil without error means "no open pull request"
 	}
+
 	return &pulls[0], nil
 }
 
 // CreatePR opens a pull request.
 func (c Client) CreatePR(ctx context.Context, repo, title, head, base, body string) (PullRequest, error) {
 	var pr PullRequest
-	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/pulls", map[string]string{
-		"title": title, "head": head, "base": base, "body": body,
-	}, &pr)
+
+	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/pulls",
+		pullRequestRequest{Title: title, Head: head, Base: base, Body: body}, &pr)
+
 	return pr, err
 }
 
@@ -229,9 +300,11 @@ func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) 
 	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
 		return "", err
 	}
+
 	if r.DefaultBranch == "" {
 		return "", errors.New("repository has no default branch")
 	}
+
 	return r.DefaultBranch, nil
 }
 
@@ -246,10 +319,12 @@ func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (stri
 	if err != nil {
 		return "", err
 	}
+
 	ours := workflow.StartsWith(reviews, workflow.ReviewMarkerPrefix)
 	if len(ours) == 0 {
 		return "", nil
 	}
+
 	return ours[len(ours)-1].Body, nil
 }
 
@@ -259,14 +334,18 @@ func (c Client) RetroTicket(ctx context.Context, repo string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	if found, ok := workflow.PickIssue(issues); ok {
 		return found.Number, nil
 	}
+
 	var created workflow.Issue
-	err = c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues", map[string]any{
-		"title": workflow.RetroTitle, "labels": []string{workflow.LabelRetro},
-		"body": "One comment per agent implementation run, from the retro skill.",
+
+	err = c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues", issueRequest{
+		Title: workflow.RetroTitle, Labels: []string{workflow.LabelRetro},
+		Body: "One comment per agent implementation run, from the retro skill.",
 	}, &created)
+
 	return created.Number, err
 }
 
@@ -276,16 +355,21 @@ func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, tex
 	if err != nil {
 		return err
 	}
+
 	marker := workflow.RetroMarker(number, sha)
-	body := workflow.Truncate(fmt.Sprintf("%s\n## Retro: #%d\n\n%s", marker, number, text), workflow.CommentLimitChars)
+	body := workflow.Truncate(fmt.Sprintf("%s\n## Retro: #%d\n\n%s", marker, number, text),
+		workflow.CommentLimitChars)
+
 	comments, err := Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, ticket))
 	if err != nil {
 		return err
 	}
+
 	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
 		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
-			map[string]string{"body": body}, nil)
+			bodyRequest{Body: body}, nil)
 	}
+
 	return c.Comment(ctx, repo, ticket, body)
 }
 
@@ -294,15 +378,18 @@ func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, tex
 func (c Client) PostReview(ctx context.Context, repo string, pr int, sha, body string, approve bool) error {
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr)
 	if approve {
-		err := c.Call(ctx, http.MethodPost, path, map[string]string{"commit_id": sha, "body": body, "event": "APPROVE"}, nil)
+		err := c.Call(ctx, http.MethodPost, path, reviewRequest{CommitID: sha, Body: body, Event: "APPROVE"}, nil)
 		if err == nil {
 			return nil
 		}
+
 		if !isStatus(err, http.StatusUnprocessableEntity) {
 			return err
 		}
+
 		body += "\n\n_No high or medium findings. GitHub rejected the approval because " +
 			"the review agent is also the pull request's author._"
 	}
-	return c.Call(ctx, http.MethodPost, path, map[string]string{"commit_id": sha, "body": body, "event": "COMMENT"}, nil)
+
+	return c.Call(ctx, http.MethodPost, path, reviewRequest{CommitID: sha, Body: body, Event: "COMMENT"}, nil)
 }

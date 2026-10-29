@@ -21,10 +21,12 @@ var _ = Describe("Client", func() {
 
 	BeforeEach(func() {
 		f = fakegh.New()
+
 		DeferCleanup(func() {
 			Expect(f.Unexpected()).To(BeEmpty())
 			f.Close()
 		})
+
 		c = github.NewClient(f.URL(), "secret-token", f.Client())
 		ctx = context.Background()
 	})
@@ -33,6 +35,7 @@ var _ = Describe("Client", func() {
 		It("carries foreman's user agent, the token and the pinned API version", func() {
 			f.JSON("GET /repos/o/r", map[string]string{"default_branch": "main"})
 			Expect(c.DefaultBranch(ctx, "o/r")).To(Equal("main"))
+
 			h := f.Calls()[0].Header
 			Expect(h.Get("User-Agent")).To(Equal("foreman"))
 			Expect(h.Get("Authorization")).To(Equal("Bearer secret-token"))
@@ -42,6 +45,7 @@ var _ = Describe("Client", func() {
 
 		It("fails with an error that names the call but never the token", func() {
 			f.Status("GET /repos/o/r", http.StatusForbidden)
+
 			_, err := c.DefaultBranch(ctx, "o/r")
 			Expect(err).To(MatchError(ContainSubstring("403")))
 			Expect(err.Error()).NotTo(ContainSubstring("secret-token"))
@@ -51,6 +55,7 @@ var _ = Describe("Client", func() {
 	Describe("Paged", func() {
 		It("stops at MaxPages when every page is full", func() {
 			f.JSON("GET /full", make([]workflow.Item, github.PageSize))
+
 			items, err := github.Paged[workflow.Item](ctx, c, "/full")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(items).To(HaveLen(github.MaxPages * github.PageSize))
@@ -59,6 +64,7 @@ var _ = Describe("Client", func() {
 
 		It("stops at a short page and appends to an existing query", func() {
 			f.JSON("GET /short", []workflow.Item{{ID: 1}})
+
 			items, err := github.Paged[workflow.Item](ctx, c, "/short?x=1")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(items).To(HaveLen(1))
@@ -70,6 +76,7 @@ var _ = Describe("Client", func() {
 	Describe("ListLabeled", func() {
 		It("asks for open issues with the label, oldest first", func() {
 			f.JSON("GET /repos/o/r/issues", []map[string]any{{"number": 3, "title": "t", "body": nil}})
+
 			issues, err := c.ListLabeled(ctx, "o/r", "ready-for-agent")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(issues).To(HaveLen(1))
@@ -94,6 +101,7 @@ var _ = Describe("Client", func() {
 
 		It("passes on any other error", func() {
 			f.Status("DELETE /repos/o/r/issues/5/labels/a", http.StatusInternalServerError)
+
 			won, err := c.Claim(ctx, "o/r", 5, "a", "b")
 			Expect(err).To(HaveOccurred())
 			Expect(won).To(BeFalse())
@@ -120,6 +128,7 @@ var _ = Describe("Client", func() {
 	Describe("ExistingPR", func() {
 		It("finds the open pull request for the owner's branch", func() {
 			f.JSON("GET /repos/o/r/pulls", []map[string]any{{"number": 8, "html_url": "http://pr/8"}})
+
 			pr, err := c.ExistingPR(ctx, "o/r", "agent/issue-1")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pr).To(Equal(&github.PullRequest{Number: 8, HTMLURL: "http://pr/8"}))
@@ -135,8 +144,10 @@ var _ = Describe("Client", func() {
 	Describe("LatestReviewBody", func() {
 		It("is the last review foreman posted", func() {
 			f.JSON("GET /repos/o/r/pulls/8/reviews", []workflow.Item{
-				{Body: workflow.ReviewMarker("a") + " first"}, {Body: "human"},
-				{Body: workflow.ReviewMarker("b") + " second"}, {Body: "human 2"},
+				{Body: workflow.ReviewMarker("a") + " first"},
+				{Body: "human"},
+				{Body: workflow.ReviewMarker("b") + " second"},
+				{Body: "human 2"},
 			})
 			Expect(c.LatestReviewBody(ctx, "o/r", 8)).To(Equal(workflow.ReviewMarker("b") + " second"))
 		})
@@ -196,6 +207,7 @@ var _ = Describe("Client", func() {
 
 		It("falls back to a comment review when GitHub refuses the approval", func() {
 			n := 0
+
 			f.Handle("POST /repos/o/r/pulls/8/reviews", func(w http.ResponseWriter, _ *http.Request) {
 				n++
 				if n == 1 {
@@ -203,6 +215,7 @@ var _ = Describe("Client", func() {
 				}
 			})
 			Expect(c.PostReview(ctx, "o/r", 8, "sha", "body", true)).To(Succeed())
+
 			got := f.Bodies("POST", "/repos/o/r/pulls/8/reviews")
 			Expect(got).To(HaveLen(2))
 			Expect(got[1]).To(And(ContainSubstring(`"event":"COMMENT"`), ContainSubstring("also the pull request's author")))

@@ -18,16 +18,20 @@ import (
 // moduleSources lists every non-test Go file in the module, whose root is two levels up.
 func moduleSources() []string {
 	var files []string
+
 	Expect(filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+
 		if !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
 			files = append(files, path)
 		}
+
 		return nil
 	})).To(Succeed())
 	Expect(files).To(ContainElement(filepath.Join("..", "..", "internal", "github", "github.go")), "walked the wrong tree")
+
 	return files
 }
 
@@ -35,17 +39,23 @@ func moduleSources() []string {
 func stringLiterals(path string) []string {
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 	Expect(err).NotTo(HaveOccurred())
+
 	var out []string
+
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true
 		}
+
 		s, err := strconv.Unquote(lit.Value)
 		Expect(err).NotTo(HaveOccurred(), path+": "+lit.Value)
+
 		out = append(out, s)
+
 		return true
 	})
+
 	return out
 }
 
@@ -67,6 +77,7 @@ var _ = Describe("the merge path", func() {
 			h := newHarness()
 			h.withConfig()
 			flow(h)
+
 			for _, r := range h.gh.Calls() {
 				Expect(r.Path).NotTo(ContainSubstring("merge"))
 				Expect(r.Method).NotTo(Equal(http.MethodPut))

@@ -44,6 +44,7 @@ var _ = Describe("Load", func() {
 		for _, r := range workflow.KnownRoles() {
 			m[string(r)] = agent
 		}
+
 		return m
 	}
 
@@ -51,9 +52,11 @@ var _ = Describe("Load", func() {
 	load := func(agents map[string]config.AgentConfig) error {
 		raw, err := json.Marshal(map[string]any{"roles": []workflow.Role{workflow.Implementer}, "agents": agents})
 		Expect(err).NotTo(HaveOccurred())
+
 		path := filepath.Join(GinkgoT().TempDir(), "c.json")
 		Expect(os.WriteFile(path, raw, 0o600)).To(Succeed())
 		_, err = config.Load(path)
+
 		return err
 	}
 

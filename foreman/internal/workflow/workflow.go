@@ -73,11 +73,40 @@ const (
 	RetroTitle = "Agent retros"
 )
 
-// Severities of a review finding, most severe first.
-var severities = []string{"high", "medium", "low"}
+// Severity is how much a review finding matters. Only the known set parses.
+type Severity string
 
-// blockingSeverities are the severities that send a pull request back.
-var blockingSeverities = []string{"high", "medium"}
+// The severities of a review finding.
+const (
+	// SeverityHigh is a bug, a spec miss or a security problem that must be fixed before merge.
+	SeverityHigh Severity = "high"
+	// SeverityMedium is a documented-standard breach or a notable defect.
+	SeverityMedium Severity = "medium"
+	// SeverityLow is a judgement call or a nit.
+	SeverityLow Severity = "low"
+)
+
+// Severities is the closed set of severities, most severe first.
+func Severities() []Severity {
+	return []Severity{SeverityHigh, SeverityMedium, SeverityLow}
+}
+
+// Blocks reports whether a finding of this severity sends the pull request back.
+func (s Severity) Blocks() bool {
+	switch s {
+	case SeverityHigh, SeverityMedium:
+		return true
+	case SeverityLow:
+		return false
+	}
+
+	return false
+}
+
+// title is the severity as a heading word: "High".
+func (s Severity) title() string {
+	return strings.ToUpper(string(s[:1])) + string(s[1:])
+}
 
 var (
 	// issueNumberRE matches digits only.
@@ -93,6 +122,7 @@ func ParseRole(name string) (Role, error) {
 			return r, nil
 		}
 	}
+
 	return "", fmt.Errorf("unknown agent role %q", name)
 }
 
@@ -101,10 +131,12 @@ func ParseIssueNumber(text string) (int, error) {
 	if !issueNumberRE.MatchString(text) {
 		return 0, fmt.Errorf("not an issue number: %q", text)
 	}
+
 	var n int
 	if _, err := fmt.Sscanf(text, "%d", &n); err != nil {
 		return 0, fmt.Errorf("not an issue number: %q: %w", text, err)
 	}
+
 	return n, nil
 }
 
@@ -113,6 +145,7 @@ func ValidateRepo(repo string) error {
 	if !repoRE.MatchString(repo) || strings.HasPrefix(repo, "..") || strings.Contains(repo, "/..") {
 		return fmt.Errorf("repo must be owner/name, got %q", repo)
 	}
+
 	return nil
 }
 
@@ -133,9 +166,11 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 		PullRequest *json.RawMessage `json:"pull_request"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+		return fmt.Errorf("decode issue: %w", err)
 	}
+
 	*i = Issue{Number: raw.Number, Title: raw.Title, Body: raw.Body, IsPullRequest: raw.PullRequest != nil}
+
 	return nil
 }
 
@@ -152,6 +187,7 @@ func PickIssue(issues []Issue) (Issue, bool) {
 			return i, true
 		}
 	}
+
 	return Issue{}, false
 }
 
@@ -160,12 +196,17 @@ func BranchName(number int) string {
 	return fmt.Sprintf("agent/issue-%d", number)
 }
 
-// Truncate keeps at most n characters.
+// Truncate keeps at most n characters; none when n is not positive.
 func Truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
+
 	return string(r[:n])
 }
 
@@ -184,7 +225,7 @@ func RetroMarker(number int, sha string) string {
 
 // Finding is one review finding.
 type Finding struct {
-	Severity string
+	Severity Severity
 	Title    string
 	Detail   string
 	Location string
@@ -204,85 +245,100 @@ func ParseReview(text string) (string, []Finding, error) {
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
 		return "", nil, fmt.Errorf("review is not valid: %w", err)
 	}
+
 	if raw.Summary == nil || raw.Findings == nil {
 		return "", nil, errors.New("review needs a string summary and a list of findings")
 	}
+
 	findings := make([]Finding, 0, len(*raw.Findings))
 	for _, f := range *raw.Findings {
 		if f.Severity == nil || f.Title == nil || f.Detail == nil {
 			return "", nil, errors.New("finding needs a severity, a title and a detail")
 		}
-		if !contains(severities, *f.Severity) {
+
+		sev := Severity(*f.Severity)
+		if !slices.Contains(Severities(), sev) {
 			return "", nil, fmt.Errorf("unknown severity: %q", *f.Severity)
 		}
+
 		loc := ""
 		if f.Location != nil {
 			loc = *f.Location
 		}
-		findings = append(findings, Finding{Severity: *f.Severity, Title: *f.Title, Detail: *f.Detail, Location: loc})
-	}
-	return *raw.Summary, findings, nil
-}
 
-// contains reports whether list holds s.
-func contains(list []string, s string) bool {
-	return slices.Contains(list, s)
+		findings = append(findings, Finding{Severity: sev, Title: *f.Title, Detail: *f.Detail, Location: loc})
+	}
+
+	return *raw.Summary, findings, nil
 }
 
 // Blocking keeps the findings that must be fixed before the pull request is accepted.
 func Blocking(findings []Finding) []Finding {
 	var out []Finding
+
 	for _, f := range findings {
-		if contains(blockingSeverities, f.Severity) {
+		if f.Severity.Blocks() {
 			out = append(out, f)
 		}
 	}
+
 	return out
 }
 
 // RenderReview is the review body posted on the pull request.
 func RenderReview(sha, summary string, findings []Finding) string {
 	lines := []string{ReviewMarker(sha), "## Agent review", "", summary}
-	for _, sev := range severities {
+
+	for _, sev := range Severities() {
 		var group []string
+
 		for _, f := range findings {
 			if f.Severity != sev {
 				continue
 			}
+
 			loc := ""
 			if f.Location != "" {
 				loc = " (`" + f.Location + "`)"
 			}
+
 			group = append(group, fmt.Sprintf("- **%s**%s: %s", f.Title, loc, f.Detail))
 		}
+
 		if len(group) > 0 {
-			lines = append(lines, "", fmt.Sprintf("### %s (%d)", strings.ToUpper(sev[:1])+sev[1:], len(group)))
+			lines = append(lines, "", fmt.Sprintf("### %s (%d)", sev.title(), len(group)))
 			lines = append(lines, group...)
 		}
 	}
+
 	if len(findings) == 0 {
 		lines = append(lines, "", "No findings.")
 	}
+
 	return Truncate(strings.Join(lines, "\n"), CommentLimitChars)
 }
 
 // StartsWith keeps the items whose body starts with prefix, in API order.
 func StartsWith(items []Item, prefix string) []Item {
 	var out []Item
+
 	for _, i := range items {
 		if strings.HasPrefix(i.Body, prefix) {
 			out = append(out, i)
 		}
 	}
+
 	return out
 }
 
 // ReviewRounds counts the distinct commits reviewed so far, counting sha whether or not it is posted yet.
 func ReviewRounds(reviews []Item, sha string) int {
 	marked := map[string]bool{ReviewMarker(sha): true}
+
 	for _, r := range StartsWith(reviews, ReviewMarkerPrefix) {
 		first, _, _ := strings.Cut(r.Body, "\n")
 		marked[first] = true
 	}
+
 	return len(marked)
 }

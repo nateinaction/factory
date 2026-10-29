@@ -15,31 +15,40 @@ import (
 )
 
 // agent runs the model, retrying transient failures up to twice within r.Timeout.
-func (s session) agent(r opencode.Run) (opencode.Result, error) {
-	ctx, cancel := context.WithTimeout(s.ctx, r.Timeout)
+func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
+
 	deadline, _ := ctx.Deadline() // WithTimeout always sets one
+
 	var res opencode.Result
+
 	for attempt := 1; attempt <= opencode.MaxModelAttempts; attempt++ {
 		stream, err := s.attempt(ctx, r, time.Until(deadline))
+
 		res.Usage = res.Usage.Add(stream.Usage)
 		if stream.Session != "" {
 			res.Session = stream.Session
 		}
+
 		kind, failed := opencode.Failure(stream, err)
 		if !failed {
 			return res, nil
 		}
+
 		var cause error
 		if stream.Failure == nil {
 			cause = err
 		}
+
 		if ctx.Err() != nil {
 			return res, fmt.Errorf("%s: %w", r.Role, ctx.Err())
 		}
+
 		if !kind.Retryable() || attempt == opencode.MaxModelAttempts {
 			return res, &opencode.ModelError{Kind: kind, Attempts: attempt, Cause: cause}
 		}
+
 		if err := s.d.sleep(ctx, opencode.Backoff(attempt)); err != nil {
 			return res, fmt.Errorf("%s: %w", r.Role, err)
 		}
@@ -57,6 +66,7 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	if out != "" {
 		s.d.logf("%s", s.redact(out))
 	}
+
 	return opencode.ParseStream(out), err
 }
 
@@ -66,6 +76,7 @@ func (s session) redact(text string) string {
 	if key == "" {
 		return text
 	}
+
 	return strings.ReplaceAll(text, key, "[redacted]")
 }
 
@@ -75,14 +86,17 @@ func withState(root string, role workflow.Role, number int, fn func(db string) e
 	if role == workflow.Reviewer {
 		return fn(opencode.InMemoryDB)
 	}
+
 	dir, err := freshPath(root, fmt.Sprintf("state-%s-%d", role, number))
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+
+	if err := os.MkdirAll(dir, privateDirMode); err != nil {
+		return fmt.Errorf("state directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
+
 	return fn(dir + "/opencode.db")
 }
 
@@ -93,6 +107,7 @@ func (d Deps) logUsage(r opencode.UsageReport) {
 		d.logf("usage report: %v", err)
 		return
 	}
+
 	if err := writeLine(d.Out, string(line)); err != nil {
 		d.logf("usage report: %v", err)
 	}

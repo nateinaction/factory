@@ -99,6 +99,7 @@ var _ = Describe("Main", func() {
 
 	It("fails closed on a missing config", func() {
 		h.deps.Settings.ConfigFile = filepath.Join(h.dir, "missing.json")
+
 		Expect(main("poll")).NotTo(BeZero())
 	})
 })

@@ -39,7 +39,9 @@ func DefaultSettings(home, configOverride string) Settings {
 	if configOverride != "" {
 		config = configOverride
 	}
-	return Settings{
+
+	// gosec reads the Token* and Key* field names as credentials; every value here is a path or URL.
+	return Settings{ //nolint:gosec // see above
 		API:         "https://api.github.com",
 		TokenDir:    "/run/factory",
 		KeyFile:     filepath.Join(home, ".config/factory-agent/openrouter-key"),
@@ -77,27 +79,32 @@ type Config struct {
 
 // Load reads and validates the config file: every agent role needs a model and a context cap.
 func Load(path string) (Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // the path is the operator's own setting, read at the edge
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
+
 	if len(c.Roles) == 0 {
 		return Config{}, fmt.Errorf("config %s: roles is required", path)
 	}
+
 	for _, r := range c.Roles {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", path, err)
 		}
 	}
+
 	for _, r := range workflow.KnownRoles() {
 		a, ok := c.Agents[string(r)]
 		if !ok || a.Model == "" || a.ContextCap <= 0 {
 			return Config{}, fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
 		}
 	}
+
 	return c, nil
 }

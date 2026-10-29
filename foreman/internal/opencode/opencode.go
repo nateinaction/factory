@@ -17,12 +17,9 @@ import (
 // MaxModelAttempts is one attempt plus the two retries the spec allows for a transient model failure.
 const MaxModelAttempts = 3
 
-// backoffs are the waits before the second and third attempt.
-var backoffs = [MaxModelAttempts - 1]time.Duration{10 * time.Second, 30 * time.Second}
-
-// Backoff is the wait after the given failed attempt (1-based) and before the next one.
+// Backoff is the wait after the given failed attempt (1-based) and before the next one: 10s, then 30s.
 func Backoff(attempt int) time.Duration {
-	return backoffs[attempt-1]
+	return [MaxModelAttempts - 1]time.Duration{10 * time.Second, 30 * time.Second}[attempt-1]
 }
 
 // InMemoryDB is OPENCODE_DB's value for a run whose state never touches the disk.
@@ -72,6 +69,7 @@ func (e *ModelError) Error() string {
 	if e.Cause != nil {
 		msg += ": " + e.Cause.Error()
 	}
+
 	return msg
 }
 
@@ -96,7 +94,9 @@ func addInt(a, b *int) *int {
 	case b == nil:
 		return a
 	}
+
 	sum := *a + *b
+
 	return &sum
 }
 
@@ -105,12 +105,14 @@ func maxInt(a, b *int) *int {
 	if a == nil || (b != nil && *b > *a) {
 		return b
 	}
+
 	return a
 }
 
 // Add combines the usage of two attempts or phases of one run.
 func (u Usage) Add(o Usage) Usage {
 	u.Input, u.Output, u.Cached = addInt(u.Input, o.Input), addInt(u.Output, o.Output), addInt(u.Cached, o.Cached)
+
 	u.PeakContext = maxInt(u.PeakContext, o.PeakContext)
 	switch {
 	case u.Cost == nil:
@@ -119,6 +121,7 @@ func (u Usage) Add(o Usage) Usage {
 		sum := *u.Cost + *o.Cost
 		u.Cost = &sum
 	}
+
 	return u
 }
 
@@ -161,16 +164,20 @@ const maxStreamLine = 4 << 20
 // best-effort telemetry, and the exit code and error events decide failure.
 func ParseStream(out string) Stream {
 	var s Stream
+
 	sc := bufio.NewScanner(strings.NewReader(out))
 	sc.Buffer(nil, maxStreamLine)
+
 	for sc.Scan() {
 		var e event
 		if json.Unmarshal(sc.Bytes(), &e) != nil {
 			continue // not an event line
 		}
+
 		if e.SessionID != "" && s.Session == "" {
 			s.Session = e.SessionID
 		}
+
 		switch {
 		case e.Type == "step_finish" && e.Part.Tokens != nil:
 			s.Usage = s.Usage.Add(stepUsage(e))
@@ -179,42 +186,58 @@ func ParseStream(out string) Stream {
 			s.Failure = &k
 		}
 	}
+
 	return s
 }
 
 // stepUsage is one step's usage. A step's context is its input plus the cached tokens it read.
 func stepUsage(e event) Usage {
 	t := e.Part.Tokens
+
 	u := Usage{Input: t.Input, Output: t.Output, Cost: e.Part.Cost}
 	if t.Cache != nil {
 		u.Cached = t.Cache.Read
 	}
+
 	if t.Input != nil {
 		peak := *t.Input
 		if u.Cached != nil {
 			peak += *u.Cached
 		}
+
 		u.PeakContext = &peak
 	}
+
 	return u
 }
+
+// HTTP statuses the provider reports in an error event. The pure core does not import net/http.
+const (
+	statusPaymentRequired = 402
+	statusNotFound        = 404
+	statusRequestTimeout  = 408
+	statusTooManyRequests = 429
+	statusServerErrorLow  = 500
+	statusServerErrorHigh = 599
+)
 
 // classify maps an API error to a failure kind.
 func classify(name string, status int) FailureKind {
 	switch {
 	case name == "ContextOverflowError":
 		return FailOverflow
-	case status == 429:
+	case status == statusTooManyRequests:
 		return FailRateLimit
-	case status >= 500 && status <= 599:
+	case status >= statusServerErrorLow && status <= statusServerErrorHigh:
 		return FailServer
-	case status == 408 || strings.Contains(strings.ToLower(name), "timeout"):
+	case status == statusRequestTimeout || strings.Contains(strings.ToLower(name), "timeout"):
 		return FailTimeout
-	case status == 402:
+	case status == statusPaymentRequired:
 		return FailCredits
-	case status == 404:
+	case status == statusNotFound:
 		return FailUnknownModel
 	}
+
 	return FailOther
 }
 
@@ -224,9 +247,11 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 	if s.Failure != nil {
 		return *s.Failure, true
 	}
+
 	if runErr != nil {
 		return FailOther, true
 	}
+
 	return "", false
 }
 
@@ -235,8 +260,9 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 func Env(openrouterKey, stateDB string, a config.AgentConfig) (map[string]string, error) {
 	inline, err := json.Marshal(map[string]any{"compaction": map[string]bool{"auto": a.Compaction}})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode opencode config: %w", err)
 	}
+
 	return map[string]string{
 		"OPENROUTER_API_KEY":               openrouterKey,
 		"OPENCODE_DISABLE_PROJECT_CONFIG":  "1",
@@ -272,6 +298,7 @@ func Argv(r Run) []string {
 	if r.Session != "" {
 		argv = append(argv, "--session", r.Session)
 	}
+
 	return append(argv, r.Prompt)
 }
 
@@ -296,7 +323,9 @@ type UsageReport struct {
 
 // NewUsageReport builds the report. The adapter cannot yet observe contacted domains (the sandbox
 // slice will), so they are always listed as missing.
-func NewUsageReport(role workflow.Role, repo string, number int, host string, a config.AgentConfig, u Usage) UsageReport {
+func NewUsageReport(
+	role workflow.Role, repo string, number int, host string, a config.AgentConfig, u Usage,
+) UsageReport {
 	r := UsageReport{
 		Event: "usage", Repository: repo, Issue: number, AgentRole: role, Model: a.Model, WorkerHost: host,
 		Input: u.Input, Output: u.Output, Cached: u.Cached, ContextCap: a.ContextCap, PeakContext: u.PeakContext,
@@ -306,13 +335,18 @@ func NewUsageReport(role workflow.Role, repo string, number int, host string, a 
 		name    string
 		missing bool
 	}{
-		{"worker_host", host == ""}, {"input_tokens", u.Input == nil}, {"output_tokens", u.Output == nil},
-		{"cached_tokens", u.Cached == nil}, {"peak_context", u.PeakContext == nil}, {"cost", u.Cost == nil},
+		{"worker_host", host == ""},
+		{"input_tokens", u.Input == nil},
+		{"output_tokens", u.Output == nil},
+		{"cached_tokens", u.Cached == nil},
+		{"peak_context", u.PeakContext == nil},
+		{"cost", u.Cost == nil},
 		{"domains", true},
 	} {
 		if f.missing {
 			r.Missing = append(r.Missing, f.name)
 		}
 	}
+
 	return r
 }

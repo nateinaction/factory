@@ -29,6 +29,7 @@ var _ = Describe("Poll", func() {
 	// expectNothingReady fails the spec unless the poll found nothing and said so.
 	expectNothingReady := func() {
 		GinkgoHelper()
+
 		code, err := poll()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(BeZero())
@@ -94,6 +95,7 @@ var _ = Describe("Poll", func() {
 			if strings.Contains(joined(c), "enqueue") {
 				return "", errors.New("dagu down")
 			}
+
 			return base(c)
 		})
 		Expect(poll()).To(Equal(1))
@@ -101,7 +103,8 @@ var _ = Describe("Poll", func() {
 		labels := h.gh.Bodies("POST", "/repos/o/r/issues/5/labels")
 		Expect(labels).To(HaveLen(2))
 		Expect(labels[1]).To(ContainSubstring(workflow.LabelFailed))
-		Expect(h.gh.Summary()).To(ContainElement("DELETE /repos/o/r/issues/5/labels/agent-working"), "did not release the claim")
+		Expect(h.gh.Summary()).To(
+			ContainElement("DELETE /repos/o/r/issues/5/labels/agent-working"), "did not release the claim")
 		Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")[1]).To(ContainSubstring("Could not queue the agent run"))
 	})
 
@@ -109,9 +112,12 @@ var _ = Describe("Poll", func() {
 		h.queue(map[string][]map[string]any{workflow.LabelReviewReady: {{"number": 12}}})
 		h.acceptWrites("12")
 		Expect(poll()).Error().NotTo(HaveOccurred())
+
 		mint := h.runner.find("app-token", " token ")
 		Expect(mint).To(HaveLen(1))
-		Expect(mint[0].Argv).To(Equal([]string{"/usr/local/bin/github-app-token", "token", "--app", "reviewer", "--repo", "o/r"}))
+		Expect(mint[0].Argv).To(Equal([]string{
+			"/usr/local/bin/github-app-token", "token", "--app", "reviewer", "--repo", "o/r",
+		}))
 		Expect(mint[0].Capture).To(BeTrue())
 		h.expectAuthorizedAs(workflow.Reviewer)
 	})
@@ -119,15 +125,20 @@ var _ = Describe("Poll", func() {
 	It("asks every configured App where it is installed", func() {
 		h.queue(nil)
 		Expect(poll()).Error().NotTo(HaveOccurred())
-		var apps []string
-		for _, c := range h.runner.find("app-token", " repositories ") {
+
+		lists := h.runner.find("app-token", " repositories ")
+
+		apps := make([]string, 0, len(lists))
+		for _, c := range lists {
 			apps = append(apps, appOf(c))
 		}
+
 		Expect(apps).To(Equal([]string{"implementer", "reviewer"}))
 	})
 
 	It("ignores a repository no factory App is installed on", func() {
 		h.installed = map[workflow.Role][]string{}
+
 		expectNothingReady()
 		Expect(h.gh.Calls()).To(BeEmpty())
 		Expect(h.runner.find(" token ")).To(BeEmpty())
@@ -187,6 +198,7 @@ var _ = Describe("Poll", func() {
 
 	It("counts only owner/name lines as installations", func() {
 		h.installed = map[workflow.Role][]string{workflow.Implementer: {"../etc", "not a repo", ""}}
+
 		Expect(poll()).To(BeZero())
 		Expect(h.gh.Calls()).To(BeEmpty())
 	})
@@ -194,12 +206,17 @@ var _ = Describe("Poll", func() {
 	It("lists the queues by label, reviews first", func() {
 		h.queue(nil)
 		Expect(poll()).Error().NotTo(HaveOccurred())
-		var labels []string
-		for _, r := range h.gh.Calls() {
+
+		calls := h.gh.Calls()
+
+		labels := make([]string, 0, len(calls))
+		for _, r := range calls {
 			v, err := url.ParseQuery(r.Query)
 			Expect(err).NotTo(HaveOccurred())
+
 			labels = append(labels, v.Get("labels"))
 		}
+
 		Expect(labels).To(Equal([]string{workflow.LabelReviewReady, workflow.LabelReady}))
 	})
 })

@@ -34,6 +34,7 @@ type Server struct {
 func New() *Server {
 	f := &Server{routes: http.NewServeMux()}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+
 	return f
 }
 
@@ -44,6 +45,7 @@ func (f *Server) Close() { f.srv.Close() }
 func (f *Server) Unexpected() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return append([]string(nil), f.unexpected...)
 }
 
@@ -51,6 +53,7 @@ func (f *Server) Unexpected() []string {
 func (f *Server) fault(text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.unexpected = append(f.unexpected, text)
 }
 
@@ -66,15 +69,19 @@ func (f *Server) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		f.fault("read body: " + err.Error())
 	}
+
 	f.mu.Lock()
 	f.reqs = append(f.reqs, Request{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Clone(), string(body)})
 	f.mu.Unlock()
+
 	r.Body = io.NopCloser(strings.NewReader(string(body)))
 	if _, pattern := f.routes.Handler(r); pattern == "" {
 		f.fault(r.Method + " " + r.URL.Path)
 		http.Error(w, "unexpected", http.StatusInternalServerError)
+
 		return
 	}
+
 	f.routes.ServeHTTP(w, r)
 }
 
@@ -96,6 +103,7 @@ func (f *Server) Status(pattern string, code int) {
 // WriteJSON answers with v.
 func WriteJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -105,25 +113,31 @@ func WriteJSON(w http.ResponseWriter, v any) {
 func (f *Server) Calls() []Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return append([]Request(nil), f.reqs...)
 }
 
 // Summary lists "METHOD path" per request, in order.
 func (f *Server) Summary() []string {
-	var out []string
-	for _, r := range f.Calls() {
+	calls := f.Calls()
+
+	out := make([]string, 0, len(calls))
+	for _, r := range calls {
 		out = append(out, r.Method+" "+r.Path)
 	}
+
 	return out
 }
 
 // Bodies returns the request bodies for calls matching "METHOD path".
 func (f *Server) Bodies(method, path string) []string {
 	var out []string
+
 	for _, r := range f.Calls() {
 		if r.Method == method && r.Path == path {
 			out = append(out, r.Body)
 		}
 	}
+
 	return out
 }

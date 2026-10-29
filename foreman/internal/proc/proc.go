@@ -51,25 +51,34 @@ func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	if len(c.Argv) == 0 {
 		return "", errors.New("empty command")
 	}
+
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
+
+	// An argument array, never a shell: no argument is ever parsed as a command line.
+	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...) //nolint:gosec // see above
 	cmd.Dir = c.Dir
+
 	cmd.Env = os.Environ()
 	for k, v := range c.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+
 	var captured bytes.Buffer
+
 	cmd.Stdout = r.Stdout
 	if c.Capture {
 		cmd.Stdout = &captured
 	}
+
 	cmd.Stderr = r.Stderr
 	err := cmd.Run()
+
 	var ee *exec.ExitError
 	switch {
 	case err == nil:

@@ -142,8 +142,10 @@ var _ = Describe("RenderReview", func() {
 
 var _ = Describe("ReviewRounds", func() {
 	reviews := []workflow.Item{
-		{Body: workflow.ReviewMarker("a") + "\nx"}, {Body: workflow.ReviewMarker("a") + "\ny"},
-		{Body: workflow.ReviewMarker("b")}, {Body: "human review"},
+		{Body: workflow.ReviewMarker("a") + "\nx"},
+		{Body: workflow.ReviewMarker("a") + "\ny"},
+		{Body: workflow.ReviewMarker("b")},
+		{Body: "human review"},
 	}
 
 	It("counts distinct reviewed commits, a repeat of one counting once", func() {
