@@ -76,9 +76,16 @@ type secrets struct {
 	openrouterKey string
 }
 
-// readSecrets reads the token left by `start` for the agent role and the OpenRouter key.
-func readSecrets(s config.Settings, role workflow.Role) (secrets, error) {
-	token, err := os.ReadFile(s.TokenPath(role))
+// readSecrets reads the token left by `start` for this run and the OpenRouter key.
+func readSecrets(d Deps, role workflow.Role) (secrets, error) {
+	path, err := d.tokenPath(role)
+	if err != nil {
+		return secrets{}, err
+	}
+
+	s := d.Settings
+
+	token, err := os.ReadFile(path) //nolint:gosec // the path is the token directory joined with a vetted name
 	if err != nil {
 		return secrets{}, fmt.Errorf("read token file: %w", err)
 	}

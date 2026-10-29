@@ -28,7 +28,7 @@ var _ = Describe("Start", func() {
 	expectTokenRemoved := func(role workflow.Role) {
 		GinkgoHelper()
 
-		_, err := os.Stat(h.deps.Settings.TokenPath(role))
+		_, err := os.Stat(h.deps.Settings.TokenPath(role, h.deps.RunID))
 		Expect(err).To(MatchError(os.ErrNotExist), "token file left behind")
 	}
 

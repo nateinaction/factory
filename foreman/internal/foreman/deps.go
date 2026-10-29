@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // Ceilings on every process foreman starts. A model run's deadline is its agent role's budget
@@ -133,6 +135,20 @@ func (d Deps) runID() string {
 	}
 
 	return d.RunID
+}
+
+// validRunID is what a run id may contain to be part of a file name.
+var validRunID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// tokenPath is the run's own token file. A run id that is not a plain name fails, so it cannot
+// reach outside the token directory; the run id is the dagu run's, not input from a repository.
+func (d Deps) tokenPath(role workflow.Role) (string, error) {
+	id := d.runID()
+	if !validRunID.MatchString(id) {
+		return "", fmt.Errorf("token file: run id %q is not a plain name", id)
+	}
+
+	return d.Settings.TokenPath(role, id), nil
 }
 
 // writeLine writes text and a newline.
