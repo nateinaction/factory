@@ -113,11 +113,11 @@ type usageStream struct {
 
 // Write consumes p, remembering the last usage it holds. It never fails: the bytes are on their way
 // to the model regardless of whether telemetry parses. Each pass consumes at least one byte or
-// returns, so the loop is bounded by len(p)+1 passes.
+// returns, so the loop is bounded by len(p) passes.
 func (s *usageStream) Write(p []byte) (int, error) {
 	n := len(p)
 
-	for pass := 0; pass <= len(p); pass++ {
+	for len(p) > 0 {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
 			s.append(p)
