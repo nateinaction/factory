@@ -40,6 +40,65 @@ const (
 	AttrVerb = "factory.verb"
 	// AttrExitCode is the process's exit code.
 	AttrExitCode = "factory.exit_code"
+	// AttrAgentRole is the agent role a run works.
+	AttrAgentRole = "factory.agent_role"
+	// AttrRepository is the repository a run works, as owner/name.
+	AttrRepository = "factory.repository"
+	// AttrIssue is the issue number a run works. It is a span attribute only, never a metric label.
+	AttrIssue = "factory.issue"
+	// AttrModel is the model an agent role's run calls.
+	AttrModel = "factory.model"
+	// AttrWorkerHost is the host the run ran on.
+	AttrWorkerHost = "factory.worker_host"
+	// AttrOutcome is how a run ended.
+	AttrOutcome = "factory.outcome"
+	// AttrFailureKind is why a failed run, or a failed stage of one, failed.
+	AttrFailureKind = "factory.failure_kind"
+	// AttrAttempt is the 1-based number of one model attempt.
+	AttrAttempt = "factory.attempt"
+	// AttrNextAttempt is the attempt a backoff wait precedes.
+	AttrNextAttempt = "factory.next_attempt"
+	// AttrBackoffSeconds is the length of a backoff wait.
+	AttrBackoffSeconds = "factory.backoff_seconds"
+	// AttrAttempts is how many times a run called the model.
+	AttrAttempts = "factory.attempts"
+	// AttrInputTokens, AttrOutputTokens and AttrCachedTokens are the run's token totals.
+	AttrInputTokens  = "factory.input_tokens"
+	AttrOutputTokens = "factory.output_tokens"
+	//nolint:gosec // G101: an attribute name, not a credential
+	AttrCachedTokens = "factory.cached_tokens"
+	// AttrCost is what the run's responses cost, in US dollars.
+	AttrCost = "factory.cost"
+)
+
+// Span names: the run stage spans are children of the process root span, which names the run verb.
+const (
+	// SpanClone clones the repository the run works.
+	SpanClone = "foreman.run.clone"
+	// SpanToolchain resolves the default branch's dev environment.
+	SpanToolchain = "foreman.run.toolchain"
+	// SpanToolchainClone is the shallow clone the dev environment is resolved from.
+	SpanToolchainClone = "foreman.run.toolchain.clone"
+	// SpanToolchainEnv is the dev-environment evaluation itself.
+	SpanToolchainEnv = "foreman.run.toolchain.env"
+	// SpanProxyBind starts the run's OpenRouter proxy.
+	SpanProxyBind = "foreman.run.proxy.bind"
+	// SpanModelAttempt is one call to the model.
+	SpanModelAttempt = "foreman.run.model.attempt"
+	// SpanModelBackoff is the wait between two model attempts.
+	SpanModelBackoff = "foreman.run.model.backoff"
+	// SpanOutputValidation reads and parses the agent role's output file.
+	SpanOutputValidation = "foreman.run.output.validate"
+	// SpanPublishCommit commits the agent's working tree.
+	SpanPublishCommit = "foreman.run.publish.commit"
+	// SpanPublishPush pushes the branch.
+	SpanPublishPush = "foreman.run.publish.push"
+	// SpanPublishPR opens or updates the pull request.
+	SpanPublishPR = "foreman.run.publish.pull_request"
+	// SpanPublishReview posts the review's verdict.
+	SpanPublishReview = "foreman.run.publish.review"
+	// SpanRetro runs the run's retro.
+	SpanRetro = "foreman.run.retro"
 )
 
 // RootSpanName is the process root span's name for a foreman verb.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -234,6 +235,20 @@ func committerIdentity() []string {
 	return []string{"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com"}
 }
 
+// bindProxy starts the run's OpenRouter proxy inside its stage span. A proxy that cannot bind fails
+// the run: the model has no other way to reach OpenRouter.
+func (r run) bindProxy(ctx context.Context, key, token string) (Forwarder, error) {
+	_, span := r.spans().start(ctx, telemetry.SpanProxyBind)
+	defer span.End()
+
+	p, err := r.d.proxy(key, token)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return p, err
+}
+
 // pipeline is one run, top to bottom: its private directories, its egress policy and secrets, its
 // proxies, then its work. Each step's cleanup is deferred where the step opened the resource, so the
 // run releases everything it took, however it ends.
@@ -255,6 +270,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 
 	defer func() {
 		st := r.stats(result, err, r.d.now().Sub(started))
+		r.annotateRun(ctx, st, result.usage)
 		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
 			WithDomains(domains, refused))
 	}()
@@ -279,7 +295,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		return runResult{}, err
 	}
 
-	p, err := r.d.proxy(sec.openrouterKey, token)
+	p, err := r.bindProxy(ctx, sec.openrouterKey, token)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -322,7 +338,9 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 		return runResult{}, err
 	}
 
-	rc := runCtx{run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity), paths: paths}
+	rc := runCtx{
+		run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity, r.spans()), paths: paths,
+	}
 
 	prep, err := r.entry.run.prepare(ctx, rc)
 	if err != nil {
@@ -455,17 +473,31 @@ func rejected(ctx context.Context, rc runCtx, err error, key string) outcome {
 	}
 }
 
-// readOutput reads an agent role's output file and parses it strictly. A file foreman cannot read is an
-// output error too, so a model that wrote none fails the same way as one that wrote a bad file.
-func readOutput[T any](path, file string, parse func(text string) (T, error)) (T, error) {
+// readOutput reads an agent role's output file and parses it strictly, inside the output-validation
+// stage span. A file foreman cannot read is an output error too, so a model that wrote none fails the
+// same way as one that wrote a bad file.
+func readOutput[T any](
+	ctx context.Context, spans stageSpans, path, file string, parse func(text string) (T, error),
+) (T, error) {
+	_, span := spans.start(ctx, telemetry.SpanOutputValidation)
+	defer span.End()
+
 	raw, err := readScratch(path)
 	if err != nil {
 		var none T
 
-		return none, outputProblem(file, err)
+		rejected := outputProblem(file, err)
+		markFailureOf(span, rejected)
+
+		return none, rejected
 	}
 
-	return parse(string(raw))
+	out, err := parse(string(raw))
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return out, err
 }
 
 // runPaths are a run's clone, its scratch directory and its output file. The scratch directory and the
