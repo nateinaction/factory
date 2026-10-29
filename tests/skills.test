@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# The factory's own skills: every fork carries its provenance header, Ansible no longer clones
+# upstream, and the forks keep the factory's two rules (no tracker writes, no questions to a user).
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+skills="$root/roles/agent/files/skills"
+ref="49dd158d1076134a641b33efb035946536778336"
+
+failures=0
+fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
+pass() { echo "ok   $1"; }
+
+# fork <name> <upstream path>: the skill exists, its name matches its directory, and its header
+# names the upstream path and the pinned ref.
+fork() {
+  local name="$1" upstream="$2" file="$skills/$1/SKILL.md"
+  if [ ! -f "$file" ]; then fail "$name: no SKILL.md"; return; fi
+  grep -q "^name: $name\$" "$file" || fail "$name: frontmatter name differs from its directory"
+  grep -q "Forked from mattpocock/skills $upstream at $ref" "$file" ||
+    fail "$name: no provenance header for $upstream at $ref"
+  pass "$name fork"
+}
+
+fork grilling skills/productivity/grilling
+fork domain-modeling skills/engineering/domain-modeling
+fork wayfinder skills/engineering/wayfinder
+fork to-spec skills/engineering/to-spec
+fork to-tickets skills/engineering/to-tickets
+fork writing-for-agents skills/productivity/writing-for-agents
+fork research skills/engineering/research
+fork implement skills/engineering/implement
+fork tdd skills/engineering/tdd
+fork code-review skills/engineering/code-review
+fork diagnosing-bugs skills/engineering/diagnosing-bugs
+fork pr skills/engineering/pr
+fork retro skills/engineering/retro
+
+# The one factory-only skill has a header of its own instead of an upstream path.
+grep -q "Factory-only skill" "$skills/curate/SKILL.md" || fail "curate: no factory-only header"
+pass "curate skill"
+
+# No skill may keep the upstream setup instruction, which would tell the model to ask a human.
+if grep -rq "setup-matt-pocock-skills" "$skills"; then fail "a fork keeps the upstream setup instruction"; fi
+if grep -rq "ask the user" "$skills"; then fail "a fork asks the user"; fi
+
+# The Planner's forks name its real output fields, so a model following them cannot write a rejected
+# file: grilling writes kind/comment, and the implement fork names the reply fields.
+grep -q '"kind": "questions"' "$skills/grilling/SKILL.md" || fail "grilling: no kind/questions field"
+if grep -q 'goes in `questions`' "$skills/grilling/SKILL.md"; then fail "grilling: stale questions field"; fi
+grep -q '`replies`' "$skills/implement/SKILL.md" || fail "implement: no replies field"
+grep -q '`status`' "$skills/implement/SKILL.md" || fail "implement: no reply status field"
+pass "skill output fields"
+
+# code-review runs both halves itself and records a verdict.
+review="$skills/code-review/SKILL.md"
+grep -q "Do not dispatch sub-agents" "$review" || fail "code-review: sub-agents are not denied"
+grep -q "REQUEST_CHANGES" "$review" || fail "code-review: no REQUEST_CHANGES verdict"
+grep -q "APPROVE" "$review" || fail "code-review: no APPROVE verdict"
+pass "code-review verdict"
+
+# Ansible installs the forks and no longer clones or links upstream.
+grep -q "src: skills/" "$root/roles/agent/tasks/main.yml" || fail "the skills are not installed"
+if grep -q "ansible.builtin.git" "$root/roles/agent/tasks/main.yml"; then fail "Ansible still clones upstream"; fi
+if grep -rq "mattpocock_skills" "$root/group_vars/factory.yml"; then fail "mattpocock_skills survives"; fi
+pass "skills installed, upstream gone"
+
+[ "$failures" -eq 0 ]

@@ -1,0 +1,81 @@
+---
+# Renders the agent role's templates into $RENDER_DIR with the real group_vars,
+# so tests/render.test can assert on the output without a host.
+- name: Render the agent templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  vars:
+    dagu_mode: server
+    github_apps:
+      implementer: {app_id: "1", private_key_file: /dev/null}
+      reviewer: {app_id: "2", private_key_file: /dev/null}
+  tasks:
+    - name: Take only the roles this host lists, when the test narrows them
+      ansible.builtin.set_fact:
+        factory_worker_agent_roles: "{{ lookup('env', 'RENDER_HOST_ROLES').split(',') }}"
+      when: lookup('env', 'RENDER_HOST_ROLES') | length > 0
+
+    - name: Raise the run cap, when the test says so
+      ansible.builtin.set_fact:
+        factory_agent_run_cap: "{{ lookup('env', 'RENDER_RUN_CAP') }}"
+      when: lookup('env', 'RENDER_RUN_CAP') | length > 0
+
+    - name: Render the poll DAG
+      ansible.builtin.template:
+        src: ../roles/agent/templates/factory-poll.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/factory-poll.yaml"
+        mode: "0644"
+
+    - name: Render one DAG per agent role
+      ansible.builtin.template:
+        src: ../roles/agent/templates/factory-role.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/factory-{{ agent_role }}.yaml"
+        mode: "0644"
+      loop: "{{ factory_agent_roles }}"
+      loop_control:
+        loop_var: agent_role
+
+    - name: Render opencode's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/opencode.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/opencode.json"
+        mode: "0644"
+
+    - name: Render foreman's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/config.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config.json"
+        mode: "0644"
+
+    - name: Render dagu's queue config
+      ansible.builtin.template:
+        src: ../roles/dagu/templates/config.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/dagu-config.yaml"
+        mode: "0644"
+
+    - name: Render a worker's dagu service unit
+      ansible.builtin.template:
+        src: ../roles/dagu/templates/dagu.service.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/dagu-worker.service"
+        mode: "0644"
+      vars:
+        dagu_mode: worker
+
+    - name: Write the scheduling facts
+      ansible.builtin.copy:
+        content: >-
+          {{ {'worker_labels': dagu_worker_labels, 'hosted_roles': factory_agent_hosted_roles,
+              'unhosted_roles': factory_agent_unhosted_roles, 'run_cap': factory_agent_run_cap,
+              'queue_capacity': factory_agent_queue_capacity,
+              'role_capacity': factory_agent_role_capacity} | to_nice_json }}
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/scheduling.json"
+        mode: "0644"
+
+    - name: Render the sudoers file
+      ansible.builtin.template:
+        src: ../roles/agent/templates/dagu-agent.sudoers.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/dagu-agent.sudoers"
+        mode: "0440"

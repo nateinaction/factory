@@ -15,7 +15,41 @@ dagu_port: 8080
 dagu_mode: "{{ 'worker' if inventory_hostname in groups['dagu_worker'] else 'server' }}"
 dagu_coordinator_port: 50055
 dagu_coordinator_address: "{{ groups['dagu_server'][0] }}:{{ dagu_coordinator_port }}"
-dagu_worker_labels: runner=agent
+# A worker host takes the agent roles its host_vars lists in factory_worker_agent_roles; unset takes
+# every role. The list becomes dagu worker labels, and each agent role's DAG selects its own label,
+# so a host never executes a role it does not take. runner=agent stays as a plain capability label.
+factory_worker_agent_roles: "{{ factory_agent_roles }}"
+dagu_worker_labels: "runner=agent{% for agent_role in factory_worker_agent_roles %},{{ agent_role }}=true{% endfor %}"
+# The union across worker hosts is what the poll compares against when it warns about an agent role
+# with no host. An unset factory_worker_agent_roles takes all roles, so the union is all of them.
+factory_agent_hosted_roles: >-
+  {%- set hosted = [] -%}
+  {%- for host in groups['dagu_worker'] | default([]) -%}
+  {%- set roles = hostvars[host]['factory_worker_agent_roles'] | default(factory_worker_agent_roles) -%}
+  {%- set _ = hosted.extend(roles) -%}
+  {%- endfor -%}
+  {{ hosted | unique | list }}
+factory_agent_unhosted_roles: "{{ factory_agent_roles | difference(factory_agent_hosted_roles) }}"
+# How many runs of each agent role the fleet may run at once: the per-host run cap times the worker
+# hosts that take the agent role. Foreman's poll claims for a role only while dagu has fewer active
+# runs than this, so one poll fills a run cap above one. A role no host takes has no capacity.
+factory_agent_role_capacity: >-
+  {%- set cap = factory_agent_run_cap | int -%}
+  {%- set counts = {} -%}
+  {%- for agent_role in factory_agent_roles -%}
+  {%- set _ = counts.update({agent_role: 0}) -%}
+  {%- endfor -%}
+  {%- for host in groups['dagu_worker'] | default([]) -%}
+  {%- set roles = hostvars[host]['factory_worker_agent_roles'] | default(factory_worker_agent_roles) -%}
+  {%- for agent_role in roles -%}
+  {%- set _ = counts.update({agent_role: counts.get(agent_role, 0) + 1}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {%- set capacity = {} -%}
+  {%- for agent_role in factory_agent_roles -%}
+  {%- set _ = capacity.update({agent_role: cap * counts.get(agent_role, 0)}) -%}
+  {%- endfor -%}
+  {{ capacity }}
 # Proxy the UI to the tailnet over HTTPS via `tailscale serve`. dagu itself
 # stays on localhost. Anyone on the tailnet can then run workflows: restrict with ACLs.
 dagu_tailscale_serve: true
@@ -24,28 +58,195 @@ factory_user: factory
 
 # Set false to skip the GitHub App credential entirely.
 factory_github_app: true
-github_app_dir: /etc/github-app
+github_app_dir: /etc/github-app # one directory per agent role below this
+github_app_group: "{{ dagu_user }}"
 
 # PoE HAT fan trip points in millidegrees C (stock is 40000-55000). High values
 # keep the fan off in normal use; the CPU throttles at 80000.
 factory_poe_fan: true
 poe_fan_trip_points_mc: [75000, 77000, 78000, 79000]
 
-# Issue-driven agent (runs on the dagu worker). Picks up open issues labelled
-# ready-for-agent on factory_agent_repo and runs opencode's implement skill.
+# Issue-driven agent (runs on the dagu worker). Works every repository that one of the factory's
+# GitHub Apps is installed on (see secrets/github_app.yml); there is no repository list to keep.
 factory_agent: true
-factory_agent_repo: nateinaction/finances
-factory_agent_model: openrouter/deepseek/deepseek-v4.1-flash
+# One dagu DAG and one dagu queue per agent role.
+factory_agent_roles: [planner, researcher, implementer, reviewer, curator]
+# How many sandboxed agent runs one worker host may execute at once. It is the worker's
+# --worker.max-active-runs; the sandbox isolates concurrent runs, so it can be raised. Each role's
+# dagu queue capacity is this cap times the number of worker hosts.
+factory_agent_run_cap: 1
+factory_agent_queue_capacity: >-
+  {{ [factory_agent_run_cap | int,
+      (factory_agent_run_cap | int) * (groups['dagu_worker'] | default([]) | length)] | max }}
+# One entry per agent role, rendered into that role's opencode agent and into foreman's config. A
+# repository cannot override any of it. Model ids name a specific model, never a router or a floating
+# alias; the Reviewer's family always differs from the Implementer's. compaction is whether opencode
+# compacts at the context cap (on) or the run fails on overflow (off). context_cap is optional per role.
+factory_models:
+  planner: { model: deepseek/deepseek-v4.1-flash, compaction: false }
+  researcher: { model: deepseek/deepseek-v4.1-flash, compaction: true }
+  implementer: { model: deepseek/deepseek-v4.1-flash, compaction: true }
+  reviewer: { model: z-ai/glm-5.3-flash, compaction: false }
+  curator: { model: deepseek/deepseek-v4.1-flash, compaction: false }
+# Input-token cap for every agent role unless its factory_models entry sets context_cap, and the
+# output-token limit each model alias declares.
+factory_context_cap: 200000
+factory_max_output: 32000
+# Egress per agent role. An empty list is open egress, the default. A list limits that role to those
+# domains; foreman's loopback proxy refuses everything else and logs every domain the run contacts.
+# Whatever the list says, a destination that is not publicly routable (loopback, private, shared,
+# link-local, metadata) is refused. A restricted role must still name openrouter.ai, or it cannot
+# reach its model. A repository cannot change this.
+factory_egress:
+  planner: []
+  researcher: []
+  implementer: []
+  reviewer: []
+  curator: []
 opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
   amd64: "sha256:13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b"
-# https://github.com/mattpocock/skills, pinned. implement calls tdd and code-review; the
-# agent runs retro after each implementation, which calls writing-for-agents.
-mattpocock_skills_ref: 49dd158d1076134a641b33efb035946536778336
-mattpocock_skills:
-  - { name: implement, path: skills/engineering/implement }
-  - { name: tdd, path: skills/engineering/tdd }
-  - { name: code-review, path: skills/engineering/code-review }
-  - { name: retro, path: skills/engineering/retro }
-  - { name: writing-for-agents, path: skills/productivity/writing-for-agents }
+# The factory's own skills, forked from https://github.com/mattpocock/skills at
+# 49dd158d1076134a641b33efb035946536778336 into roles/agent/files/skills/. Each fork's SKILL.md
+# carries a one-line provenance header naming its upstream path and that ref. Ansible no longer
+# clones upstream. A skill changes only through a PR a human starts.
+#
+# Each agent role loads exactly the skills listed for it; opencode denies every other skill, and
+# OPENCODE_DISABLE_EXTERNAL_SKILLS keeps a repository's own skills out entirely.
+factory_agent_skills:
+  planner: [grilling, domain-modeling, wayfinder, to-spec, to-tickets, writing-for-agents, retro]
+  researcher: [research, retro]
+  implementer:
+    [implement, tdd, code-review, diagnosing-bugs, domain-modeling, pr, retro, writing-for-agents]
+  reviewer: [code-review, retro]
+  curator: [curate]
+
+# The opencode permissions every agent role shares: deny by default, never `ask`. A role may read,
+# glob, grep and list inside the clone, fetch and search the web, and write only inside the run's
+# scratch tree (outside the clone). external_directory denies every external path in the rendered
+# config; foreman's per-run inline config re-allows this run's own directories and nothing else.
+factory_agent_permissions_common:
+  "*": deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
+  webfetch: allow
+  websearch: allow
+  question: deny
+  task: deny
+  doom_loop: deny
+
+# A Planner, Researcher or Curator inspects the repository and the tracker, and changes neither.
+factory_agent_shell_readonly_git: &agent_shell_readonly_git
+  "*": deny
+  "git status*": allow
+  "git log*": allow
+  "git show*": allow
+  "git diff*": allow
+  "git rev-parse*": allow
+  "git ls-files*": allow
+  "git branch --show-current*": allow
+  "git remote -v*": allow
+
+factory_agent_shell_readonly_gh: &agent_shell_readonly_gh
+  <<: *agent_shell_readonly_git
+  "gh issue view*": allow
+  "gh issue list*": allow
+  "gh pr view*": allow
+  "gh pr list*": allow
+  "gh api --method GET *": allow
+
+# The Implementer and the Reviewer run the repository's toolchain, so bash is open apart from the
+# writes foreman owns: a push, and any write through gh. gh is read-only for every agent role: every
+# gh command is denied, then the inspection subcommands are allowed. The rendered rules are sorted,
+# and opencode applies the last matching rule, so `gh *` is written before (sorts before) each
+# `gh pr view*`-style allow and the allow wins for a read. `gh api` is the same: every call is
+# denied, and only a GET is allowed, which is what denies the `-f`/`-F`/`--input` forms that POST.
+factory_agent_shell_readwrite: &agent_shell_readwrite
+  "*": allow
+  "git push*": deny
+  "gh *": deny
+  "gh api --method GET *": allow
+  "gh api -X GET *": allow
+  "gh auth status*": allow
+  "gh issue list*": allow
+  "gh issue view*": allow
+  "gh label list*": allow
+  "gh pr checks*": allow
+  "gh pr diff*": allow
+  "gh pr list*": allow
+  "gh pr status*": allow
+  "gh pr view*": allow
+  "gh release list*": allow
+  "gh release view*": allow
+  "gh repo list*": allow
+  "gh repo view*": allow
+  "gh run list*": allow
+  "gh run view*": allow
+  "gh workflow list*": allow
+  "gh workflow view*": allow
+
+# Per agent role: what it may edit, and its bash. Every other permission comes from the shared set
+# above, and its skill allowlist from factory_agent_skills. Only its output file may be written
+# outside the clone (an output file matched by name inside the scratch tree).
+factory_agent_permissions:
+  planner:
+    edit:
+      "*": deny
+      "**/planner-output.json": allow
+    bash: *agent_shell_readonly_gh
+  researcher:
+    edit:
+      "*": deny
+      "docs/research/**": allow
+      "**/researcher-output.json": allow
+    bash: *agent_shell_readonly_git
+  implementer:
+    edit: allow
+    bash: *agent_shell_readwrite
+  reviewer:
+    edit: allow # its throwaway copy of the clone, plus its output file
+    bash: *agent_shell_readwrite
+  curator:
+    edit:
+      "*": deny
+      "**/curator-output.json": allow
+    bash: *agent_shell_readonly_gh
+
+# Per agent role: opencode's step cap, and the wall-clock deadline foreman enforces. Hitting either
+# fails the run to factory:failed. Each role's `retro` is its retro's own step cap and deadline;
+# hitting either drops the retro and never fails the run. Every role sets all four numbers.
+# Tunable here only; a repository cannot set them.
+factory_agent_limits:
+  planner:
+    { steps: 40, deadline_minutes: 20, retro: { steps: 20, deadline_minutes: 15 } }
+  researcher:
+    { steps: 80, deadline_minutes: 45, retro: { steps: 20, deadline_minutes: 15 } }
+  implementer:
+    { steps: 200, deadline_minutes: 90, retro: { steps: 20, deadline_minutes: 15 } }
+  reviewer:
+    { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
+  curator:
+    { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
+# How far past an agent role's deadline its running label may age before a poll calls the run dead and
+# moves the issue to factory:failed. Nothing retries a dead run automatically.
+factory_dead_run_margin_minutes: 10
+# The CI gate before review. An issue in factory:review waits this long for its pull request's checks:
+# any failure sends it back to the Implementer without a model run, and pending CI past this deadline
+# fails it. Neither a CI failure nor a Reviewer's REQUEST_CHANGES may take an issue past the review
+# round limit; at the limit the issue goes to factory:failed instead.
+factory_ci_pending_deadline_minutes: 60
+factory_review_round_limit: 3
+
+# The sandbox backend, pinned to the same exact version as the flake's dev shell. srt is
+# @anthropic-ai/sandbox-runtime; it uses Seatbelt on macOS and bubblewrap on Linux. The nixpkgs
+# revision is the one in flake.lock, so the host and the dev shell get the same package.
+factory_nixpkgs_rev: "31ecbaca1bdefa45dffc409f0250bd8039ea0010"
+factory_srt_version: "0.0.81"
+
+# The factory's own repository. A public repository's ready skill or factory retro group is promoted to
+# an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
+# fail those promotions closed.
+factory_repo: nateinaction/factory

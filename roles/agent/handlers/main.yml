@@ -1,0 +1,6 @@
+---
+# The tmpfiles entry only takes effect once tmpfiles runs; nothing else in the play needs the
+# directory, so the handler may wait for the end of the play.
+- name: Create the token directory now
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
+  changed_when: true

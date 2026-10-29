@@ -1,0 +1,8 @@
+---
+# ansible-lint's settings. The binary comes from the Nix dev shell and the
+# `ansible-lint` pre-commit hook runs it over the whole project.
+#
+# Lint without the network: no version check and no rule lookups, so a hook run
+# (and CI) is reproducible and works offline. YAML style is yamllint's job
+# (.yamllint); ansible-lint keeps its own YAML rules on.
+offline: true

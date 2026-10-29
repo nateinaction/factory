@@ -1,0 +1,195 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    # Passing any slice as any in a variadic call.
+    - asasalint
+    # Dangerous unicode characters.
+    - bidichk
+    # Unclosed HTTP response bodies.
+    - bodyclose
+    # A function that should take the caller's context makes its own.
+    - contextcheck
+    # Cyclomatic complexity per function and package.
+    - cyclop
+    # Keeps the pure packages pure: see depguard below.
+    - depguard
+    # Duplicated code.
+    - dupl
+    # Two durations multiplied together.
+    - durationcheck
+    # Error comparison and wrapping mistakes.
+    - errorlint
+    # Switches over an enum that miss a case.
+    - exhaustive
+    # Type assertions whose failure is not checked.
+    - forcetypeassert
+    # Functions over 60 lines or 40 statements.
+    - funlen
+    # Ginkgo and Gomega misuse.
+    - ginkgolinter
+    # Malformed //go: directives.
+    - gocheckcompilerdirectives
+    # Package-level variables: state belongs at the edge.
+    - gochecknoglobals
+    # init functions.
+    - gochecknoinits
+    # Cognitive complexity.
+    - gocognit
+    # Repeated strings that should be constants.
+    - goconst
+    # Common bugs, performance traps and style problems.
+    - gocritic
+    # Cyclomatic complexity.
+    - gocyclo
+    # A doc comment on every package, function, method and type, exported or not.
+    - godoclint
+    # TODO, FIXME and similar markers left in code.
+    - godox
+    # Printf-like functions named without an f.
+    - goprintffuncname
+    # Security problems.
+    - gosec
+    # Consistent import aliases.
+    - importas
+    # Interfaces with too many methods.
+    - interfacebloat
+    # Lines over 120 characters.
+    - lll
+    # Slices declared with a length and then appended to.
+    - makezero
+    # Common English misspellings.
+    - misspell
+    # Magic numbers.
+    - mnd
+    # Marshalled structs without field tags.
+    - musttag
+    # Naked returns in long functions.
+    - nakedret
+    # Deeply nested if statements.
+    - nestif
+    # Returning nil when an error was checked.
+    - nilerr
+    # Returning nil, nil.
+    - nilnil
+    # HTTP requests sent without a context.
+    - noctx
+    # Slices that could be preallocated.
+    - prealloc
+    # Shadowed predeclared identifiers.
+    - predeclared
+    # Reassigned package variables such as io.EOF.
+    - reassign
+    # General style.
+    - revive
+    # Functions and parameters that are never used.
+    - unparam
+    # Standard library constants written as literals.
+    - usestdlibvars
+    # os.Setenv, os.MkdirTemp and the like in tests instead of the testing helpers.
+    - usetesting
+    # Assignments that are never read.
+    - wastedassign
+    # Leading and trailing blank lines in blocks.
+    - whitespace
+    # Errors from other packages returned unwrapped.
+    - wrapcheck
+    # Blank lines around blocks, for readability.
+    - wsl_v5
+
+  settings:
+    funlen:
+      lines: 60
+      statements: 40
+    lll:
+      line-length: 120
+    cyclop:
+      max-complexity: 10
+    godoclint:
+      default: none
+      enable:
+        - require-doc
+        - pkg-doc
+      options:
+        require-doc:
+          # Require a doc comment on unexported symbols too.
+          ignore-exported: false
+          ignore-unexported: false
+    depguard:
+      rules:
+        # The pure core does no I/O: no files, processes or network.
+        pure:
+          files:
+            - "**/internal/workflow/*.go"
+            - "**/internal/opencode/*.go"
+            - "!$test"
+          deny:
+            - pkg: os
+              desc: the pure core does no I/O; read files in the shell
+            - pkg: os/exec
+              desc: the pure core starts no processes; use the foreman shell
+            - pkg: net
+              desc: the pure core makes no network calls
+            - pkg: net/http
+              desc: the pure core makes no network calls; use internal/github
+        # cobra and viper are edge packages: the CLI in cmd/foreman and internal/config.
+        cli-edge:
+          files:
+            - "**/internal/**/*.go"
+            - "!**/internal/config/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: cobra belongs to the command edge, in cmd/foreman
+            - pkg: github.com/spf13/viper
+              desc: viper belongs to the configuration edge, in internal/config and cmd/foreman
+    revive:
+      rules:
+        # Ginkgo and Gomega are written with dot imports by convention.
+        - name: dot-imports
+          arguments:
+            - allowed-packages:
+                - github.com/onsi/ginkgo/v2
+                - github.com/onsi/gomega
+    exhaustive:
+      default-signifies-exhaustive: false
+    wrapcheck:
+      # The module's own packages already return errors that name the call; wrapping is for errors
+      # that cross in from the standard library and third parties.
+      ignore-package-globs:
+        - github.com/nateinaction/factory/foreman/*
+
+  exclusions:
+    rules:
+      # A Ginkgo container is one long closure of specs by design, and specs repeat their fixtures
+      # ("o/r", issue 5) so each one reads on its own; length and repetition are not defects there.
+      - path: _test\.go
+        linters:
+          - funlen
+          - dupl
+          - goconst
+      # Test fixtures are fake secrets ("minted-token-reviewer") and paths under a temp directory.
+      - path: _test\.go
+        linters:
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - dot
+        - localmodule

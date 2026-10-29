@@ -1,9 +1,28 @@
 ---
-# Every host: the script (poll runs on the server, work on the worker) and its config.
-- name: Install the agent script
+# Every host: foreman (poll runs on the server, start and run on the worker) and its config.
+# Built on the controller, which has the flake's Go toolchain; the binary is static, so the host needs no Go.
+# -trimpath and -buildvcs=false keep the build reproducible, so an unchanged tree copies as unchanged.
+- name: Map the CPU architecture to Go's naming
+  ansible.builtin.set_fact:
+    agent_foreman_goarch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+- name: Build foreman for the host
+  ansible.builtin.command:
+    argv: [go, build, -trimpath, -buildvcs=false, -o, "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}", ./cmd/foreman]
+    chdir: "{{ playbook_dir }}/foreman"
+  environment:
+    GOOS: linux
+    GOARCH: "{{ agent_foreman_goarch }}"
+    CGO_ENABLED: "0"
+  delegate_to: localhost
+  become: false
+  changed_when: false # the copy below reports the change
+  check_mode: false # the build is local, and the copy needs its output
+
+- name: Install foreman
   ansible.builtin.copy:
-    src: finances-agent
-    dest: /usr/local/bin/finances-agent
+    src: "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}"
+    dest: /usr/local/bin/foreman
     owner: root
     group: root
     mode: "0755"
@@ -15,21 +34,45 @@
     mode: "0755"
 
 - name: Write the agent config
-  ansible.builtin.copy:
-    content: "{{ {'repo': factory_agent_repo, 'model': factory_agent_model} | to_nice_json }}\n"
+  ansible.builtin.template:
+    src: config.json.j2
     dest: /etc/factory-agent/config.json
     mode: "0644"
 
-# Server: poll on a schedule (no model), and the run it queues for a worker.
-- name: Deploy the agent DAGs to the dagu server
+# Server: retire the old DAGs first, so the old and new names never run side by side,
+# then deploy poll (no model) and one DAG per agent role. The cutover guard (drain.yml) has already run.
+- name: Remove the old DAGs from the dagu server
+  ansible.builtin.file:
+    path: "{{ dagu_home }}/.config/dagu/dags/{{ item }}.yaml"
+    state: absent
+  loop: "{{ agent_old_dags }}"
+  when: dagu_mode == 'server'
+
+- name: Deploy the poll DAG to the dagu server
   ansible.builtin.template:
-    src: "{{ item }}.yaml.j2"
-    dest: "{{ dagu_home }}/.config/dagu/dags/{{ item }}.yaml"
+    src: factory-poll.yaml.j2
+    dest: "{{ dagu_home }}/.config/dagu/dags/factory-poll.yaml"
     owner: "{{ dagu_user }}"
     group: "{{ dagu_user }}"
     mode: "0644"
-  loop: [finances-agent-poll, finances-agent-work]
   when: dagu_mode == 'server'
+
+- name: Deploy a DAG per agent role to the dagu server
+  ansible.builtin.template:
+    src: factory-role.yaml.j2
+    dest: "{{ dagu_home }}/.config/dagu/dags/factory-{{ agent_role }}.yaml"
+    owner: "{{ dagu_user }}"
+    group: "{{ dagu_user }}"
+    mode: "0644"
+  loop: "{{ factory_agent_roles }}"
+  loop_control:
+    loop_var: agent_role
+  when: dagu_mode == 'server'
+
+- name: Remove the old binary
+  ansible.builtin.file:
+    path: "{{ agent_old_binary }}"
+    state: absent
 
 - name: Set up the agent runner
   when: dagu_mode == 'worker'
@@ -52,54 +95,83 @@
         content: "d /run/factory 2750 {{ dagu_user }} {{ factory_user }} -\n"
         dest: /etc/tmpfiles.d/factory-agent.conf
         mode: "0644"
-      register: agent_tmpfiles
+      notify: Create the token directory now
 
-    - name: Create the token directory now
-      ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
-      when: agent_tmpfiles is changed
-
-    # Two commands, as one user. The wildcard is the issue number; the script rejects anything else.
-    - name: Allow dagu to run the agent and the reviewer as factory, and nothing else
-      ansible.builtin.copy:
-        # secure_path: sudo resets PATH, which would hide git and the other nix-profile tools from the agent.
-        content: |
-          Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
-          {{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/finances-agent run *, /usr/local/bin/finances-agent review-run *
+    - name: Allow dagu to run foreman as factory, and nothing else
+      ansible.builtin.template:
+        src: dagu-agent.sudoers.j2
         dest: /etc/sudoers.d/dagu-agent
         owner: root
         group: root
         mode: "0440"
         validate: visudo -cf %s
 
+    # Enrollment is where an OS the sandbox adapter cannot serve is refused. srt is the only backend,
+    # and it uses Seatbelt on macOS and bubblewrap on Linux; the hosts are Linux.
+    - name: Fail on a worker host the sandbox cannot serve
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['system'] == 'Linux'
+          - ansible_facts['architecture'] in ['aarch64', 'x86_64']
+        fail_msg: >-
+          the sandbox serves Linux arm64 and amd64 worker hosts only; this host is
+          {{ ansible_facts['system'] }}/{{ ansible_facts['architecture'] }}
+
+    - name: Install the pinned sandbox runtime
+      ansible.builtin.command: >-
+        /nix/var/nix/profiles/default/bin/nix profile add
+        --profile /nix/var/nix/profiles/default
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#sandbox-runtime
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#bubblewrap
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#socat
+      args:
+        creates: /nix/var/nix/profiles/default/bin/srt
+      environment:
+        PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+
+    - name: Read the installed sandbox runtime version
+      ansible.builtin.command: /nix/var/nix/profiles/default/bin/srt --version
+      register: agent_srt_installed
+      changed_when: false
+      check_mode: false
+
+    - name: Fail on a sandbox runtime other than the pinned version
+      ansible.builtin.assert:
+        that: agent_srt_installed.stdout | trim == factory_srt_version
+        fail_msg: >-
+          sandbox runtime {{ agent_srt_installed.stdout | trim }} is installed, but the factory pins
+          {{ factory_srt_version }}; update factory_nixpkgs_rev and factory_srt_version together
+
     - name: Map the CPU architecture to opencode's release naming
       ansible.builtin.set_fact:
-        opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+        agent_opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+        agent_opencode_release: "{{ {'aarch64': 'arm64', 'x86_64': 'x64'}[ansible_facts['architecture']] }}"
 
     - name: Fail on an architecture without a pinned checksum
       ansible.builtin.assert:
-        that: opencode_arch in opencode_checksums
-        fail_msg: "no opencode checksum pinned for {{ opencode_arch }}; add it to group_vars/factory.yml"
+        that: agent_opencode_arch in opencode_checksums
+        fail_msg: "no opencode checksum pinned for {{ agent_opencode_arch }}; add it to group_vars/factory.yml"
 
     - name: Read the installed opencode version
       ansible.builtin.command: /usr/local/bin/opencode --version
-      register: opencode_installed
+      register: agent_opencode_installed
       changed_when: false
       failed_when: false # not installed yet is a valid state, handled by the next block
       check_mode: false
 
     - name: Install opencode
-      when: opencode_installed.stdout | default('') | trim != opencode_version
+      when: agent_opencode_installed.stdout | default('') | trim != opencode_version
       block:
         - name: Download and verify the opencode release
           ansible.builtin.get_url:
-            url: "https://github.com/sst/opencode/releases/download/v{{ opencode_version }}/opencode-linux-{{ {'arm64': 'arm64', 'amd64': 'x64'}[opencode_arch] }}.tar.gz"
-            dest: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
-            checksum: "{{ opencode_checksums[opencode_arch] }}"
+            url: "https://github.com/sst/opencode/releases/download/v{{ opencode_version }}/opencode-linux-{{ agent_opencode_release }}.tar.gz"
+            dest: "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
+            checksum: "{{ opencode_checksums[agent_opencode_arch] }}"
             mode: "0600"
 
         - name: Unpack opencode
           ansible.builtin.unarchive:
-            src: "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            src: "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
             dest: /tmp
             remote_src: true
             include: [opencode]
@@ -121,7 +193,7 @@
             state: absent
           loop:
             - /tmp/opencode
-            - "/tmp/opencode-{{ opencode_version }}-{{ opencode_arch }}.tar.gz"
+            - "/tmp/opencode-{{ opencode_version }}-{{ agent_opencode_arch }}.tar.gz"
           when: not ansible_check_mode
 
     - name: Create the factory user's agent directories
@@ -157,20 +229,30 @@
         group: "{{ factory_user }}"
         mode: "0644"
 
-    - name: Fetch the pinned mattpocock skills
-      ansible.builtin.git:
-        repo: https://github.com/mattpocock/skills.git
-        dest: /opt/mattpocock-skills
-        version: "{{ mattpocock_skills_ref }}"
-        executable: /nix/var/nix/profiles/default/bin/git # the nix role's system-wide git is not on root's PATH
-
-    - name: Link the skills opencode needs into the factory user's skills directory
-      ansible.builtin.file:
-        src: "/opt/mattpocock-skills/{{ item.path }}"
-        dest: "/home/{{ factory_user }}/.config/opencode/skills/{{ item.name }}"
-        state: link
+    - name: Install the factory's own skills
+      ansible.builtin.copy:
+        src: skills/
+        dest: "/home/{{ factory_user }}/.config/opencode/skills/"
         owner: "{{ factory_user }}"
         group: "{{ factory_user }}"
-      loop: "{{ mattpocock_skills }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Remove the upstream skills clone the factory no longer uses
+      ansible.builtin.file:
+        path: /opt/mattpocock-skills
+        state: absent
+
+    - name: Find the old skill symlinks
+      ansible.builtin.find:
+        paths: "/home/{{ factory_user }}/.config/opencode/skills"
+        file_type: link
+      register: agent_skill_links
+
+    - name: Remove each old skill symlink
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ agent_skill_links.files }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.path }}"

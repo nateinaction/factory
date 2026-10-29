@@ -1,4 +1,16 @@
 ---
+# Cutover guard: runs before any host changes, so a failure here changes nothing.
+- name: Check that no finances-agent run is active
+  hosts: dagu_server
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Fail closed while a finances-agent-* run is active
+      ansible.builtin.include_role:
+        name: agent
+        tasks_from: drain
+      when: factory_agent | bool
+
 - name: Provision factory hosts
   hosts: factory
   become: true

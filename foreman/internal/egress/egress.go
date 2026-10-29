@@ -1,0 +1,452 @@
+// Package egress is the loopback proxy every run's traffic crosses. srt blocks direct egress and
+// points the run at this proxy; the proxy enforces the agent role's allowlist, refuses every
+// destination that is not publicly routable, forwards the traffic, and records every domain the run
+// asked for — the refused ones included — for the usage line. It also serves the run's OpenRouter
+// API path, so the model's base URL is reachable through the one port srt bridges on every OS.
+package egress
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"path"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/nateinaction/factory/foreman/internal/proxy"
+	"github.com/nateinaction/factory/foreman/internal/proxyauth"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
+)
+
+// The proxy's API surface and default address.
+const (
+	// APIDomain is the domain the model's API calls are reported as. The real upstream is
+	// OpenRouter, which the run's key proxy holds.
+	APIDomain = "openrouter.ai"
+	// APIPrefix is the only origin-form path the proxy answers.
+	APIPrefix = "/api/v1"
+	// Loopback is the address the proxy binds by default: loopback only, on a free port.
+	Loopback = "127.0.0.1:0"
+)
+
+// tunnelDirections is how many copies a tunnel runs, one for each direction.
+const tunnelDirections = 2
+
+// MaxTunnels bounds how many tunnels one run's proxy carries at once. A run that asks for more is
+// refused rather than growing the proxy without limit.
+const MaxTunnels = 64
+
+// Proxy is a running egress proxy.
+type Proxy struct {
+	policy       sandbox.Network
+	api          *url.URL
+	token        string
+	server       *http.Server
+	listener     net.Listener
+	gateway      gateway
+	transport    *http.Transport
+	apiTransport *http.Transport
+	forwarder    *httputil.ReverseProxy
+	apiProxy     *httputil.ReverseProxy
+	mu           sync.Mutex
+	domains      map[string]struct{}
+	tunnels      map[net.Conn]struct{}
+	open         int
+	log          *slog.Logger
+	closeOnce    sync.Once
+	closeErr     error
+}
+
+// StartWithLogger binds a proxy for policy on addr. apiURL is the OpenRouter key proxy that
+// origin-form API calls are forwarded to; empty refuses them. token is the run's random token, and
+// an API call without it is refused before anything is forwarded, so no other local caller can spend
+// the key. addr must be loopback. Any bind or parse failure is an error: the run has no egress
+// without its proxy. logger records traffic the proxy refuses; nil discards those diagnostics.
+func StartWithLogger(
+	ctx context.Context, policy sandbox.Network, apiURL, token, addr string, logger *slog.Logger,
+) (*Proxy, error) {
+	return startProxy(ctx, policy, apiURL, token, addr, logger, gateway{
+		resolve: net.DefaultResolver, dial: (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext,
+	})
+}
+
+// startProxy binds a proxy that reaches destinations through g. The gateway is fixed before the
+// listener serves, so every request sees one destination decision. The per-run token is required:
+// an API call without it never reaches the key.
+func startProxy(
+	ctx context.Context, policy sandbox.Network, apiURL, token, addr string,
+	logger *slog.Logger, g gateway,
+) (*Proxy, error) {
+	if token == "" {
+		return nil, fmt.Errorf("egress proxy: a per-run token is required")
+	}
+
+	if err := proxy.Address("egress", addr); err != nil {
+		return nil, err
+	}
+
+	api, err := parseAPI(apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("bind egress proxy: %w", err)
+	}
+
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
+	p := &Proxy{
+		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
+		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
+	}
+	plainDial := (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext
+	// Both transports ignore the proxy environment variables, so traffic the run sends through this
+	// proxy is never sent through another one.
+	p.transport = proxy.Transport(p.gateway.dialContext, proxy.DialTimeout)
+	// The key proxy is foreman's own loopback listener rather than a model-chosen destination, so
+	// its transport dials without the public-address check.
+	p.apiTransport = proxy.Transport(plainDial, proxy.DialTimeout)
+	p.forwarder = p.reverseProxy(p.transport, func(*httputil.ProxyRequest) {}, "egress proxy: upstream unavailable")
+	p.apiProxy = p.reverseProxy(p.apiTransport, func(pr *httputil.ProxyRequest) {
+		pr.Out.URL = p.apiURL(pr.In)
+		pr.Out.Host = ""
+	}, "egress proxy: model endpoint unavailable")
+	// Inbound request headers take the upstream header timeout: one ceiling serves both directions.
+	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: proxy.HeaderTimeout}
+
+	proxy.Serve(logger, "egress", p.server, ln)
+
+	return p, nil
+}
+
+// parseAPI validates the key proxy URL. Empty means the run has no model endpoint, which is refused
+// rather than guessed.
+func parseAPI(apiURL string) (*url.URL, error) {
+	if apiURL == "" {
+		return nil, nil //nolint:nilnil // an absent API is a valid mode: every API call is refused
+	}
+
+	parsed, err := url.Parse(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse API URL: %w", err)
+	}
+
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("parse API URL %q: a scheme and host are required", apiURL)
+	}
+
+	return parsed, nil
+}
+
+// reverseProxy is a forwarding handler over transport. rewrite names the outbound destination;
+// failure is what an upstream reachable in principle answers. The standard proxy strips every
+// hop-by-hop header, including those a Connection header names, and flushInterval -1 sends each
+// streamed write on as it arrives.
+func (p *Proxy) reverseProxy(
+	transport *http.Transport, rewrite func(*httputil.ProxyRequest), failure string,
+) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite:       rewrite,
+		Transport:     transport,
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			p.failed(w, r.URL.Hostname(), err, failure)
+		},
+	}
+}
+
+// Address is the loopback host:port srt's settings point at.
+func (p *Proxy) Address() string {
+	return p.listener.Addr().String()
+}
+
+// URL is the base URL the model calls for the OpenRouter API.
+func (p *Proxy) URL() string {
+	return "http://" + p.Address() + APIPrefix
+}
+
+// Domains is every host the proxy was asked for, sorted and without repeats. A host the policy or the
+// address check refused is recorded too: the usage line says what the run tried to reach.
+func (p *Proxy) Domains() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]string, 0, len(p.domains))
+	for host := range p.domains {
+		out = append(out, host)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
+// Close stops the proxy, ending the listener and every tunnel still open. It is safe to call twice.
+func (p *Proxy) Close() error {
+	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		tunnels := make([]net.Conn, 0, len(p.tunnels))
+
+		for conn := range p.tunnels {
+			tunnels = append(tunnels, conn)
+		}
+		p.mu.Unlock()
+
+		for _, conn := range tunnels {
+			_ = conn.Close() // the tunnel's own reader sees the close and ends
+		}
+
+		p.transport.CloseIdleConnections()
+		p.apiTransport.CloseIdleConnections()
+
+		if err := p.server.Close(); err != nil {
+			p.closeErr = fmt.Errorf("stop egress proxy: %w", err)
+		}
+	})
+
+	return p.closeErr
+}
+
+// serve routes one request: a tunnel, a forwarded proxy request, or an API call.
+func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodConnect:
+		p.tunnel(w, r)
+	case r.URL.IsAbs():
+		p.forward(w, r)
+	default:
+		p.apiCall(w, r)
+	}
+}
+
+// record notes one contacted domain, whether the policy allowed it or not.
+func (p *Proxy) record(host string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.domains[strings.ToLower(host)] = struct{}{}
+}
+
+// refuse answers a destination the proxy will not reach, recording it either way.
+func (p *Proxy) refuse(w http.ResponseWriter, host string) {
+	p.record(host)
+	http.Error(w, "egress proxy: destination not allowed", http.StatusForbidden)
+}
+
+// failed answers a dial that did not reach its destination: forbidden when the gateway refused the
+// address, failure for every other cause.
+func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure string) {
+	if refused, ok := refusal(err); ok {
+		p.log.Warn(
+			"egress proxy: destination is not publicly routable",
+			"host", host, "address", refused.addr.String(),
+		)
+		p.refuse(w, host)
+
+		return
+	}
+
+	p.log.Warn("egress proxy: upstream unavailable", "host", host, "error", err)
+	http.Error(w, failure, http.StatusBadGateway)
+}
+
+// tunnel carries a CONNECT to its destination.
+func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		p.record(r.Host)
+		http.Error(w, "egress proxy: malformed CONNECT destination", http.StatusBadRequest)
+
+		return
+	}
+
+	if !p.policy.Permits(host) {
+		p.refuse(w, host)
+
+		return
+	}
+
+	p.record(host)
+
+	if !p.reserveTunnel() {
+		p.log.Warn("egress proxy: tunnel limit reached; refusing the tunnel", "host", host, "limit", MaxTunnels)
+		http.Error(w, "egress proxy: too many tunnels", http.StatusTooManyRequests)
+
+		return
+	}
+
+	defer p.releaseTunnel()
+
+	p.relay(w, r, host, port)
+}
+
+// relay reaches the tunnel's destination, hijacks the client connection and pipes both ways.
+func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string) {
+	upstream, err := p.gateway.dialContext(r.Context(), "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		p.failed(w, host, err, "egress proxy: upstream unavailable")
+
+		return
+	}
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		// Nothing was tunneled; the close error has no response left to change.
+		_ = upstream.Close()
+
+		http.Error(w, "egress proxy: cannot tunnel", http.StatusInternalServerError)
+
+		return
+	}
+
+	client, buf, err := hijacker.Hijack()
+	if err != nil {
+		// The tunnel never opened; the close error has no response left to change.
+		_ = upstream.Close()
+		return
+	}
+
+	if _, err := buf.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		// The tunnel is abandoned; its close errors have no reader.
+		_ = client.Close()
+		// The upstream is abandoned with it, so its close error has no reader either.
+		_ = upstream.Close()
+
+		return
+	}
+
+	if err := buf.Flush(); err != nil {
+		// The tunnel is abandoned; its close errors have no reader.
+		_ = client.Close()
+		// The upstream is abandoned with it, so its close error has no reader either.
+		_ = upstream.Close()
+
+		return
+	}
+
+	p.copyTunnel(client, upstream)
+}
+
+// reserveTunnel takes one tunnel slot, reporting false when MaxTunnels are already open.
+func (p *Proxy) reserveTunnel() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.open >= MaxTunnels {
+		return false
+	}
+
+	p.open++
+
+	return true
+}
+
+// releaseTunnel frees the slot reserveTunnel took.
+func (p *Proxy) releaseTunnel() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.open--
+}
+
+// copyTunnel pipes both directions until the first side ends, tracking the pair so Close can end it.
+func (p *Proxy) copyTunnel(client, upstream net.Conn) {
+	p.mu.Lock()
+	p.tunnels[client] = struct{}{}
+	p.tunnels[upstream] = struct{}{}
+	p.mu.Unlock()
+
+	done := make(chan struct{}, tunnelDirections)
+
+	go func() {
+		_, _ = io.Copy(upstream, client) // the peer's close ends the loop
+
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream) // the peer's close ends the loop
+
+		done <- struct{}{}
+	}()
+
+	<-done
+
+	// The first direction has ended; closing both is what ends the second, so neither close error
+	// has a reader left.
+	_ = client.Close()
+	// The upstream is closed with it, for the same reason.
+	_ = upstream.Close()
+
+	<-done
+
+	p.mu.Lock()
+	delete(p.tunnels, client)
+	delete(p.tunnels, upstream)
+	p.mu.Unlock()
+}
+
+// forward carries one absolute-form HTTP request to its destination.
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
+	host := r.URL.Hostname()
+	if !p.policy.Permits(host) {
+		p.refuse(w, host)
+
+		return
+	}
+
+	p.record(host)
+	p.forwarder.ServeHTTP(w, r)
+}
+
+// apiCall forwards the model's API requests to the run's OpenRouter key proxy. A request that does
+// not carry the run's token is refused before it is forwarded, and any other origin-form path is
+// refused too: the sandbox gets no general-purpose reverse proxy.
+func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
+	if !proxyauth.Authorized(r, p.token) {
+		http.Error(w, "egress proxy: run token required", http.StatusUnauthorized)
+
+		return
+	}
+
+	if p.api == nil || !proxyauth.UnderPrefix(r.URL.Path, APIPrefix) {
+		http.Error(w, "egress proxy: only the OpenRouter API is served", http.StatusForbidden)
+
+		return
+	}
+
+	if !p.policy.Permits(APIDomain) {
+		p.refuse(w, APIDomain)
+
+		return
+	}
+
+	p.record(APIDomain)
+	p.apiProxy.ServeHTTP(w, r)
+}
+
+// apiURL is r as a request to the key proxy: the same path beneath /api/v1, nothing that could
+// redirect it.
+func (p *Proxy) apiURL(r *http.Request) *url.URL {
+	clean := path.Clean(r.URL.Path)
+
+	dest := *p.api
+
+	dest.Path = strings.TrimSuffix(p.api.Path, "/") + strings.TrimPrefix(clean, APIPrefix)
+	if dest.Path == "" {
+		dest.Path = "/"
+	}
+
+	dest.RawQuery = r.URL.RawQuery
+
+	return &dest
+}

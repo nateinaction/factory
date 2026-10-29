@@ -1,0 +1,22 @@
+# The {{ agent_role }} agent role. Queued by factory-poll with the repository and the claimed issue
+# number, and executed on a worker host that takes this agent role. Each agent role has its own DAG
+# and queue, so one agent role's slow run never holds another's work. The queue's capacity is the
+# fleet-wide run cap: the per-host run cap (the worker's --worker.max-active-runs) times the worker
+# hosts that take this agent role. The retro is the last step of the same run, so it keeps the host's
+# run slot until it ends.
+type: graph
+queue: factory-{{ agent_role }}
+worker_selector:
+  {{ agent_role }}: "true"
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/repo of the claimed issue
+  - name: ISSUE
+    type: string
+    required: true
+    description: Number of the claimed GitHub issue
+steps:
+  - name: {{ agent_role }}
+    run: /usr/local/bin/foreman start {{ agent_role }} ${params.REPO} ${params.ISSUE}

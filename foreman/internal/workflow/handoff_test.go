@@ -1,0 +1,401 @@
+package workflow_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/nateinaction/factory/foreman/internal/workflow"
+)
+
+var _ = Describe("the handoff label table", func() {
+	DescribeTable("gives every agent role a queued and a running label",
+		func(role workflow.Role, queued, running workflow.State) {
+			got, ok := workflow.Queued(role)
+			Expect(ok).To(BeTrue())
+			Expect(got).To(Equal(queued))
+
+			owner, ok := workflow.RoleOf(running)
+			Expect(ok).To(BeTrue())
+			Expect(owner).To(Equal(role))
+		},
+		Entry(nil, workflow.Planner, workflow.Plan, workflow.Planning),
+		Entry(nil, workflow.Researcher, workflow.Research, workflow.Researching),
+		Entry(nil, workflow.Implementer, workflow.Implement, workflow.Implementing),
+		Entry(nil, workflow.Reviewer, workflow.Review, workflow.Reviewing),
+	)
+
+	It("gives the Curator no queue", func() {
+		_, ok := workflow.Queued(workflow.Curator)
+		Expect(ok).To(BeFalse())
+	})
+
+	DescribeTable("names the agent role that owns a state",
+		func(state string, role workflow.Role) {
+			got, ok := workflow.RoleOf(workflow.State(state))
+			Expect(ok).To(BeTrue())
+			Expect(got).To(Equal(role))
+		},
+		Entry(nil, "factory:plan", workflow.Planner),
+		Entry(nil, "factory:planning", workflow.Planner),
+		Entry(nil, "factory:research", workflow.Researcher),
+		Entry(nil, "factory:researching", workflow.Researcher),
+		Entry(nil, "factory:implement", workflow.Implementer),
+		Entry(nil, "factory:implementing", workflow.Implementer),
+		Entry(nil, "factory:review", workflow.Reviewer),
+		Entry(nil, "factory:reviewing", workflow.Reviewer),
+	)
+
+	DescribeTable("parses only the known states",
+		func(name string, ok bool) {
+			_, err := workflow.ParseState(name)
+			if ok {
+				Expect(err).NotTo(HaveOccurred())
+			} else {
+				Expect(err).To(HaveOccurred())
+			}
+		},
+		Entry(nil, "factory:plan", true),
+		Entry(nil, "factory:paused", true),
+		Entry(nil, "factory:done", true),
+		Entry(nil, "closed", true),
+		Entry(nil, "", false),
+		Entry(nil, "plan", false),
+		Entry(nil, "factory:nope", false),
+		Entry(nil, "factory:planning ", false),
+	)
+
+	It("lists every factory label foreman creates, and only factory: labels", func() {
+		Expect(workflow.FactoryLabels()).To(ConsistOf(
+			"factory:plan", "factory:planning", "factory:research", "factory:researching",
+			"factory:implement", "factory:implementing", "factory:review", "factory:reviewing",
+			"factory:waiting", "factory:done", "factory:failed", "factory:paused",
+		))
+	})
+
+	It("gives a closed ticket no label", func() {
+		Expect(workflow.Closed).To(Equal(workflow.State("closed")))
+		Expect(workflow.FactoryLabels()).NotTo(ContainElement("closed"))
+	})
+})
+
+var _ = Describe("transition markers", func() {
+	transition := workflow.Transition{
+		Role: workflow.Implementer, RunID: "run-1",
+		From: workflow.Implement, To: workflow.Implementing, SHA: "abc123",
+	}
+
+	It("renders the agent role, run id, from-state, to-state and commit SHA", func() {
+		body, err := workflow.RenderTransition(transition)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(body).To(Equal(
+			`<!-- factory:handoff role=implementer run=run-1 from=factory:implement ` +
+				`to=factory:implementing sha=abc123 -->`))
+	})
+
+	It("round-trips through its own parser", func() {
+		body, err := workflow.RenderTransition(transition)
+		Expect(err).NotTo(HaveOccurred())
+
+		got, found, err := workflow.ParseTransition(body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got).To(Equal(transition))
+	})
+
+	It("parses a marker at the top of a longer comment", func() {
+		body, err := workflow.RenderTransition(transition)
+		Expect(err).NotTo(HaveOccurred())
+
+		got, found, err := workflow.ParseTransition(body + "\n\nThe agent finished.")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got).To(Equal(transition))
+	})
+
+	It("is not a marker when the comment does not start with one", func() {
+		_, found, err := workflow.ParseTransition("A human comment\n<!-- factory:handoff -->")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	// marker wraps a fields string as a handoff marker.
+	marker := func(fields string) string { return "<!-- factory:handoff " + fields + " -->" }
+
+	DescribeTable("fails closed on a malformed marker, for the reason the case names",
+		func(body, wantErr string) {
+			_, found, err := workflow.ParseTransition(body)
+			Expect(found).To(BeTrue())
+			Expect(err).To(MatchError(ContainSubstring(wantErr)))
+		},
+		Entry("not closed", "<!-- factory:handoff role=implementer", "marker is not closed"),
+		Entry("no fields", "<!-- factory:handoff  -->", "has 0 fields, want 5"),
+		Entry("unknown role", marker(
+			"role=janitor run=r from=factory:implement to=factory:implementing sha=a"),
+			`unknown agent role "janitor"`),
+		Entry("unknown state", marker(
+			"role=implementer run=r from=factory:nope to=factory:implementing sha=a"),
+			`unknown handoff state "factory:nope"`),
+		Entry("missing run", marker(
+			"role=implementer from=factory:implement to=factory:implementing sha=a"),
+			"has 4 fields, want 5"),
+		Entry("missing from", marker(
+			"role=implementer run=r to=factory:implementing sha=a"),
+			"has 4 fields, want 5"),
+		Entry("missing to", marker(
+			"role=implementer run=r from=factory:implement sha=a"),
+			"has 4 fields, want 5"),
+		Entry("missing sha", marker(
+			"role=implementer run=r from=factory:implement to=factory:implementing"),
+			"has 4 fields, want 5"),
+		Entry("repeated key", marker(
+			"role=implementer role=reviewer run=r from=factory:implement to=factory:implementing"),
+			`repeated transition field "role"`),
+		Entry("unknown key", marker(
+			"role=implementer run=r from=factory:implement to=factory:implementing extra=1"),
+			`unknown transition field "extra"`),
+		Entry("unquoted value", marker(
+			`role=implementer run=r from=factory:implement to=factory:implementing sha=a"b`),
+			"not a marker-safe token"),
+	)
+
+	// renderable is a transition for mutating one field.
+	renderable := func() workflow.Transition {
+		return workflow.Transition{
+			Role: workflow.Implementer, RunID: "r", From: workflow.Implement, To: workflow.Implementing,
+		}
+	}
+
+	DescribeTable("refuses to render a transition with an unstorable value",
+		func(mutate func(*workflow.Transition)) {
+			t := renderable()
+			mutate(&t)
+
+			_, err := workflow.RenderTransition(t)
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("unknown role", func(t *workflow.Transition) { t.Role = "janitor" }),
+		Entry("unknown from", func(t *workflow.Transition) { t.From = "factory:nope" }),
+		Entry("unknown to", func(t *workflow.Transition) { t.To = "factory:nope" }),
+		Entry("empty run", func(t *workflow.Transition) { t.RunID = "" }),
+		Entry("run with a space", func(t *workflow.Transition) { t.RunID = "a b" }),
+		Entry("run with a newline", func(t *workflow.Transition) { t.RunID = "a\nb" }),
+	)
+})
+
+var _ = Describe("the latest transition", func() {
+	marker := func(run string, to workflow.State) string {
+		body, err := workflow.RenderTransition(workflow.Transition{
+			Role: workflow.Implementer, RunID: run, From: workflow.Implement, To: to,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		return body
+	}
+
+	It("is the last marker in API order, ignoring comments that are not markers", func() {
+		comments := []workflow.Item{
+			{Body: marker("r1", workflow.Implementing), Author: factoryApp(workflow.Implementer)},
+			{Body: "a human comment", Author: "o"},
+			{
+				Body:   marker("r2", workflow.Review) + "\n\nopened",
+				Author: factoryApp(workflow.Implementer),
+			},
+		}
+
+		got, found, err := workflow.LatestMarker(comments, "o")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.Transition.RunID).To(Equal("r2"))
+		Expect(got.Transition.To).To(Equal(workflow.Review))
+	})
+
+	It("ignores a marker another author forged, so it moves nothing", func() {
+		comments := []workflow.Item{
+			{
+				ID: 1, Body: marker("r1", workflow.Implementing),
+				Author: factoryApp(workflow.Implementer),
+			},
+			{ID: 2, Body: marker("forged", workflow.Review), Author: "o"},
+		}
+
+		got, found, err := workflow.LatestMarker(comments, "o")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.Transition.RunID).To(Equal("r1"))
+	})
+
+	It("finds none when no comment is a marker", func() {
+		_, found, err := workflow.LatestMarker([]workflow.Item{{Body: "hello", Author: "o"}}, "o")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("fails closed on a malformed marker the factory wrote", func() {
+		_, _, err := workflow.LatestMarker([]workflow.Item{{
+			Body: "<!-- factory:handoff nope -->", Author: factoryApp(workflow.Implementer),
+		}}, "o")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("skips a malformed marker another author wrote, so it does not block the issue", func() {
+		comments := []workflow.Item{
+			{Body: "<!-- factory:handoff nope -->", Author: "o"},
+			{
+				Body:   marker("r1", workflow.Implementing),
+				Author: factoryApp(workflow.Implementer),
+			},
+		}
+
+		got, found, err := workflow.LatestMarker(comments, "o")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.Transition.RunID).To(Equal("r1"))
+	})
+})
+
+var _ = Describe("recovery", func() {
+	transition := workflow.Transition{
+		Role: workflow.Implementer, RunID: "r", From: workflow.Implement, To: workflow.Implementing,
+	}
+
+	It("re-applies the state the latest marker names when the issue does not carry it", func() {
+		issue := workflow.Issue{Labels: []string{"factory:implement"}}
+
+		plan, repair := workflow.Repair(issue, transition, true)
+		Expect(repair).To(BeTrue())
+		Expect(plan.Add).To(Equal(workflow.Implementing))
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing))
+	})
+
+	It("leaves exactly the state the marker names, dropping the stale one", func() {
+		// A finish that posted its marker but failed to take the running label off leaves the issue
+		// in two states at once; recovery keeps only the one the marker names.
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing, workflow.LabelImplement}}
+
+		plan, repair := workflow.Repair(issue, transition, true)
+		Expect(repair).To(BeTrue())
+		Expect(plan.Add).To(BeEmpty(), "added a state the issue already carries")
+		Expect(plan.Remove).To(ConsistOf(workflow.Implement))
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing))
+	})
+
+	It("keeps a label that is not a handoff state", func() {
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing, "bug"}}
+
+		plan, _ := workflow.Repair(issue, transition, true)
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing, "bug"))
+	})
+
+	It("does nothing when the issue already carries that state", func() {
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing}}
+
+		_, repair := workflow.Repair(issue, transition, true)
+		Expect(repair).To(BeFalse())
+	})
+
+	It("does nothing without a marker or on a paused issue", func() {
+		_, repair := workflow.Repair(workflow.Issue{}, transition, false)
+		Expect(repair).To(BeFalse())
+
+		paused := workflow.Issue{Labels: []string{"factory:paused"}}
+		_, repair = workflow.Repair(paused, transition, true)
+		Expect(repair).To(BeFalse())
+	})
+
+	It("does not apply a label for a closed ticket", func() {
+		closed := workflow.Transition{
+			Role: workflow.Researcher, RunID: "r", From: workflow.Researching, To: workflow.Closed,
+		}
+
+		_, repair := workflow.Repair(workflow.Issue{}, closed, true)
+		Expect(repair).To(BeFalse())
+	})
+})
+
+var _ = Describe("routing a new issue", func() {
+	DescribeTable("sends a ticket to its first queue",
+		func(labels []string, state workflow.State) {
+			got, ok := workflow.Route(workflow.Issue{Labels: labels})
+			Expect(ok).To(BeTrue())
+			Expect(got).To(Equal(state))
+		},
+		Entry("research", []string{"wayfinder:research"}, workflow.Research),
+		Entry("grilling", []string{"wayfinder:grilling"}, workflow.Plan),
+		Entry("prototype", []string{"prototype"}, workflow.Plan),
+		Entry("wayfinder prototype", []string{"wayfinder:prototype"}, workflow.Plan),
+		Entry("task", []string{"task"}, workflow.Plan),
+		Entry("anything else", []string{"bug"}, workflow.Plan),
+		Entry("unlabelled", nil, workflow.Plan),
+	)
+
+	DescribeTable("never routes",
+		func(issue workflow.Issue) {
+			_, ok := workflow.Route(issue)
+			Expect(ok).To(BeFalse())
+		},
+		Entry("a wayfinder map", workflow.Issue{Labels: []string{"wayfinder:map"}}),
+		Entry("the retro dashboard", workflow.Issue{Title: workflow.DashboardTitle}),
+		Entry("an issue already carrying a factory label", workflow.Issue{Labels: []string{"factory:implement"}}),
+		Entry("a paused issue", workflow.Issue{Labels: []string{"factory:paused"}}),
+		Entry("a pull request", workflow.Issue{IsPullRequest: true}),
+	)
+
+	It("recognises a factory App as a bot identity", func() {
+		Expect(workflow.BotAuthored("nateinaction-factory-implementer[bot]")).To(BeTrue())
+		Expect(workflow.BotAuthored("nateinaction")).To(BeFalse())
+	})
+
+	DescribeTable("recognises only the repository owner's factory App identities",
+		func(login, owner string, factory bool) {
+			Expect(workflow.FactoryAuthored(login, owner)).To(Equal(factory))
+		},
+		Entry("the Implementer's App", "nateinaction-factory-implementer[bot]", "nateinaction", true),
+		Entry("the Planner's App", "nateinaction-factory-planner[bot]", "nateinaction", true),
+		Entry("the owner compared case-insensitively", "NateInAction-factory-planner[bot]", "nateinaction", true),
+		Entry("another owner's factory App", "evil-factory-planner[bot]", "nateinaction", false),
+		Entry("another owner's App with our owner as a prefix", "nateinaction-evil-factory-planner[bot]",
+			"nateinaction", false),
+		Entry("a retry's App", "o-factory-reviewer[bot]", "o", true),
+		Entry("a writer", "nateinaction", "nateinaction", false),
+		Entry("an outsider", "passer-by", "nateinaction", false),
+		Entry("another App", "github-actions[bot]", "nateinaction", false),
+		Entry("an App for no known agent role", "nateinaction-factory-janitor[bot]", "nateinaction", false),
+		Entry("no owner", "factory-implementer[bot]", "nateinaction", false),
+		Entry("no bot suffix", "nateinaction-factory-implementer", "nateinaction", false),
+		Entry("a bare role", "implementer", "nateinaction", false),
+		Entry("the empty login", "", "nateinaction", false),
+		Entry("an unknown repository owner", "nateinaction-factory-planner[bot]", "", false),
+		Entry("the role after a nested owner", "a-factory-b-factory-curator[bot]", "a-factory-b", true),
+	)
+})
+
+var _ = Describe("writers", func() {
+	DescribeTable("grants write access only to the permissions that have it",
+		func(permission string, writer bool) {
+			Expect(workflow.WriterPermission(permission)).To(Equal(writer))
+		},
+		Entry(nil, "admin", true),
+		Entry(nil, "maintain", true),
+		Entry(nil, "write", true),
+		Entry(nil, "push", true),
+		Entry(nil, "read", false),
+		Entry(nil, "triage", false),
+		Entry(nil, "none", false),
+		Entry(nil, "", false),
+		Entry(nil, "WRITE", false),
+	)
+})
+
+var _ = Describe("the Blocked by fallback", func() {
+	DescribeTable("reads the blocking issue numbers",
+		func(body string, want []int) {
+			Expect(workflow.BlockedBy(body)).To(Equal(want))
+		},
+		Entry(nil, "Blocked by: #12, #13", []int{12, 13}),
+		Entry(nil, "# Title\n\nBlocked by: #7\n\nBody", []int{7}),
+		Entry(nil, "Blocked by: #7 and #7", []int{7}),
+		Entry(nil, "No blockers here", nil),
+		Entry(nil, "Blocked by: nothing", nil),
+		Entry(nil, "Blocked by: #notanumber", nil),
+	)
+})

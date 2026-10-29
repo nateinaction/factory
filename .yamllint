@@ -1,0 +1,37 @@
+---
+# yamllint's settings. The binary comes from the Nix dev shell and the
+# `yamllint` pre-commit hook runs it over the whole tree. ansible-lint reads
+# this file too, and requires the settings it names (braces, comments
+# indentation, octal values) to be at least as strict as its own YAML rule.
+#
+# The defaults are kept except where this repo knowingly differs:
+extends: default
+
+# Local credentials, gitignored; CI never has them and they are not ours to reflow.
+ignore: |
+  secrets/
+
+rules:
+  # Ansible templates are full of Jinja (`{{ ... }}`), which the key-separator
+  # rule misreads; the flow mappings in group_vars use one space inside.
+  colons: disable
+  braces:
+    max-spaces-inside: 1
+  # A comment sits at the level of the key it explains, which is sometimes a
+  # deeper level than the line above it.
+  comments-indentation: false
+  # No file opens with `---` except a few; requiring it is noise.
+  document-start: disable
+  # Comments are written with a single space before `#`.
+  comments:
+    min-spaces-from-content: 1
+  # Ansible's own rule allows up to 160 columns.
+  line-length:
+    max: 160
+  # File modes are written as quoted strings ("0644"), never as YAML octals.
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  # GitHub workflow keys (`on:`) are read as booleans by YAML 1.1.
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]

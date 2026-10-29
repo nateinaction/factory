@@ -1,0 +1,123 @@
+# opencode harness adapter
+
+foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (pure: command line, environment, stream parsing, retry rules) and `foreman/internal/foreman/agent.go` (the retry loop and state directory).
+
+| Guarantee | opencode mechanism |
+|---|---|
+| Named agent per agent role, model from `factory_models` | `agent.<role>` in the rendered `opencode.json`, run as `opencode run --agent <role>` |
+| Context cap | the agent's model is an alias (`<role>-200k`) whose `limit.input` is the cap |
+| Compaction on or off per agent role | `OPENCODE_CONFIG_CONTENT={"compaction":{"auto":<bool>},"provider":...}` set per run |
+| Skills: only the factory's own, exactly the agent role's list | `agent.<role>.permission.skill` allows the agent role's skills and denies the rest; `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
+| Permissions: deny by default, never `ask` | `permission.*` in `opencode.json`, rendered per agent role from `group_vars` |
+| No repository config | `OPENCODE_DISABLE_PROJECT_CONFIG=1` |
+| Fresh state, shared with the retro, deleted with the run | `OPENCODE_DB` points at an on-disk database in the run's own state directory, so the retro can resume the run's session by id and the state is removed with the run directory |
+| Step cap and deadline per agent role | `agent.<role>.steps` from `factory_agent_limits`, and foreman's own count and timeout; see below |
+| Retro in the run's session | `--session <id>` from the run's JSON stream, never `--continue` |
+| The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's egress proxy, which forwards `/api/v1` to the loopback key proxy that adds `Authorization` |
+| Usage | the key proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
+| Every model process runs under srt | `opencode run` is wrapped by `srt --settings <run>/srt-settings.json`; see `foreman/docs/sandbox.md` |
+| Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
+| No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the agent role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
+
+### Where the Reviewer's state lives
+
+Every agent role, the Reviewer included, keeps its opencode state in an on-disk database in the
+run's own state directory (`OPENCODE_DB`). The run's retro shares that database so it can resume the
+session by id, and the database is deleted with the run directory. This supersedes the spec line
+"The Reviewer's state is in memory only.": the Reviewer is started fresh for every review and shares
+its state with nothing except its own retro, but that state is on disk for the run's lifetime.
+
+## The OpenRouter key proxy
+
+`foreman/internal/openrouter` is a loopback forwarding proxy that foreman starts for each run and
+stops when the run ends. It binds `127.0.0.1` on a free port, holds the key, adds
+`Authorization: Bearer <key>` to every request, and forwards only to `https://openrouter.ai/api/v1`.
+A request naming any other path or destination is refused, and the proxy's client ignores
+`HTTPS_PROXY`, so the key cannot be sent anywhere else. A proxy that cannot bind fails the run, with
+no unsandboxed fallback.
+
+opencode sees only `http://127.0.0.1:<port>/api/v1` in `provider.openrouter.options.baseURL`, where
+that port is the run's egress proxy (`foreman/internal/egress`). The egress proxy forwards the
+`/api/v1` path to this key proxy and enforces the agent role's egress policy. The
+proxy reads `usage.prompt_tokens`, `usage.completion_tokens`, `usage.prompt_tokens_details.cached_tokens`
+and `usage.cost` from each response (the last SSE message when streaming), and the run's usage line
+takes those totals over the adapter's own.
+
+Checked against the pinned v1.19.3: opencode refuses a run with no provider key. For each run foreman
+mints a random token and sets it as `provider.openrouter.options.apiKey`; opencode sends it as its
+`Authorization` header. The egress proxy and the key proxy both require it, comparing it in constant
+time before forwarding, so another local process or run cannot spend the key. The key proxy replaces
+the header with the real OpenRouter key, which never enters the model's config. The token stays in
+memory and the run's environment, never in a file that outlives the run or in a log. The acceptance
+test in `foreman/internal/foreman/acceptance_test.go` exercises this under srt.
+
+
+## How foreman enforces the step cap and the deadline
+
+The deadline is a `context.WithTimeout` around every attempt of the run, from
+`factory_agent_limits.<role>.deadline_minutes` (or `factory_agent_limits.<role>.retro.deadline_minutes` for the retro).
+A run that runs out of time fails.
+
+The step cap is counted twice. opencode stops the agent at `agent.<role>.steps`, and foreman counts
+the `step_finish` events in the stream across every attempt of the run. A run whose success would
+land at or past the cap fails with the `step cap` failure kind, which is never retried, so an agent
+that opencode has forced to summarise does not count as a success. Assume `step_finish` marks one
+agentic step; check that against v1.19.3 output on a worker host.
+
+Hitting either fails the issue to `factory:failed`, as the spec says. A retro that hits its cap or
+deadline is dropped, logged, and never fails the run.
+
+## The retro epilogue
+
+After foreman has applied the run's output, the same dagu run resumes the model's session by its
+explicit id (`--session <id>`, never `--continue`) with the `retro` skill. The retro is the run's
+last step, so the worker host's run slot stays taken until the retro ends. The retro has its own
+step cap and deadline (`factory_agent_limits.<role>.retro`), and the same state
+database, so it sees the run as it happened.
+
+- The model writes `retro.json`; `workflow.ParseRetro` validates it strictly, all or nothing.
+- The prompt carries only the existing group keys and one-line claims for the reporting agent role,
+  across every issue of the repository, never another retro's evidence. A group a retro on another
+  issue made is one this retro can pick, so two issues reporting one target share a group and the
+  dashboard can count it ready. Another agent role's retros are left out, so the Reviewer's context
+  never contains the Implementer's.
+- foreman posts the retro whole as a marker comment on the issue, keyed by issue, agent role and
+  run key (the Implementer's commit SHA, the Reviewer's PR head SHA). A repeat updates that comment.
+- A failed run gets a retro too, except a context overflow, running out of credits or an unknown
+  model. A dropped or invalid retro is logged and never changes the run's outcome.
+
+## Where the permissions are set
+
+opencode's `external_directory` is static in the rendered config, so the rendered `opencode.json`
+denies every external path. foreman's per-run inline config (`OPENCODE_CONFIG_CONTENT`) is the only
+place that names paths, and it allows only this run's own directories and files: its run directory,
+its scratch/output directory and its retro file. That is the same boundary srt enforces, as a second
+layer, so a sibling run's scratch directory is denied by both. A denied action still reaches the dagu
+run log, because foreman echoes the whole opencode stream.
+
+`git push` and every `gh` write are denied for every agent role. The Implementer and Reviewer may run
+anything else. Their `gh` rule denies the whole command and re-allows the inspection subcommands
+(`view`, `list`, `diff`, `checks`, `status`, and `api` with a GET method), so `gh pr comment`,
+`gh pr review` and the `gh api -f`/`-F`/`--input` forms that POST are denied. The read-only roles may
+run a fixed list of inspection commands; their bash is denied by default.
+
+
+## Does opencode still read AGENTS.md with project config disabled?
+
+Not yet checked against v1.19.3: the dev shell has opencode v2.0.30, not the pinned version, and a
+real check needs a model key. To check on a worker host, run `opencode run --agent implementer` in a
+clone whose `AGENTS.md` holds a sentinel, with both `OPENCODE_DISABLE_*` variables set, and ask the
+model to repeat the sentinel without foreman's prompt.
+
+The answer does not change correctness. foreman puts `AGENTS.md`, `GLOSSARY.md` and
+`docs/agents/*.md` into every prompt itself, after the agent role's prompt and before the issue
+material, so a repository steers runs the same way either way. If opencode does read `AGENTS.md`,
+it is read twice.
+
+## Stream shapes assumed
+
+The adapter assumes `step_finish` events carry `part.tokens.{input,output,cache.read}` and
+`part.cost`, every event carries `sessionID`, and failures arrive as `error` events with
+`error.name` and `error.data.statusCode` (`ContextOverflowError` for an overflow). Fakes in
+`foreman/internal/opencode/opencode_test.go` use these shapes. Check them against v1.19.3 output when first run on a
+worker host.

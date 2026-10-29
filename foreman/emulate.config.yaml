@@ -1,0 +1,54 @@
+# Seed for the GitHub emulator foreman's tests run against (vercel-labs/emulate).
+#
+# Tests create and delete their own repository through the API, so only the users and the
+# tokens the fake `github-app-token` helper mints live here. The login behind a token is
+# what `expectAuthorizedAs` asserts on, and what the emulator attributes writes to.
+tokens:
+  # Admin token: creates and deletes the per-spec repository. Tests call it directly,
+  # never through the recording proxy, so setup does not pollute request assertions.
+  admin-token:
+    login: o
+    scopes:
+      - repo
+      - user
+  # The Reviewer's token file in the flow tests (`writeToken(Reviewer, ...)`).
+  repo-token:
+    login: factory
+    scopes:
+      - repo
+  secret-token:
+    login: factory
+    scopes:
+      - repo
+  # Tokens the fake `github-app-token` helper mints, one per agent role.
+  minted-token-planner:
+    login: o-factory-planner[bot]
+    scopes:
+      - repo
+  minted-token-researcher:
+    login: o-factory-researcher[bot]
+    scopes:
+      - repo
+  minted-token-implementer:
+    login: o-factory-implementer[bot]
+    scopes:
+      - repo
+  minted-token-reviewer:
+    login: o-factory-reviewer[bot]
+    scopes:
+      - repo
+
+github:
+  users:
+    - login: o
+      name: Repository Owner
+    - login: factory
+      name: Factory
+    - login: o-factory-planner[bot]
+      name: Factory Planner
+    - login: o-factory-researcher[bot]
+      name: Factory Researcher
+    - login: o-factory-implementer[bot]
+      name: Factory Implementer
+    - login: o-factory-reviewer[bot]
+      name: Factory Reviewer

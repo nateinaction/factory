@@ -1,0 +1,10 @@
+# secure_path: sudo resets PATH, which would hide git and the other nix-profile tools from the agent.
+Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
+# The dagu run id is the factory half's too: it records the run's transition markers before the retro,
+# and start records the same ones afterwards. It names a run; it grants nothing.
+Defaults:{{ dagu_user }} env_keep += "DAG_RUN_ID"
+# One command, as one user: foreman run, and nothing else. sudoers cannot count or constrain the
+# arguments, so the trailing wildcard is unavoidable; foreman itself refuses everything under sudo
+# except the verb `run` followed by exactly three positional arguments, the agent role, repository
+# and issue, and refuses any flag, another verb, or a missing or extra positional before any work.
+{{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/foreman run *
