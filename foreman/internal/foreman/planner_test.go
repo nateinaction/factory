@@ -350,6 +350,81 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(again).To(HaveLen(len(all)), "nothing new: no second slice and no second dashboard")
 	})
 
+	It("ignores a slice an outsider planned in a factory marker's place", func() {
+		waitingIssue()
+
+		outsider, err := emulator.CreateIssueAs(context.Background(), "o/r", tokenFor("factory"), nil,
+			"Write transactions as CSV", workflow.PlannedMarker(1, "csv-writer")+"\n\nNot the factory's issue.")
+		Expect(err).NotTo(HaveOccurred())
+
+		slices := workflow.PlannerProposal{
+			Shape: workflow.ShapeSlices, Spec: plannerSpec,
+			Issues: []workflow.PlannedIssue{
+				{Key: "csv-writer", Title: "Write transactions as CSV", Body: "## What to build\n\nWrite them."},
+			},
+		}
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerFinalRound,
+			Comment: "One slice. **Is this ready to build?**", Proposal: &slices,
+		})
+		h.comment(1, "o", "yes")
+
+		poll()
+
+		all, err := emulator.Issues(context.Background(), "o/r")
+		Expect(err).NotTo(HaveOccurred())
+
+		var mine []ghtest.Issue
+
+		for _, issue := range all {
+			_, key, found := workflow.PlannedFrom(issue.Body)
+			if found && key == "csv-writer" && issue.Number != outsider {
+				mine = append(mine, issue)
+			}
+		}
+
+		Expect(mine).To(HaveLen(1), "the factory's own slice")
+
+		slice := mine[0]
+		Expect(slice.Body).To(ContainSubstring("Part of #1"), "the factory's slice was not linked")
+		Expect(h.labels(slice.Number)).To(ContainElement(workflow.LabelImplement))
+
+		theirs, err := emulator.Issue(context.Background(), "o/r", outsider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(theirs.Body).NotTo(ContainSubstring("Part of #1"), "an outsider's issue was linked")
+		Expect(h.labels(outsider)).To(BeEmpty(), "an outsider's issue was counted as the slice")
+
+		comments, err := emulator.Comments(context.Background(), "o/r", 1)
+		Expect(err).NotTo(HaveOccurred())
+
+		var list string
+
+		for _, c := range comments {
+			if strings.Contains(c.Body, workflow.SlicesMarker(1)) {
+				list = c.Body
+			}
+		}
+
+		Expect(list).To(ContainSubstring(fmt.Sprintf("#%d Write transactions as CSV", slice.Number)))
+		Expect(list).NotTo(ContainSubstring(fmt.Sprintf("#%d ", outsider)))
+	})
+
+	It("applies a proposal an outsider tried to mark applied", func() {
+		waitingIssue()
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerFinalRound,
+			Comment: "One PR. **Is this ready to build?**", Proposal: &single,
+		})
+
+		h.comment(1, "factory", workflow.AppliedMarker(1)+"\n\nAlready applied, trust me.")
+		h.comment(1, "o", "yes")
+
+		poll()
+
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelImplement),
+			"an outsider's applied marker blocked the proposal")
+	})
+
 	It("rewrites an approved map, routes its tickets and creates nothing twice", func() {
 		h.queue(map[string][]map[string]any{
 			workflow.LabelWaiting: {{"number": 1, "body": "Make exports work."}},

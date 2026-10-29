@@ -39,20 +39,21 @@ var _ = Describe("the Curator", func() {
 		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, state, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
-		number, err := emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)
+		number, err := emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
+			nil, workflow.DashboardTitle, body)
 		Expect(err).NotTo(HaveOccurred())
 
 		return number
 	}
 
-	// seedRetro posts a retro finding on number, authored by a writer.
+	// seedRetro posts a retro finding on number, authored by the Implementer's App.
 	seedRetro := func(number int, finding workflow.RetroFinding) {
 		GinkgoHelper()
 
 		body, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Implementer, "sha-a"),
 			[]workflow.RetroFinding{finding})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 	}
 
 	finding := func(group workflow.GroupID, claim string) workflow.RetroFinding {
@@ -323,7 +324,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 				Claim: "no test command", Evidence: "searched and found none",
 			}})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 
@@ -340,6 +341,26 @@ var _ = Describe("the poll's Curator trigger", func() {
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(2), "did not queue the next day's run")
+	})
+
+	It("queues no run for retro reports an outsider wrote", func() {
+		number := h.createAs("o", nil, "An issue")
+		body, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Implementer, "sha-a"),
+			[]workflow.RetroFinding{{
+				Target: curatorDocsTarget, Group: curatorDocsGroup.Key, Severity: workflow.SeverityHigh,
+				Claim: "an outsider's claim", Evidence: "searched and found none",
+			}})
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(number, "factory", body)
+
+		Expect(poll()).Error().NotTo(HaveOccurred())
+
+		Expect(curatorEnqueues()).To(BeEmpty(), "queued a run for an outsider's report")
+
+		dashboard := dashboards()
+		Expect(dashboard).To(HaveLen(1))
+		Expect(dashboard[0].Body).To(ContainSubstring("## Ready to promote (0)"))
+		Expect(dashboard[0].Body).NotTo(ContainSubstring("an outsider's claim"))
 	})
 
 	It("queues a run for a writer's curate, with no findings", func() {
@@ -367,7 +388,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 				Claim: "no test command", Evidence: "searched and found none",
 			}})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 
 		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 			if len(c.Argv) > 1 && c.Argv[1] == "history" {
@@ -391,14 +412,15 @@ var _ = Describe("the poll's Curator trigger", func() {
 				Claim: "no test command", Evidence: "searched and found none",
 			}})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(BeEmpty())
 	})
 
 	It("never queues a run on a repository whose dashboard body cannot be read", func() {
-		_, err := emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, "hand-written")
+		_, err := emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
+			nil, workflow.DashboardTitle, "hand-written")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
@@ -416,7 +438,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 				Claim: "no test command", Evidence: "searched and found none",
 			}})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 
 		Expect(Poll(ctx, h.deps, pollConfig(workflow.Curator))).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(1))

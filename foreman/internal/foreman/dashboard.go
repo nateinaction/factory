@@ -236,11 +236,16 @@ func retroLog(
 	return reports, threads, nil
 }
 
-// retroReports reads one issue's retro comments as dashboard reports.
+// retroReports reads one issue's retro comments as dashboard reports. Only a factory App's report
+// counts, so an outsider can never feed findings to the dashboard or the Curator.
 func retroReports(d Deps, number int, comments []workflow.Item) []workflow.DashboardReport {
 	var reports []workflow.DashboardReport
 
 	for _, comment := range comments {
+		if !workflow.FactoryAuthored(comment.Author) {
+			continue
+		}
+
 		rc, ok, err := workflow.ParseRetroComment(comment.Body)
 		if err != nil {
 			d.log().Warn("skipping a retro comment the dashboard cannot read", "issue", number, "error", err)
@@ -264,12 +269,13 @@ func retroReports(d Deps, number int, comments []workflow.Item) []workflow.Dashb
 	return reports
 }
 
-// findDashboard picks the repository's dashboard: the oldest issue titled DashboardTitle, open or
-// closed. A dashboard a person renames is a new one on the next poll, which is the least surprising
-// thing to do with a body foreman no longer owns.
+// findDashboard picks the repository's dashboard: the oldest factory App's issue titled DashboardTitle,
+// open or closed. Another author's issue is never the dashboard, so an outsider cannot file it first. A
+// dashboard a person renames is a new one on the next poll, which is the least surprising thing to do
+// with a body foreman no longer owns.
 func findDashboard(issues []workflow.Issue) (number int, body string, found bool) {
 	for _, issue := range issues {
-		if issue.Title != workflow.DashboardTitle {
+		if issue.Title != workflow.DashboardTitle || !workflow.FactoryAuthored(issue.Author) {
 			continue
 		}
 

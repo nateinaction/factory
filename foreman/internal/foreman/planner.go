@@ -487,6 +487,11 @@ func plannedIssues(
 	out := make(map[string]workflow.Issue, len(issues))
 
 	for _, issue := range issues {
+		// Only a factory App's issue stands in for a planned slice; an outsider's marker is ignored.
+		if !workflow.FactoryAuthored(issue.Author) {
+			continue
+		}
+
 		plannedFrom, key, found := workflow.PlannedFrom(issue.Body)
 		if !found || plannedFrom != from {
 			continue
@@ -585,10 +590,11 @@ func ensureBodyLine(ctx context.Context, c github.Client, ref workflow.IssueRef,
 	return c.UpdateIssueBody(ctx, ref, line+"\n\n"+issue.Body)
 }
 
-// hasMarker reports whether a comment starts with marker.
+// hasMarker reports whether a factory App's comment starts with marker. Another author's marker is
+// ignored, so an outsider can neither block an apply nor stand in for one.
 func hasMarker(comments []workflow.Item, marker string) bool {
 	for _, comment := range comments {
-		if strings.Contains(comment.Body, marker) {
+		if workflow.FactoryAuthored(comment.Author) && strings.Contains(comment.Body, marker) {
 			return true
 		}
 	}
