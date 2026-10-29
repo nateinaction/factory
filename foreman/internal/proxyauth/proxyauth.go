@@ -1,5 +1,6 @@
 // Package proxyauth holds the run-token check and path check both of foreman's loopback proxies use.
 // One implementation keeps the constant-time comparison and the API-prefix rule the same everywhere.
+// The address check, transport and serve loop those proxies share live in internal/proxy.
 package proxyauth
 
 import (

@@ -174,16 +174,9 @@ var plannedMarkerRE = regexp.MustCompile(`<!-- factory:planned from=#([0-9]{1,9}
 
 // ParsePlannerOutput reads planner-output.json strictly.
 func ParsePlannerOutput(text string) (PlannerOutput, error) {
-	var out PlannerOutput
-
-	problems := decodeStrict(text, &out)
-	problems = append(problems, plannerProblems(out)...)
-
-	if len(problems) > 0 {
-		return PlannerOutput{}, &OutputError{File: PlannerOutputFile, Problems: problems}
-	}
-
-	return out, nil
+	return parseOutput(text, PlannerOutputFile, func(out PlannerOutput) (PlannerOutput, []string) {
+		return out, plannerProblems(out)
+	})
 }
 
 // plannerProblems checks the round and, on a final round, the whole proposal.

@@ -121,76 +121,78 @@ type retroFindingWire struct {
 // RetroOutputFile names the retro in the errors that reject it.
 const RetroOutputFile = "retro.json"
 
-// retroVersion is the only version of retro.json foreman accepts.
-const retroVersion = 1
-
-// ParseRetro reads retro.json strictly. An unknown field, a missing one, a malformed target, group,
-// severity or key rejects the whole file, so an invalid retro can never be posted in part.
+// ParseRetro reads retro.json strictly, through the same parser as every other output file. An
+// unknown field, a missing one, a malformed target, group, severity or claim rejects the whole file,
+// so an invalid retro can never be posted in part. Every such problem is reported at once.
 func ParseRetro(text string) ([]RetroFinding, error) {
-	var raw struct {
-		Version  *int                `json:"version"`
-		Findings *[]retroFindingWire `json:"findings"`
+	return parseOutput(text, RetroOutputFile, retroFindingsOf)
+}
+
+// retroFile is retro.json as the model writes it. Version is the one every output file carries,
+// checked by the strict decoder. Findings is a pointer so a file that omits them is a problem of its
+// own, where a retro carrying none is one foreman accepts.
+type retroFile struct {
+	Version  int                 `json:"version"`
+	Findings *[]retroFindingWire `json:"findings"`
+}
+
+// retroFindingsOf turns a decoded retro into its findings and every problem found in it.
+func retroFindingsOf(file retroFile) ([]RetroFinding, []string) {
+	if file.Findings == nil {
+		return nil, []string{"findings is required"}
 	}
 
-	// The same strict decoder as every other output file: repeated keys, trailing data, unknown
-	// fields and factory markers reject the whole file.
-	if problems := decodeStrict(text, &raw); len(problems) > 0 {
-		return nil, &OutputError{File: RetroOutputFile, Problems: problems}
+	var problems []string
+
+	if len(*file.Findings) > MaxRetroFindings {
+		problems = append(problems, fmt.Sprintf("retro has %d findings, at most %d are allowed",
+			len(*file.Findings), MaxRetroFindings))
 	}
 
-	if raw.Version == nil || *raw.Version != retroVersion {
-		return nil, fmt.Errorf("retro needs version %d", retroVersion)
-	}
+	findings := make([]RetroFinding, 0, min(len(*file.Findings), MaxRetroFindings))
 
-	if raw.Findings == nil {
-		return nil, errors.New("retro needs a list of findings")
-	}
-
-	if len(*raw.Findings) > MaxRetroFindings {
-		return nil, fmt.Errorf("retro has %d findings, at most %d are allowed",
-			len(*raw.Findings), MaxRetroFindings)
-	}
-
-	findings := make([]RetroFinding, 0, len(*raw.Findings))
-
-	for _, f := range *raw.Findings {
-		finding, err := parseRetroFinding(f)
-		if err != nil {
-			return nil, err
-		}
-
+	// A retro over the cap is rejected, so its findings past the cap are not worth checking: the
+	// loop stays bounded whatever the model wrote.
+	for i, f := range (*file.Findings)[:min(len(*file.Findings), MaxRetroFindings)] {
+		finding, more := retroFindingOf(i, f)
+		problems = append(problems, more...)
 		findings = append(findings, finding)
 	}
 
-	return findings, nil
+	return findings, problems
 }
 
-// parseRetroFinding validates one finding.
-func parseRetroFinding(f retroFindingWire) (RetroFinding, error) {
+// retroFindingOf validates one finding, returning it and every problem it has, each named by where
+// the finding sits so a file with several is still fixable in one pass.
+func retroFindingOf(index int, f retroFindingWire) (RetroFinding, []string) {
+	named := fmt.Sprintf("findings[%d]: ", index)
+
+	var problems []string
+
 	target, err := ParseRetroTarget(f.Target)
 	if err != nil {
-		return RetroFinding{}, err
+		problems = append(problems, named+err.Error())
 	}
 
 	if !retroNameRE.MatchString(f.Group) {
-		return RetroFinding{}, fmt.Errorf("group key %q is not valid", f.Group)
+		problems = append(problems, named+fmt.Sprintf("group key %q is not valid", f.Group))
 	}
 
 	if !slices.Contains(Severities(), f.Severity) {
-		return RetroFinding{}, fmt.Errorf("unknown retro severity %q", f.Severity)
+		problems = append(problems, named+fmt.Sprintf("unknown retro severity %q", f.Severity))
 	}
 
 	if err := validText("retro claim", f.Claim, true); err != nil {
-		return RetroFinding{}, err
+		problems = append(problems, named+err.Error())
 	}
 
 	if err := validText("retro evidence", f.Evidence, false); err != nil {
-		return RetroFinding{}, err
+		problems = append(problems, named+err.Error())
 	}
 
 	return RetroFinding{
 		Target: target, Group: f.Group, Severity: f.Severity, Claim: f.Claim, Evidence: f.Evidence,
-	}, nil
+	}, problems
 }
 
 // Marker prefixes of a retro comment.
@@ -231,7 +233,7 @@ func RenderRetro(markerLine string, findings []RetroFinding) (string, error) {
 		return "", err
 	}
 
-	wire := retroWire{Version: retroVersion, Findings: make([]retroFindingWire, 0, len(findings))}
+	wire := retroWire{Version: OutputFileVersion, Findings: make([]retroFindingWire, 0, len(findings))}
 	for _, f := range findings {
 		wire.Findings = append(wire.Findings, retroFindingWire{
 			Target: f.Target.String(), Group: f.Group, Severity: f.Severity, Claim: f.Claim, Evidence: f.Evidence,
