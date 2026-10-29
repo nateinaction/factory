@@ -220,6 +220,21 @@ var _ = Describe("Run", func() {
 			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty(), "opened a second pull request")
 		})
 
+		It("updates the open pull request from a rework's output", func() {
+			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"}, nil)
+			h.implementerWrites(`{"version":1,"commit_message":"Fix x","pr_title":"Better title",` +
+				`"pr_body":"Better body","replies":[{"finding":"bug","status":"fixed","reason":"fixed it"}]}`)
+
+			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+
+			pr, _ := h.pullRequest()
+			Expect(h.gh.Bodies("PATCH", fmt.Sprintf("/repos/o/r/pulls/%d", pr))).To(ConsistOf(And(
+				ContainSubstring(`"title":"Better title"`),
+				ContainSubstring("Better body"),
+			)))
+			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty(), "opened a second pull request")
+		})
+
 		It("fails without new commits, publishing nothing", func() {
 			h.implementerWrites(firstRunOutput)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
@@ -546,6 +561,20 @@ var _ = Describe("Run", func() {
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 		})
 
+		It("fails closed when a commenter's permission cannot be read", func() {
+			h.reviewerGH(nil)
+			h.comment(5, "o", "Let's take this one")
+			h.gh.Status("GET /repos/o/r/collaborators/o/permission", http.StatusInternalServerError)
+			pr, _ := h.pullRequest()
+
+			_, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory[bot]"}, 3)
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
+		})
+
 		It("gives a review whose output file was rejected a retro", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(),
@@ -784,6 +813,25 @@ var _ = Describe("Run", func() {
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
+		It("fails without new commits, publishing nothing", func() {
+			h.researcherWrites(researcherRun)
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if strings.Contains(joined(c), "rev-list --count") {
+					return "0\n", nil
+				}
+
+				return base(c)
+			})
+
+			code, err := run(workflow.Researcher)
+			Expect(err).To(MatchError(ContainSubstring("no commits")))
+			Expect(code).NotTo(BeZero())
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).NotTo(
+				ContainElement(ContainSubstring(workflow.ResearchMarker("research/emulate"))),
+				"posted a resolution with no findings")
+		})
+
 		It("runs the retro after the push, keyed by the branch's commit", func() {
 			h.researcherWrites(researcherRun)
 			h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
@@ -846,6 +894,19 @@ var _ = Describe("Run", func() {
 			Expect(err).To(MatchError(ContainSubstring("parent")))
 			Expect(code).NotTo(BeZero())
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+		})
+
+		It("fails closed when the parent is not a map, pushing nothing", func() {
+			Expect(emulator.RemoveLabel(context.Background(), "o/r", 6, workflow.LabelMap)).To(Succeed())
+			h.researcherWrites(researcherRun)
+
+			code, err := run(workflow.Researcher)
+			Expect(err).To(MatchError(ContainSubstring("not a wayfinder:map issue")))
+			Expect(code).NotTo(BeZero())
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).NotTo(
+				ContainElement(ContainSubstring(workflow.ResearchMarker("research/emulate"))),
+				"posted a resolution with no map to record it")
 		})
 
 		It("gives a run that failed at the model its retro", func() {

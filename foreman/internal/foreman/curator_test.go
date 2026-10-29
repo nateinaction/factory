@@ -23,11 +23,19 @@ var ( //nolint:gochecknoglobals // read-only test fixtures
 )
 
 var _ = Describe("the Curator", func() {
-	var h *harness
+	var (
+		h     *harness
+		clock time.Time
+	)
 
 	BeforeEach(func() {
 		h = newHarness()
 		h.installed[workflow.Curator] = []string{"o/r"}
+
+		// One fixed clock per spec, just ahead of the emulator's wall-clock stamps, so a
+		// test's events never land after it: nothing advances it while the test runs.
+		clock = time.Now().Add(time.Hour)
+		h.deps.Now = func() time.Time { return clock }
 	})
 
 	ctx := context.Background()
@@ -36,7 +44,7 @@ var _ = Describe("the Curator", func() {
 	dashboard := func(state workflow.DashboardState) int {
 		GinkgoHelper()
 
-		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, state, time.Now()))
+		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, state, clock))
 		Expect(err).NotTo(HaveOccurred())
 
 		number, err := emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
@@ -177,7 +185,7 @@ var _ = Describe("the Curator", func() {
 	It("never proposes a rejected pair again", func() {
 		number := dashboard(workflow.DashboardState{Rejected: []workflow.DashboardRejection{{
 			ID: "old", Groups: []workflow.GroupID{curatorSkillGroup, curatorReviewGroup},
-			By: "o", At: time.Now(),
+			By: "o", At: clock,
 		}}})
 		ready(curatorSkillGroup)
 		ready(curatorReviewGroup)
@@ -272,11 +280,19 @@ var _ = Describe("the Curator", func() {
 })
 
 var _ = Describe("the poll's Curator trigger", func() {
-	var h *harness
+	var (
+		h     *harness
+		clock time.Time
+	)
 
 	BeforeEach(func() {
 		h = newHarness()
 		h.installed[workflow.Curator] = []string{"o/r"}
+
+		// One fixed clock per spec, just ahead of the emulator's wall-clock stamps, so a
+		// test's events never land after it: nothing advances it while the test runs.
+		clock = time.Now().Add(time.Hour)
+		h.deps.Now = func() time.Time { return clock }
 	})
 
 	ctx := context.Background()
@@ -337,7 +353,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(1), "queued a second run before the first finished")
 
-		h.deps.Now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+		h.deps.Now = func() time.Time { return clock.Add(25 * time.Hour) }
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(2), "did not queue the next day's run")

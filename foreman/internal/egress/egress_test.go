@@ -29,6 +29,16 @@ const publicAddress = "93.184.216.34"
 // testToken is the per-run token every spec sends the proxy.
 const testToken = "run-token"
 
+// failedHijacker is a ResponseWriter whose connection cannot be hijacked.
+type failedHijacker struct {
+	*httptest.ResponseRecorder
+}
+
+// Hijack fails the way a connection already gone would.
+func (failedHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, errors.New("test hijack: connection gone")
+}
+
 // logBuffer is a test log sink safe for the proxy's goroutines.
 type logBuffer struct {
 	mu   sync.Mutex
@@ -541,6 +551,75 @@ var _ = Describe("Proxy", func() {
 		body, err := io.ReadAll(resp.Body)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(body)).To(Equal("api GET /api/v1/models"))
+	})
+
+	Describe("relay failures", func() {
+		// closedByProxy fails when the peer end of a pipe is not closed by the relay.
+		closedByProxy := func(peer net.Conn) {
+			GinkgoHelper()
+
+			_, err := peer.Read(make([]byte, 1))
+			Expect(errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)).To(BeTrue(),
+				"the upstream connection was left open: %v", err)
+		}
+
+		// pipeWithDeadline gives the peer a read deadline while the pipe is still open, so a
+		// connection the relay forgets to close fails the spec instead of hanging it.
+		pipeWithDeadline := func() (net.Conn, net.Conn) {
+			GinkgoHelper()
+
+			upstream, peer := net.Pipe()
+			Expect(peer.SetReadDeadline(time.Now().Add(time.Second))).To(Succeed())
+
+			return upstream, peer
+		}
+
+		It("answers bad gateway when the relay cannot dial", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					return nil, errors.New("test dial: unreachable")
+				},
+			})
+
+			rec := httptest.NewRecorder()
+			p.relay(rec, httptest.NewRequest(http.MethodConnect, "http://public.example:443", nil),
+				"public.example", "443")
+
+			Expect(rec.Code).To(Equal(http.StatusBadGateway))
+			Expect(rec.Body.String()).To(ContainSubstring("upstream unavailable"))
+		})
+
+		It("refuses to tunnel when the writer cannot be hijacked", func() {
+			upstream, peer := pipeWithDeadline()
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial:    func(context.Context, string, string) (net.Conn, error) { return upstream, nil },
+			})
+
+			rec := httptest.NewRecorder()
+			p.relay(rec, httptest.NewRequest(http.MethodConnect, "http://public.example:443", nil),
+				"public.example", "443")
+
+			Expect(rec.Code).To(Equal(http.StatusInternalServerError))
+			Expect(rec.Body.String()).To(ContainSubstring("cannot tunnel"))
+			closedByProxy(peer)
+		})
+
+		It("abandons the tunnel when the hijack fails", func() {
+			upstream, peer := pipeWithDeadline()
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial:    func(context.Context, string, string) (net.Conn, error) { return upstream, nil },
+			})
+
+			rec := failedHijacker{httptest.NewRecorder()}
+			p.relay(&rec, httptest.NewRequest(http.MethodConnect, "http://public.example:443", nil),
+				"public.example", "443")
+
+			Expect(rec.Body.Len()).To(BeZero(), "wrote a response after the hijack failed")
+			closedByProxy(peer)
+		})
 	})
 
 	Describe("destination refusal", func() {

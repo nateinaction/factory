@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -671,5 +672,84 @@ var _ = Describe("applying an approved proposal", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(again).To(HaveLen(len(all)), "the resolution created another ticket")
 		Expect(strings.Count(h.bodyOf(6), decision)).To(Equal(1), "the decision went in twice")
+	})
+
+	It("fails closed when a map proposal carries no map", func() {
+		c := h.deps.client("minted-token-planner")
+
+		err := applyProposal(context.Background(), h.deps, c, testRepo("o/r"), 1, 99,
+			workflow.PlannerProposal{Shape: workflow.ShapeMap})
+		Expect(err).To(MatchError(ContainSubstring("carries no map")))
+		Expect(h.gh.Calls()).To(BeEmpty(), "applied a proposal with no map")
+	})
+
+	It("fails closed when a resolution proposal carries no resolution", func() {
+		c := h.deps.client("minted-token-planner")
+
+		err := applyProposal(context.Background(), h.deps, c, testRepo("o/r"), 1, 99,
+			workflow.PlannerProposal{Shape: workflow.ShapeResolution})
+		Expect(err).To(MatchError(ContainSubstring("carries no resolution")))
+		Expect(h.gh.Calls()).To(BeEmpty(), "applied a proposal with no resolution")
+	})
+
+	It("adds a native sub-issue link once when applied twice", func() {
+		h.ensureIssue(1)
+		h.ensureIssue(2)
+
+		linked, posts := false, 0
+
+		h.gh.Handle("GET /repos/o/r/issues/1/sub_issues", func(w http.ResponseWriter, _ *http.Request) {
+			children := []map[string]any{}
+			if linked {
+				children = append(children, map[string]any{"number": 2})
+			}
+
+			ghtest.WriteJSON(w, children)
+		})
+		h.gh.Handle("POST /repos/o/r/issues/1/sub_issues", func(w http.ResponseWriter, _ *http.Request) {
+			linked = true
+			posts++
+
+			w.WriteHeader(http.StatusCreated)
+		})
+
+		c := h.deps.client("minted-token-planner")
+		child := workflow.Issue{Number: 2}
+
+		Expect(ensureSubIssue(context.Background(), c, testRepo("o/r"), 1, child)).To(Succeed())
+		Expect(ensureSubIssue(context.Background(), c, testRepo("o/r"), 1, child)).To(Succeed())
+
+		Expect(posts).To(Equal(1), "linked the same sub-issue twice")
+	})
+
+	It("adds a native blocked-by edge once when applied twice", func() {
+		h.ensureIssue(2)
+		h.ensureIssue(3)
+
+		linked, posts := false, 0
+
+		h.gh.Handle("GET /repos/o/r/issues/2/dependencies/blocked_by",
+			func(w http.ResponseWriter, _ *http.Request) {
+				blockers := []map[string]any{}
+				if linked {
+					blockers = append(blockers, map[string]any{"number": 3})
+				}
+
+				ghtest.WriteJSON(w, blockers)
+			})
+		h.gh.Handle("POST /repos/o/r/issues/2/dependencies/blocked_by",
+			func(w http.ResponseWriter, _ *http.Request) {
+				linked = true
+				posts++
+
+				w.WriteHeader(http.StatusCreated)
+			})
+
+		c := h.deps.client("minted-token-planner")
+
+		Expect(ensureBlockedBy(context.Background(), c, testRepo("o/r"), 2, 3)).To(Succeed())
+		Expect(ensureBlockedBy(context.Background(), c, testRepo("o/r"), 2, 3)).To(Succeed())
+
+		Expect(posts).To(Equal(1), "added the same blocked-by edge twice")
 	})
 })

@@ -152,6 +152,28 @@ var _ = Describe("the CI gate before review", func() {
 		Expect(h.logs.String()).To(ContainSubstring("CI"))
 	})
 
+	It("leaves the issue queued when the commit statuses cannot be read", func() {
+		reviewIssue()
+
+		h.ciHandler = func(w http.ResponseWriter, r *http.Request) bool {
+			if strings.HasSuffix(r.URL.Path, "/statuses") {
+				w.WriteHeader(http.StatusInternalServerError)
+
+				return true
+			}
+
+			ghtest.WriteJSON(w, map[string]any{"total_count": 0, "check_runs": []map[string]any{}})
+
+			return true
+		}
+
+		Expect(poll()).Error().NotTo(HaveOccurred())
+
+		Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelReview))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("CI"))
+	})
+
 	It("lets a later review issue claim while an earlier one's CI is pending", func() {
 		h.queue(map[string][]map[string]any{workflow.LabelReview: {{"number": 4}, {"number": 5}}})
 		h.implementerGH(map[string]any{}, nil)

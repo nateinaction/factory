@@ -238,16 +238,16 @@ var _ = Describe("dead runs", func() {
 	})
 
 	// addLabel adds a label through the API, so the emulator records the timeline event.
-	addLabel := func(number int, label string) {
+	addLabel := func(number int) {
 		GinkgoHelper()
 		Expect(emulator.Do(context.Background(), http.MethodPost,
 			"/repos/o/r/issues/"+strconv.Itoa(number)+"/labels", ghtest.AdminToken,
-			map[string]any{"labels": []string{label}}, nil)).To(Succeed())
+			map[string]any{"labels": []string{workflow.LabelImplementing}}, nil)).To(Succeed())
 	}
 
 	It("moves a running label older than the deadline plus margin to failed, once", func() {
 		h.ensureIssue(1)
-		addLabel(1, workflow.LabelImplementing)
+		addLabel(1)
 
 		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
@@ -281,7 +281,7 @@ var _ = Describe("dead runs", func() {
 
 	It("leaves a run younger than the deadline plus margin claimed", func() {
 		h.ensureIssue(1)
-		addLabel(1, workflow.LabelImplementing)
+		addLabel(1)
 
 		h.out.Reset()
 		code, pollErr := Poll(context.Background(), h.deps,
@@ -294,9 +294,80 @@ var _ = Describe("dead runs", func() {
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
 
+	It("leaves a running label alone when its agent role has no deadline", func() {
+		h.ensureIssue(1)
+		addLabel(1)
+
+		cfg := pollConfig(workflow.Implementer, workflow.Reviewer)
+		agent := cfg.Agents[string(workflow.Implementer)]
+		agent.DeadlineMinutes = 0
+		cfg.Agents[string(workflow.Implementer)] = agent
+
+		code, pollErr := Poll(context.Background(), h.deps, cfg)
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
+		Expect(h.markerComments(1)).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("without its agent role's deadline"))
+	})
+
+	It("leaves a running label alone when the timeline cannot be read", func() {
+		h.ensureIssue(1)
+		addLabel(1)
+		h.gh.Status("GET /repos/o/r/issues/1/timeline", http.StatusInternalServerError)
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
+		Expect(h.markerComments(1)).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("skipping an issue the poll cannot read"))
+	})
+
+	It("leaves a running label alone when the timeline has no labeled event", func() {
+		h.ensureIssue(1)
+		addLabel(1)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "commented", "created_at": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
+		Expect(h.markerComments(1)).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("no labeled event"))
+	})
+
+	It("leaves a dead run claimed when its token cannot be minted", func() {
+		h.ensureIssue(1)
+		addLabel(1)
+		h.failMint(workflow.Implementer, true)
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
+		Expect(h.markerComments(1)).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("cannot mint the dead run's own token"))
+	})
+
 	It("does not fail a run whose slow retro outlasts the deadline plus margin", func() {
 		h.ensureIssue(5)
-		addLabel(5, workflow.LabelImplementing)
+		addLabel(5)
 		h.implementerGH(nil, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
 		h.implementerWrites(firstRunOutput)
