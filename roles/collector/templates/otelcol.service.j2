@@ -1,0 +1,26 @@
+[Unit]
+Description=OpenTelemetry Collector (foreman telemetry, loopback only)
+Documentation=https://opentelemetry.io/docs/collector/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ factory_collector_user }}
+Group={{ factory_collector_user }}
+ExecStart=/nix/var/nix/profiles/default/bin/otelcol-contrib --config=/etc/otelcol/config.yaml
+Restart=on-failure
+RestartSec=5
+# Back off instead of looping forever on a persistent crash.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StateDirectory=otelcol
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/otelcol
+
+[Install]
+WantedBy=multi-user.target

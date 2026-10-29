@@ -1,0 +1,51 @@
+---
+- name: Create the collector's system account
+  ansible.builtin.user:
+    name: "{{ factory_collector_user }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+# The nixpkgs revision pins the collector's version, as it does the sandbox runtime's.
+- name: Install the collector (contrib distribution)
+  ansible.builtin.command: >-
+    /nix/var/nix/profiles/default/bin/nix profile add
+    --profile /nix/var/nix/profiles/default
+    github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#opentelemetry-collector-contrib
+  args:
+    creates: /nix/var/nix/profiles/default/bin/otelcol-contrib
+  environment:
+    PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+
+- name: Create the collector's config directory
+  ansible.builtin.file:
+    path: /etc/otelcol
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the collector
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/otelcol/config.yaml
+    owner: root
+    group: "{{ factory_collector_user }}"
+    mode: "0640"
+  notify: Restart otelcol
+
+- name: Install the collector's systemd unit
+  ansible.builtin.template:
+    src: otelcol.service.j2
+    dest: /etc/systemd/system/otelcol.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart otelcol
+
+- name: Enable and start the collector
+  ansible.builtin.systemd_service:
+    name: otelcol
+    enabled: true
+    state: started
+    daemon_reload: true

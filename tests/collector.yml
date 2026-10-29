@@ -1,0 +1,43 @@
+---
+# Renders the collector role's config into $RENDER_DIR with the real group_vars, so
+# tests/collector.test can assert on it without a host. $COLLECTOR_BACKEND names the backend.
+- name: Render the collector config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  tasks:
+    - name: Point the collector at a backend, when the test says so
+      ansible.builtin.set_fact:
+        factory_collector_backend_endpoint: "{{ lookup('env', 'COLLECTOR_BACKEND') }}"
+
+    - name: Render the collector config
+      ansible.builtin.template:
+        src: ../roles/collector/templates/config.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config.yaml"
+        mode: "0644"
+
+    - name: Render the collector unit
+      ansible.builtin.template:
+        src: ../roles/collector/templates/otelcol.service.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/otelcol.service"
+        mode: "0644"
+
+    # The test's python has no YAML parser; hand it JSON.
+    - name: Read the rendered config back
+      ansible.builtin.slurp:
+        src: "{{ lookup('env', 'RENDER_DIR') }}/config.yaml"
+      register: collector_rendered
+
+    - name: Write the config and the allowlist as JSON
+      ansible.builtin.copy:
+        content: "{{ {'c': config, 'v': vars_asserted} | to_json }}"
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config.json"
+        mode: "0644"
+      vars:
+        config: "{{ collector_rendered.content | b64decode | from_yaml }}"
+        vars_asserted:
+          factory_collector_allowed_attributes: "{{ factory_collector_allowed_attributes }}"
+          factory_collector_queue_size: "{{ factory_collector_queue_size }}"
+          factory_collector_memory_limit_mib: "{{ factory_collector_memory_limit_mib }}"
