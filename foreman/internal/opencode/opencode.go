@@ -5,6 +5,7 @@ package opencode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,6 +84,35 @@ func (e *ModelError) Error() string {
 
 // Unwrap exposes the cause.
 func (e *ModelError) Unwrap() error { return e.Cause }
+
+// KindOf is the failure kind of a failed run's error: the model's own kind, a timeout for a spent
+// deadline, and FailOther for anything else, including a failure before the model ran.
+func KindOf(err error) FailureKind {
+	if me, ok := errors.AsType[*ModelError](err); ok {
+		return me.Kind
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return FailTimeout
+	}
+
+	return FailOther
+}
+
+// Outcome says how a run ended.
+type Outcome string
+
+// The ways a run ends.
+const (
+	// OutcomeHandedOff is a run whose issue moved on to the next stage or closed.
+	OutcomeHandedOff Outcome = "handed_off"
+	// OutcomeRework is a run whose issue went back to the Implementer.
+	OutcomeRework Outcome = "rework"
+	// OutcomeFailed is a run that failed.
+	OutcomeFailed Outcome = "failed"
+	// OutcomeCompleted is a run that finished and moved no issue.
+	OutcomeCompleted Outcome = "completed"
+)
 
 // RetroAllowed reports whether a failed run still gets its retro. A context overflow, running out of
 // credits and an unknown model are the exceptions: there is nothing left to resume, or nothing to
@@ -367,6 +397,8 @@ type Result struct {
 	Usage Usage
 	// Steps is the steps every attempt took together.
 	Steps int
+	// Attempts is how many times the model was called; zero when it never ran.
+	Attempts int
 }
 
 // Argv is the command line; the prompt is the last argument.
@@ -394,6 +426,10 @@ type UsageReport struct {
 	ContextCap  int           `json:"context_cap"`
 	PeakContext *int          `json:"peak_context,omitempty"`
 	Cost        *float64      `json:"cost,omitempty"`
+	DurationMS  *int64        `json:"duration_ms,omitempty"`
+	Attempts    *int          `json:"attempts,omitempty"`
+	FailureKind FailureKind   `json:"failure_kind,omitempty"`
+	Outcome     Outcome       `json:"outcome"`
 	Domains     []string      `json:"domains,omitempty"`
 	Missing     []string      `json:"missing"`
 }
@@ -412,16 +448,42 @@ func (r UsageReport) WithDomains(domains []string) UsageReport {
 	return r
 }
 
+// RunStats is what a run observed about itself besides what it spent.
+type RunStats struct {
+	// Duration is the run's wall-clock time; negative when the clock could not measure it.
+	Duration time.Duration
+	// Attempts is how many times the model was called; zero when it never ran.
+	Attempts int
+	// Failure is why the run failed; nil when it did not.
+	Failure *FailureKind
+	// Outcome is how the run ended.
+	Outcome Outcome
+}
+
 // NewUsageReport builds the report. Domains stays missing until the egress proxy reports them
 // through WithDomains.
 func NewUsageReport(
-	role workflow.Role, ref workflow.IssueRef, host string, a config.AgentConfig, u Usage,
+	role workflow.Role, ref workflow.IssueRef, host string, a config.AgentConfig, u Usage, st RunStats,
 ) UsageReport {
 	r := UsageReport{
 		Event: "usage", Repository: ref.Repo.String(), Issue: ref.Number, AgentRole: role, Model: a.Model, WorkerHost: host,
 		Input: u.Input, Output: u.Output, Cached: u.Cached, ContextCap: a.ContextCap, PeakContext: u.PeakContext,
-		Cost: u.Cost, Missing: []string{},
+		Cost: u.Cost, Outcome: st.Outcome, Missing: []string{},
 	}
+
+	if st.Duration >= 0 {
+		ms := st.Duration.Milliseconds()
+		r.DurationMS = &ms
+	}
+
+	if st.Attempts > 0 {
+		r.Attempts = &st.Attempts
+	}
+
+	if st.Failure != nil {
+		r.FailureKind = *st.Failure
+	}
+
 	for _, f := range []struct {
 		name    string
 		missing bool
@@ -432,6 +494,8 @@ func NewUsageReport(
 		{"cached_tokens", u.Cached == nil},
 		{"peak_context", u.PeakContext == nil},
 		{"cost", u.Cost == nil},
+		{"duration_ms", r.DurationMS == nil},
+		{"attempts", r.Attempts == nil},
 		{"domains", true},
 	} {
 		if f.missing {

@@ -27,7 +27,8 @@ const statusHistory = `[
 // statusUsage is the usage line a finished run left in its log.
 const statusUsage = `{"event":"usage","repository":"o/r","issue":6,"agent_role":"reviewer",` +
 	`"model":"prov/review","worker_host":"factory-2","input_tokens":10,"output_tokens":2,` +
-	`"cached_tokens":5,"context_cap":200000,"peak_context":15,"cost":0.25,"missing":[]}`
+	`"cached_tokens":5,"context_cap":200000,"peak_context":15,"cost":0.25,` +
+	`"duration_ms":754000,"attempts":2,"outcome":"rework","missing":[]}`
 
 var _ = Describe("Status", func() {
 	var (
@@ -87,7 +88,8 @@ var _ = Describe("Status", func() {
 		Expect(out).To(ContainSubstring("Agent roles with no host\nROLE     QUEUED\nplanner  1\n"))
 		Expect(out).To(ContainSubstring("Recent usage"))
 		Expect(out).To(MatchRegexp(
-			`(?m)^o/r\s+#6\s+reviewer\s+prov/review\s+factory-2\s+10\s+2\s+5\s+15/200000\s+0\.25\s+2026-10-28T09:50:00Z\s*$`))
+			`(?m)^o/r\s+#6\s+reviewer\s+prov/review\s+factory-2\s+10\s+2\s+5\s+15/200000\s+0\.25\s+` +
+				`12m34s\s+2\s+rework\s+2026-10-28T09:50:00Z\s*$`))
 	})
 
 	It("names an agent role no worker host takes even before its first run", func() {

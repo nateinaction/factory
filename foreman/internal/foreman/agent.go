@@ -27,6 +27,8 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 	var res opencode.Result
 
 	for attempt := 1; attempt <= opencode.MaxModelAttempts; attempt++ {
+		res.Attempts = attempt
+
 		stream, err := s.attempt(ctx, r, time.Until(deadline))
 
 		res.Usage = res.Usage.Add(stream.Usage)

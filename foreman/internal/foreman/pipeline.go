@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
@@ -16,6 +17,8 @@ import (
 type runResult struct {
 	usage opencode.Usage
 	code  int
+	// attempts is how many times the model was called; zero when it never ran.
+	attempts int
 }
 
 // run is one run of an agent role: the edge it reads the world through, the agent role's entry, and
@@ -248,8 +251,11 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 
 	// The run's one usage line is logged even when the run failed, once the proxies have added what
 	// they read: that merge happens in the defer below, which runs first.
+	started := r.d.now()
+
 	defer func() {
-		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage).
+		st := r.stats(result, err, r.d.now().Sub(started))
+		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
 			WithDomains(domains))
 	}()
 
@@ -336,7 +342,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 		// retro its agent role keeps for a failed run.
 		r.settle(ctx, 1, err)
 
-		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err))}, err
+		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err)), attempts: res.Attempts}, err
 	}
 
 	oc := prep.after(ctx, s, res)
@@ -351,7 +357,35 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 		))
 	}
 
-	return runResult{usage: usage, code: oc.code}, oc.err
+	return runResult{usage: usage, code: oc.code, attempts: res.Attempts}, oc.err
+}
+
+// stats is what the finished run observed about itself. The outcome is the one the run's exit code
+// routes to: a run fails when it returned an error or its route does.
+func (r run) stats(result runResult, err error, elapsed time.Duration) opencode.RunStats {
+	rt := r.entry.route(r.spec.limit, r.spec.ref, startCode(err, result.code))
+	st := opencode.RunStats{Duration: elapsed, Attempts: result.attempts, Outcome: outcomeOf(rt, err)}
+
+	if st.Outcome == opencode.OutcomeFailed {
+		kind := opencode.KindOf(err)
+		st.Failure = &kind
+	}
+
+	return st
+}
+
+// outcomeOf names how a run ended from the route its exit code took.
+func outcomeOf(rt route, err error) opencode.Outcome {
+	switch {
+	case err != nil || rt.err != nil || rt.exit != 0 || rt.dst == workflow.Failed:
+		return opencode.OutcomeFailed
+	case rt.dst == workflow.Implement:
+		return opencode.OutcomeRework
+	case rt.dst != "":
+		return opencode.OutcomeHandedOff
+	}
+
+	return opencode.OutcomeCompleted
 }
 
 // retroFile is where the run's retro writes its findings, outside the clone and the run's own
