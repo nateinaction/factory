@@ -597,6 +597,45 @@ var _ = Describe("Run", func() {
 				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "a non-writer author was not backed by a writer")
 		})
 
+		It("skips a bot or blank commenter when it looks for a human writer", func() {
+			h.reviewerGH(nil)
+
+			c := h.deps.client("minted-token-reviewer")
+			comments := []workflow.Item{
+				{ID: 1, Author: "o", Body: "Let's take this one"},
+				{ID: 2, Author: "dependabot[bot]", Body: "bump"},
+				{ID: 3, Author: "", Body: "ghost"},
+			}
+
+			reviewer, err := mergeReviewer(context.Background(), h.deps, c, testRepo("o/r"),
+				workflow.Issue{Number: 5, Author: "factory[bot]"}, comments)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reviewer).To(Equal("o"))
+			Expect(h.gh.Summary()).NotTo(ContainElement(ContainSubstring("dependabot")),
+				"read a bot's permission")
+			Expect(h.gh.Summary()).NotTo(ContainElement(ContainSubstring("collaborators//")),
+				"read a blank login's permission")
+		})
+
+		It("asks nobody when the only commenters are bots or blank", func() {
+			h.reviewerGH(nil)
+
+			c := h.deps.client("minted-token-reviewer")
+			comments := []workflow.Item{{ID: 1, Author: "dependabot[bot]"}, {ID: 2, Author: ""}}
+
+			reviewer, err := mergeReviewer(context.Background(), h.deps, c, testRepo("o/r"),
+				workflow.Issue{Number: 5, Author: "factory[bot]"}, comments)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reviewer).To(BeEmpty())
+		})
+
+		It("does not call a blank login a writer, and does not ask GitHub", func() {
+			isWriter := newPermissions().isWriter(context.Background(), h.deps, h.deps.client("t"),
+				testRepo("o/r"), "")
+			Expect(isWriter).To(BeFalse())
+			Expect(h.gh.Calls()).To(BeEmpty())
+		})
+
 		It("fails closed when the author's permission cannot be read", func() {
 			h.reviewerGH(nil)
 			h.gh.Status("GET /repos/o/r/collaborators/factory/permission", http.StatusInternalServerError)

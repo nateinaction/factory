@@ -195,6 +195,65 @@ var _ = Describe("waking on a comment", func() {
 		Expect(h.markerComments(1)).To(BeEmpty())
 	})
 
+	It("leaves a done issue with no open pull request where it is", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelDone: {{"number": 1}}})
+		transition(workflow.Transition{
+			Role: workflow.Reviewer, RunID: "old", From: workflow.Reviewing, To: workflow.Done,
+		})
+		h.comment(1, "o", "one more thing")
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelDone))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	It("leaves a waiting issue where it is when the waking token cannot be minted", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelWaiting: {{"number": 1}}})
+		transition(workflow.Transition{
+			Role: workflow.Planner, RunID: "old", From: workflow.Planning, To: workflow.Waiting,
+		})
+		h.comment(1, "o", "yes, that plan works")
+		h.failMint(workflow.Planner, true)
+		h.installed = map[workflow.Role][]string{
+			workflow.Planner: {"o/r"}, workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"},
+		}
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
+		Expect(h.markerComments(1)).To(BeEmpty(), "recorded a wake it could not make")
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+		Expect(h.logs.String()).To(ContainSubstring("cannot mint the waking agent role's token"))
+	})
+
+	It("queues nothing when the wake's claim fails", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelWaiting: {{"number": 1}}})
+		transition(workflow.Transition{
+			Role: workflow.Planner, RunID: "old", From: workflow.Planning, To: workflow.Waiting,
+		})
+		h.comment(1, "o", "yes, that plan works")
+		h.gh.Status("POST /repos/o/r/issues/1/comments", http.StatusInternalServerError)
+		h.installed = map[workflow.Role][]string{
+			workflow.Planner: {"o/r"}, workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"},
+		}
+
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+		Expect(h.logs.String()).To(ContainSubstring("skipping an issue the poll cannot read"))
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
+		Expect(h.runner.find("enqueue")).To(BeEmpty(), "queued a run for an issue it did not claim")
+	})
+
 	It("requeues a failed issue to the agent role that failed and reads every comment since the marker", func() {
 		h.queue(map[string][]map[string]any{workflow.LabelFailed: {{"number": 1}}})
 		transition(workflow.Transition{
