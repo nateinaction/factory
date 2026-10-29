@@ -185,6 +185,22 @@ var _ = Describe("Client", func() {
 		})
 	})
 
+	Describe("Timeline", func() {
+		It("lists the labeled events that date a running label", func() {
+			number := issue()
+
+			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(number)+"/labels",
+				ghtest.AdminToken, map[string]any{"labels": []string{workflow.LabelImplementing}}, nil)).To(Succeed())
+
+			events, err := c.Timeline(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+
+			at, found := workflow.LabeledAt(events, workflow.LabelImplementing)
+			Expect(found).To(BeTrue())
+			Expect(at).NotTo(BeZero())
+		})
+	})
+
 	Describe("Claim", func() {
 		transition := workflow.Transition{
 			Role: workflow.Implementer, RunID: "run-1",

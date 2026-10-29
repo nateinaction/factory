@@ -166,3 +166,6 @@ factory_agent_limits:
 # fails the run.
 factory_retro_steps: 20
 factory_retro_deadline_minutes: 15
+# How far past an agent role's deadline its running label may age before a poll calls the run dead and
+# moves the issue to factory:failed. Nothing retries a dead run automatically.
+factory_dead_run_margin_minutes: 10

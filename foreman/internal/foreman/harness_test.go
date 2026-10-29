@@ -170,7 +170,17 @@ func testConfig() config.Config {
 		agents[string(r)] = testAgent()
 	}
 
-	return config.Config{Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro()}
+	return config.Config{
+		Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro(), DeadRunMarginMinutes: 10,
+	}
+}
+
+// pollConfig is the config a poll of the given agent roles runs with.
+func pollConfig(roles ...workflow.Role) config.Config {
+	cfg := testConfig()
+	cfg.Roles = roles
+
+	return cfg
 }
 
 // stepsStream is a run that finished after n steps, each reporting no error.
@@ -429,7 +439,7 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
 	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
 	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15}}`
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
 
 // writeToken leaves a token for the factory half of role.
 func (h *harness) writeToken(role workflow.Role, token string) {
@@ -482,12 +492,14 @@ func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
 // acceptWrites makes sure issue 5 exists. Label and comment writes then succeed against the emulator.
 func (h *harness) acceptWrites() {
 	GinkgoHelper()
-	h.ensureIssue("o/r", 5)
+	h.ensureIssue(5)
 }
 
 // ensureIssue creates the filler issues below number and then number itself.
-func (h *harness) ensureIssue(repo string, number int) {
+func (h *harness) ensureIssue(number int) {
 	GinkgoHelper()
+
+	const repo = "o/r"
 
 	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
 
@@ -605,7 +617,7 @@ func (h *harness) sudoExit(code int) *factoryHalf {
 func (h *harness) implementerGH(pr map[string]any, reviews []workflow.Item) {
 	GinkgoHelper()
 
-	h.ensureIssue("o/r", 5)
+	h.ensureIssue(5)
 
 	h.pr, h.prURL = 0, ""
 
@@ -775,11 +787,19 @@ func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 // implementerWrites makes the Implementer's run write text as its output file, leaving the retro
 // alone, and passes the process on to whatever the harness otherwise answers.
 func (h *harness) implementerWrites(text string) {
+	h.implementerWritesFor(5, text)
+}
+
+// implementerWritesFor makes an Implementer run on number write text to that run's output file.
+func (h *harness) implementerWritesFor(number int, text string) {
+	out := filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("implementer-%d", number),
+		workflow.ImplementerOutputFile)
+
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent implementer ") &&
 			!strings.Contains(joined(c), "--session") {
-			Expect(os.MkdirAll(filepath.Dir(h.implOut()), 0o700)).To(Succeed())
-			Expect(os.WriteFile(h.implOut(), []byte(text), 0o600)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
 		}
 
 		return base(c)

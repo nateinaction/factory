@@ -379,7 +379,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails without an open pull request", func() {
-			h.ensureIssue("o/r", 5)
+			h.ensureIssue(5)
 			h.writeToken(workflow.Reviewer, "t")
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(MatchError(ContainSubstring("no open pull request for agent/issue-5")))
