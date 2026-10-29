@@ -679,6 +679,73 @@ func (h *harness) implOut() string {
 	return filepath.Join(h.deps.Settings.WorkRoot, "implementer-5", workflow.ImplementerOutputFile)
 }
 
+// researchOut is where a Researcher run on issue 5 writes its output.
+func (h *harness) researchOut() string {
+	return filepath.Join(h.deps.Settings.WorkRoot, "researcher-5", workflow.ResearcherOutputFile)
+}
+
+// researcherWrites makes the Researcher's run on issue 5 write text as its output file, leaving the
+// retro alone.
+func (h *harness) researcherWrites(text string) {
+	out := h.researchOut()
+
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent researcher ") &&
+			!strings.Contains(joined(c), "--session") {
+			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
+		}
+
+		return base(c)
+	})
+}
+
+// researchTicket creates issue 5 as a research ticket and a parent map as issue 6, linked by the
+// "Part of #N" convention the emulator's missing sub-issues endpoint leaves as the only one.
+func (h *harness) researchTicket() int {
+	GinkgoHelper()
+
+	h.ensureIssue(5)
+	h.setBody(5, "Part of #6\n\n## Question\n\nWhich?")
+
+	number, err := emulator.CreateIssue(context.Background(), "o/r", []string{workflow.LabelMap},
+		"Map", mapBody)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(number).To(Equal(6))
+
+	return number
+}
+
+// setBody replaces an issue's body as the repository's admin.
+func (h *harness) setBody(number int, text string) {
+	GinkgoHelper()
+
+	path := fmt.Sprintf("/repos/o/r/issues/%d", number)
+	Expect(emulator.Do(context.Background(), "PATCH", path, ghtest.AdminToken,
+		map[string]string{"body": text}, nil)).To(Succeed())
+}
+
+// bodyOf reads an issue's body back.
+func (h *harness) bodyOf(number int) string {
+	GinkgoHelper()
+
+	var issue struct {
+		Body string `json:"body"`
+	}
+
+	path := fmt.Sprintf("/repos/o/r/issues/%d", number)
+	Expect(emulator.Do(context.Background(), "GET", path, ghtest.AdminToken, nil, &issue)).To(Succeed())
+
+	return issue.Body
+}
+
+// mapBody is a wayfinder map with an empty Decisions so far section.
+const mapBody = "## Destination\n\nA spec.\n\n## Decisions so far\n\n## Not yet specified\n\nFog.\n"
+
+// researcherRun is a researcher-output.json for branch research/emulate.
+const researcherRun = `{"version":1,"branch":"emulate","resolution":"Findings are in the file.",` +
+	`"decision_line":"Use emulate."}`
+
 // validRetro is a retro with one finding about the Implementer's skill.
 const validRetro = `{"version":1,"findings":[{"target":"skill:implement","group":"guide-misses-tests",` +
 	`"severity":"medium","claim":"the guide never mentions tests","evidence":"I searched and found none"}]}`

@@ -35,6 +35,8 @@ const (
 	apiVersion = "2022-11-28"
 	// stateOpen is the query value that lists open issues only.
 	stateOpen = "open"
+	// stateClosed is the state value that closes an issue.
+	stateClosed = "closed"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
 )
@@ -323,7 +325,7 @@ func (c Client) OpenBlockers(ctx context.Context, repo string, number int) ([]wo
 	open := make([]workflow.Issue, 0, len(blocking))
 
 	for _, b := range blocking {
-		if b.State != "closed" {
+		if b.State != stateClosed {
 			open = append(open, b)
 		}
 	}
@@ -361,7 +363,7 @@ func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, bo
 // CloseIssue closes an issue.
 func (c Client) CloseIssue(ctx context.Context, repo string, number int) error {
 	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
-		issueStateRequest{State: "closed"}, nil)
+		issueStateRequest{State: stateClosed}, nil)
 }
 
 // SubIssueNumbers lists the issues linked as sub-issues of parent. supported is false when the
@@ -450,6 +452,62 @@ func (c Client) BlockedByNumbers(ctx context.Context, repo string, number int) (
 	}
 
 	return numbers, true, nil
+}
+
+// Parent reads the issue's parent, when the repository supports sub-issues. supported is false when
+// the endpoint is missing, so the caller can fall back to the body's "Part of #N" convention.
+func (c Client) Parent(ctx context.Context, repo string, number int) (workflow.Issue, bool, error) {
+	var parent workflow.Issue
+
+	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", repo, number), nil, &parent)
+	if isStatus(err, http.StatusNotFound) {
+		return workflow.Issue{}, false, nil
+	}
+
+	if err != nil {
+		return workflow.Issue{}, false, err
+	}
+
+	return parent, true, nil
+}
+
+// PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
+// branch updates that comment rather than adding another.
+func (c Client) PostResolution(ctx context.Context, repo string, number int, branch, text string) error {
+	marker := workflow.ResearchMarker(branch)
+
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return err
+	}
+
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+			bodyRequest{Body: text}, nil)
+	}
+
+	return c.Comment(ctx, repo, number, text)
+}
+
+// CloseResolved records a resolved ticket's final transition, releases its claim and closes it. A
+// closed ticket carries no factory label.
+func (c Client) CloseResolved(ctx context.Context, repo string, number int, t workflow.Transition) error {
+	marker, err := workflow.RenderTransition(t)
+	if err != nil {
+		return err
+	}
+
+	if err := c.Comment(ctx, repo, number, marker); err != nil {
+		return err
+	}
+
+	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
+		// A 404 means a person already removed it: fine, still close the ticket.
+		return err
+	}
+
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		map[string]string{stateParam: stateClosed}, nil)
 }
 
 // Comment posts a comment on an issue.

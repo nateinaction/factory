@@ -128,13 +128,15 @@ const (
 	Failed State = LabelFailed
 	// Paused waits until a writer removes the label.
 	Paused State = LabelPaused
+	// Closed is a resolved ticket's terminal state. It has no label: the ticket is closed instead.
+	Closed State = "closed"
 )
 
 // States is the closed set of handoff states, in spec order.
 func States() []State {
 	return []State{
 		Plan, Planning, Research, Researching, Implement, Implementing, Review, Reviewing,
-		Waiting, Done, Failed, Paused,
+		Waiting, Done, Failed, Paused, Closed,
 	}
 }
 
@@ -201,10 +203,16 @@ func RoleOf(state State) (Role, bool) {
 	return "", false
 }
 
-// FactoryLabels lists every label foreman creates, idempotently, for an assigned repository.
+// FactoryLabels lists every label foreman creates, idempotently, for an assigned repository. A closed
+// ticket carries no label, so Closed is left out.
 func FactoryLabels() []string {
 	out := make([]string, 0, len(States()))
+
 	for _, s := range States() {
+		if s == Closed {
+			continue
+		}
+
 		out = append(out, string(s))
 	}
 
@@ -640,9 +648,10 @@ func LatestTransition(comments []Item) (Transition, bool, error) {
 }
 
 // Repair returns the state label to re-apply when the latest marker names a state the issue does not
-// carry. A paused issue is frozen, so it is never repaired.
+// carry. A paused issue is frozen, so it is never repaired. A closed ticket has no label to apply.
 func Repair(issue Issue, latest Transition, found bool) (State, bool) {
-	if !found || HasLabel(issue, LabelPaused) || HasLabel(issue, string(latest.To)) {
+	if !found || latest.To == Closed || HasLabel(issue, LabelPaused) ||
+		HasLabel(issue, string(latest.To)) {
 		return "", false
 	}
 

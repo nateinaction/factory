@@ -659,9 +659,11 @@ func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, r
 		return startPlanner(ctx, d, cfg, repo, number)
 	case workflow.Implementer:
 		return startImplementer(ctx, d, cfg, repo, number)
+	case workflow.Researcher:
+		return startResearcher(ctx, d, cfg, repo, number)
 	case workflow.Reviewer:
 		return startReviewer(ctx, d, cfg, repo, number)
-	case workflow.Researcher, workflow.Curator:
+	case workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
 
@@ -705,6 +707,18 @@ func failureText(role workflow.Role, code int) string {
 		name, name)
 }
 
+// startResearcher closes a resolved ticket, with no label replacing the claim, or fails it.
+func startResearcher(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Researcher, repo, number)
+	if code == 0 {
+		return 0, finishRun(ctx, d, workflow.Researcher, repo, number,
+			workflow.Researching, workflow.Closed, "")
+	}
+
+	return 1, finishAs(ctx, d, workflow.Researcher, repo, number, workflow.Researching, workflow.Failed,
+		failureText(workflow.Researcher, code))
+}
+
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
 func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
 	code := factoryExit(ctx, d, cfg, workflow.Reviewer, repo, number)
@@ -737,19 +751,32 @@ func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, 
 func finishAs(
 	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
 ) error {
+	return finishRun(ctx, d, role, repo, number, src, dst, text)
+}
+
+// finishRun records a run's outcome. A closed destination closes the ticket instead of labelling it; a
+// mint failure always falls back to factory:failed, reported by an App that is still installed.
+func finishRun(
+	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
+) error {
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
 	token, err := d.mintToken(ctx, role, repo)
 	if err == nil {
+		c := d.client(token)
+		if dst == workflow.Closed {
+			return c.CloseResolved(ctx, repo, number, t)
+		}
+
 		// The commit is recorded when it can be read; the transition itself is what matters.
-		if sha, shaErr := headSHA(ctx, d.client(token), repo, number); shaErr == nil {
+		if sha, shaErr := headSHA(ctx, c, repo, number); shaErr == nil {
 			t.SHA = sha
 		} else {
 			d.log().Warn("cannot read the pull request head for the transition marker",
 				"repo", repo, "issue", number, "error", shaErr)
 		}
 
-		_, err := d.client(token).Finish(ctx, repo, number, t, text)
+		_, err := c.Finish(ctx, repo, number, t, text)
 
 		return err
 	}
