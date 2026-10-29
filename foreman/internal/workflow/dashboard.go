@@ -96,6 +96,12 @@ type DashboardState struct {
 	Actions []DashboardAction
 	// Proposals are the Curator's merge proposals, in the order it filed them.
 	Proposals []DashboardProposal
+	// Rejected are the proposals writers refused for good.
+	Rejected []DashboardRejection
+	// Published are the private lessons writers published to the factory repo.
+	Published []DashboardPublication
+	// Handled are the command comments foreman has already dealt with, oldest first.
+	Handled []int64
 }
 
 // DashboardReport is one retro finding with where it came from: the issue, agent role and run that
@@ -117,6 +123,35 @@ type DashboardReport struct {
 	Severity Severity
 	// Claim is the finding in one line.
 	Claim string
+	// Evidence is what the run showed, kept out of the lesson a promotion shows first.
+	Evidence string
+}
+
+// DashboardRejection is a Curator proposal a writer refused for good. Foreman never shows the pair
+// again, whatever id a later proposal gives it.
+type DashboardRejection struct {
+	// ID is the id of the proposal that was rejected.
+	ID string
+	// Groups are the groups the rejected proposal would have merged.
+	Groups []GroupID
+	// By is the writer's login.
+	By string
+	// At is when the writer rejected it.
+	At time.Time
+	// URL links the command comment that rejected it, when there is one.
+	URL string
+}
+
+// DashboardPublication is a private repository's lesson a writer published to the factory repo.
+type DashboardPublication struct {
+	// Group is the group whose lesson was published.
+	Group GroupID
+	// By is the writer's login.
+	By string
+	// At is when it was published.
+	At time.Time
+	// URL links the issue the lesson was published as.
+	URL string
 }
 
 // DashboardGroup is one retro group and every report behind it.
@@ -148,7 +183,7 @@ func (e DashboardEntry) ID() GroupID {
 type DashboardView struct {
 	// Ready are the groups ready to promote, most corroborated first.
 	Ready []DashboardGroup
-	// Proposals are the Curator's proposals.
+	// Proposals are the Curator's proposals no writer has rejected or merged away.
 	Proposals []DashboardProposal
 	// Watching are the groups not ready yet, newest report first.
 	Watching []DashboardGroup
@@ -158,6 +193,8 @@ type DashboardView struct {
 	Ignored []DashboardEntry
 	// Regressed are the groups a writer promoted that a later report mentions again.
 	Regressed []DashboardEntry
+	// Published are the private lessons writers published to the factory repo.
+	Published []DashboardPublication
 	// State is what the body records for the next poll.
 	State DashboardState
 }
@@ -165,9 +202,11 @@ type DashboardView struct {
 // BuildDashboard decides every section from the retro log, the writer actions and the Curator's
 // proposals. now dates the Watching rule, so a test can move the clock.
 func BuildDashboard(reports []DashboardReport, state DashboardState, now time.Time) DashboardView {
-	groups := groupReports(reports)
+	groups := groupReports(mergedReports(reports, state.Actions))
 	actions := lastActions(state.Actions)
-	view := DashboardView{Proposals: state.Proposals, State: state}
+	view := DashboardView{
+		Proposals: liveProposals(state), Published: state.Published, State: state,
+	}
 	seen := make(map[string]bool, len(groups))
 
 	for _, g := range groups {
@@ -188,9 +227,10 @@ func BuildDashboard(reports []DashboardReport, state DashboardState, now time.Ti
 		}
 	}
 
-	// An action outlives the reports it was taken on: keep drawing it after they expire.
+	// An action outlives the reports it was taken on: keep drawing it after they expire. A merge is
+	// drawn once, under the group its reports were folded into.
 	for key, action := range actions {
-		if !seen[key] {
+		if !seen[key] && action.Groups[0].String() == key {
 			view.addEntry(DashboardGroup{}, action)
 		}
 	}
@@ -214,6 +254,74 @@ func (v *DashboardView) addEntry(g DashboardGroup, action DashboardAction) {
 			v.Promoted = append(v.Promoted, entry)
 		}
 	}
+}
+
+// FindGroup returns the group a command names, with the writers' merges applied. A group no report
+// mentions any more is not found.
+func FindGroup(reports []DashboardReport, state DashboardState, id GroupID) (DashboardGroup, bool) {
+	want := resolveGroup(state.Actions, id)
+
+	for _, g := range groupReports(mergedReports(reports, state.Actions)) {
+		if g.ID == want {
+			return g, true
+		}
+	}
+
+	return DashboardGroup{}, false
+}
+
+// mergedReports folds every group a writer merged into the group it was merged into, so a merged group
+// is reported, counted and promoted as one.
+func mergedReports(reports []DashboardReport, actions []DashboardAction) []DashboardReport {
+	alias := mergeAliases(actions)
+
+	out := make([]DashboardReport, 0, len(reports))
+
+	for _, r := range reports {
+		id := follow(alias, GroupID{Target: r.Target, Key: r.Group})
+		r.Target, r.Group = id.Target, id.Key
+		out = append(out, r)
+	}
+
+	return out
+}
+
+// mergeAliases maps each merged group to the group it was merged into, in the order the writers recorded
+// the merges: [A, B] folds B into A, and a later [B, C] then folds C into A as well.
+func mergeAliases(actions []DashboardAction) map[string]GroupID {
+	alias := map[string]GroupID{}
+
+	for _, a := range actions {
+		if a.Kind != ActionMerge || len(a.Groups) != 2 {
+			continue
+		}
+
+		from, into := follow(alias, a.Groups[1]), follow(alias, a.Groups[0])
+		if from.String() != into.String() {
+			alias[from.String()] = into
+		}
+	}
+
+	return alias
+}
+
+// follow walks the merge aliases to the group no merge folded.
+func follow(alias map[string]GroupID, id GroupID) GroupID {
+	for range len(alias) + 1 {
+		next, ok := alias[id.String()]
+		if !ok {
+			return id
+		}
+
+		id = next
+	}
+
+	return id
+}
+
+// resolveGroup is the group a merge left, when a command names one.
+func resolveGroup(actions []DashboardAction, id GroupID) GroupID {
+	return follow(mergeAliases(actions), id)
 }
 
 // sort puts every section in a stable, useful order and bounds how many groups it shows.
@@ -291,6 +399,43 @@ func lastActions(actions []DashboardAction) map[string]DashboardAction {
 	return out
 }
 
+// liveProposals keeps the proposals no writer has rejected for good, by id or by the pair of groups
+// they name: a Curator that proposes a rejected pair again under a new id still shows nothing.
+func liveProposals(state DashboardState) []DashboardProposal {
+	out := make([]DashboardProposal, 0, len(state.Proposals))
+
+	for _, p := range state.Proposals {
+		if proposalRejected(state.Rejected, p) {
+			continue
+		}
+
+		out = append(out, p)
+	}
+
+	return out
+}
+
+// proposalRejected reports whether a rejection refuses p.
+func proposalRejected(rejections []DashboardRejection, p DashboardProposal) bool {
+	return slices.ContainsFunc(rejections, func(r DashboardRejection) bool {
+		return r.ID == p.ID || sameGroups(r.Groups, p.Groups)
+	})
+}
+
+// sameGroups reports whether two non-empty sets name the same groups, in any order.
+func sameGroups(a, b []GroupID) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+
+	seen := make(map[string]bool, len(a))
+	for _, g := range a {
+		seen[g.String()] = true
+	}
+
+	return !slices.ContainsFunc(b, func(g GroupID) bool { return !seen[g.String()] })
+}
+
 // groupReady reports whether the group has reports from ReadyIssues different issues, or one
 // high-severity report. Two agent roles on one issue count once.
 func groupReady(reports []DashboardReport) bool {
@@ -355,9 +500,29 @@ const (
 
 // dashboardWire is the state block as it is written and read back.
 type dashboardWire struct {
-	Version   int                     `json:"version"`
-	Actions   []dashboardActionWire   `json:"actions"`
-	Proposals []dashboardProposalWire `json:"proposals"`
+	Version   int                        `json:"version"`
+	Actions   []dashboardActionWire      `json:"actions"`
+	Proposals []dashboardProposalWire    `json:"proposals"`
+	Rejected  []dashboardRejectionWire   `json:"rejected,omitempty"`
+	Published []dashboardPublicationWire `json:"published,omitempty"`
+	Handled   []int64                    `json:"handled,omitempty"`
+}
+
+// dashboardRejectionWire is one rejected proposal on the wire.
+type dashboardRejectionWire struct {
+	ID     string        `json:"id"`
+	Groups []groupIDWire `json:"groups"`
+	By     string        `json:"by"`
+	At     string        `json:"at"`
+	URL    string        `json:"url,omitempty"`
+}
+
+// dashboardPublicationWire is one published lesson on the wire.
+type dashboardPublicationWire struct {
+	Group groupIDWire `json:"group"`
+	By    string      `json:"by"`
+	At    string      `json:"at"`
+	URL   string      `json:"url,omitempty"`
 }
 
 // dashboardActionWire is one writer action on the wire.
@@ -400,8 +565,8 @@ func RenderDashboard(view DashboardView) (string, error) {
 	renderReady(&b, view.Ready)
 	renderProposals(&b, view.Proposals)
 	renderWatching(&b, view.Watching)
-	renderEntries(&b, "Promoted", "promoted", view.Promoted)
-	renderEntries(&b, "Ignored", "ignored", view.Ignored)
+	renderEntries(&b, "Promoted", view.Promoted, view.Published)
+	renderEntries(&b, "Ignored", view.Ignored, nil)
 	renderRegressed(&b, view.Regressed)
 
 	fmt.Fprintf(&b, "\n%s%s%s", dashboardJSONOpen, raw, dashboardJSONClose)
@@ -413,9 +578,13 @@ func RenderDashboard(view DashboardView) (string, error) {
 	return b.String(), nil
 }
 
-// renderReady draws the Ready to promote section.
+// renderReady draws the Ready to promote section, naming the command that promotes each group.
 func renderReady(b *strings.Builder, groups []DashboardGroup) {
 	fmt.Fprintf(b, "\n## Ready to promote (%d)\n", len(groups))
+
+	b.WriteString("\nComment `promote <target>/<key>` to file a group, `merge <target>/<key> <target>/<key>` " +
+		"to merge two, `ignore <target>/<key>` to drop one, `reject <id>` to refuse a proposal, or " +
+		"`publish` on a private repository's promoted issue. Only a writer's command counts.\n")
 
 	if len(groups) == 0 {
 		b.WriteString("\n_None._\n")
@@ -425,6 +594,7 @@ func renderReady(b *strings.Builder, groups []DashboardGroup) {
 
 	for _, g := range groups {
 		renderGroup(b, g)
+		fmt.Fprintf(b, "\nPromote with `promote %s`.\n", g.ID)
 	}
 }
 
@@ -533,8 +703,9 @@ func renderProposals(b *strings.Builder, proposals []DashboardProposal) {
 	b.WriteString("\n")
 }
 
-// renderEntries draws a Promoted or Ignored section.
-func renderEntries(b *strings.Builder, title, verb string, entries []DashboardEntry) {
+// renderEntries draws a Promoted or Ignored section. A promoted group a writer published shows where it
+// went.
+func renderEntries(b *strings.Builder, title string, entries []DashboardEntry, published []DashboardPublication) {
 	fmt.Fprintf(b, "\n## %s (%d)\n", title, len(entries))
 
 	if len(entries) == 0 {
@@ -544,11 +715,44 @@ func renderEntries(b *strings.Builder, title, verb string, entries []DashboardEn
 	}
 
 	for _, e := range entries {
-		fmt.Fprintf(b, "\n- `%s` %s by %s on %s%s", e.ID(), verb, e.Action.By,
+		fmt.Fprintf(b, "\n- `%s` %s by %s on %s%s", e.ID(), actionVerb(e.Action.Kind), e.Action.By,
 			e.Action.At.Format(dashboardDate), linkSuffix(e.Action.URL))
+
+		if p, ok := lastPublication(published, e.ID()); ok {
+			fmt.Fprintf(b, "; published by %s on %s%s", p.By, p.At.Format(dashboardDate), linkSuffix(p.URL))
+		}
 	}
 
 	b.WriteString("\n")
+}
+
+// actionVerb is how a writer's action reads in the body: a group is promoted, merged or ignored.
+func actionVerb(kind DashboardActionKind) string {
+	switch kind {
+	case ActionMerge:
+		return "merged"
+	case ActionIgnore:
+		return "ignored"
+	case ActionPromote:
+		return "promoted"
+	}
+
+	return "promoted"
+}
+
+// lastPublication is the newest publication of the group, if a writer published one.
+func lastPublication(published []DashboardPublication, id GroupID) (DashboardPublication, bool) {
+	var found DashboardPublication
+
+	ok := false
+
+	for _, p := range published {
+		if p.Group == id && (!ok || p.At.After(found.At)) {
+			found, ok = p, true
+		}
+	}
+
+	return found, ok
 }
 
 // renderRegressed draws the Regressed section.
@@ -630,7 +834,24 @@ func parseDashboardState(text string) (DashboardState, error) {
 		return DashboardState{}, err
 	}
 
-	return DashboardState{Actions: actions, Proposals: proposals}, nil
+	rejected, err := parseDashboardRejections(wire.Rejected)
+	if err != nil {
+		return DashboardState{}, err
+	}
+
+	published, err := parseDashboardPublications(wire.Published)
+	if err != nil {
+		return DashboardState{}, err
+	}
+
+	handled, err := parseDashboardHandled(wire.Handled)
+	if err != nil {
+		return DashboardState{}, err
+	}
+
+	return DashboardState{
+		Actions: actions, Proposals: proposals, Rejected: rejected, Published: published, Handled: handled,
+	}, nil
 }
 
 // parseDashboardActions validates every recorded action.
@@ -748,6 +969,124 @@ func parseGroupIDs(wires []groupIDWire) ([]GroupID, error) {
 	return groups, nil
 }
 
+// parseDashboardRejections validates every rejected proposal.
+func parseDashboardRejections(wires []dashboardRejectionWire) ([]DashboardRejection, error) {
+	if len(wires) == 0 {
+		return nil, nil
+	}
+
+	rejected := make([]DashboardRejection, 0, len(wires))
+
+	for _, w := range wires {
+		if !retroNameRE.MatchString(w.ID) {
+			return nil, fmt.Errorf("dashboard rejection id %q is not valid", w.ID)
+		}
+
+		groups, err := parseGroupIDs(w.Groups)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(groups) < ReadyIssues {
+			return nil, errors.New("a dashboard rejection names fewer than two groups")
+		}
+
+		at, err := parseDashboardTime("rejection", w.At)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := validDashboardText("rejection author", w.By); err != nil {
+			return nil, err
+		}
+
+		if err := validDashboardLink(w.URL); err != nil {
+			return nil, err
+		}
+
+		rejected = append(rejected, DashboardRejection{ID: w.ID, Groups: groups, By: w.By, At: at, URL: w.URL})
+	}
+
+	return rejected, nil
+}
+
+// parseDashboardPublications validates every published lesson.
+func parseDashboardPublications(wires []dashboardPublicationWire) ([]DashboardPublication, error) {
+	if len(wires) == 0 {
+		return nil, nil
+	}
+
+	published := make([]DashboardPublication, 0, len(wires))
+
+	for _, w := range wires {
+		groups, err := parseGroupIDs([]groupIDWire{w.Group})
+		if err != nil {
+			return nil, err
+		}
+
+		at, err := parseDashboardTime("publication", w.At)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := validDashboardText("publication author", w.By); err != nil {
+			return nil, err
+		}
+
+		if err := validDashboardLink(w.URL); err != nil {
+			return nil, err
+		}
+
+		published = append(published, DashboardPublication{Group: groups[0], By: w.By, At: at, URL: w.URL})
+	}
+
+	return published, nil
+}
+
+// parseDashboardHandled validates the ids of the command comments already dealt with.
+func parseDashboardHandled(ids []int64) ([]int64, error) {
+	seen := make(map[int64]bool, len(ids))
+	handled := make([]int64, 0, len(ids))
+
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, fmt.Errorf("dashboard handled comment id %d is not valid", id)
+		}
+
+		if seen[id] {
+			return nil, fmt.Errorf("dashboard handled comment id %d is repeated", id)
+		}
+
+		seen[id] = true
+		handled = append(handled, id)
+	}
+
+	if len(handled) == 0 {
+		return nil, nil
+	}
+
+	return handled, nil
+}
+
+// parseDashboardTime reads an RFC 3339 date in the state block.
+func parseDashboardTime(field, text string) (time.Time, error) {
+	at, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("dashboard %s date %q is not valid: %w", field, text, err)
+	}
+
+	return at, nil
+}
+
+// validDashboardLink accepts an absent link or one line of text.
+func validDashboardLink(url string) error {
+	if url == "" {
+		return nil
+	}
+
+	return validDashboardText("link", url)
+}
+
 // validDashboardText rejects empty or multi-line text in the state block.
 func validDashboardText(field, text string) error {
 	if strings.TrimSpace(text) == "" {
@@ -768,7 +1107,7 @@ func marshalDashboardState(state DashboardState) (string, error) {
 	for _, a := range state.Actions {
 		wire.Actions = append(wire.Actions, dashboardActionWire{
 			Kind: a.Kind, Groups: groupIDWires(a.Groups), By: a.By,
-			At: a.At.Format(time.RFC3339), URL: a.URL,
+			At: a.At.Format(time.RFC3339Nano), URL: a.URL,
 		})
 	}
 
@@ -777,6 +1116,21 @@ func marshalDashboardState(state DashboardState) (string, error) {
 			ID: p.ID, Groups: groupIDWires(p.Groups), Reason: p.Reason,
 		})
 	}
+
+	for _, r := range state.Rejected {
+		wire.Rejected = append(wire.Rejected, dashboardRejectionWire{
+			ID: r.ID, Groups: groupIDWires(r.Groups), By: r.By, At: r.At.Format(time.RFC3339Nano), URL: r.URL,
+		})
+	}
+
+	for _, p := range state.Published {
+		wire.Published = append(wire.Published, dashboardPublicationWire{
+			Group: groupIDWire{Target: p.Group.Target.String(), Group: p.Group.Key},
+			By:    p.By, At: p.At.Format(time.RFC3339Nano), URL: p.URL,
+		})
+	}
+
+	wire.Handled = state.Handled
 
 	raw, err := json.Marshal(wire)
 	if err != nil {

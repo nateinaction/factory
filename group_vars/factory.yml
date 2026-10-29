@@ -211,3 +211,8 @@ factory_review_round_limit: 3
 # revision is the one in flake.lock, so the host and the dev shell get the same package.
 factory_nixpkgs_rev: "31ecbaca1bdefa45dffc409f0250bd8039ea0010"
 factory_srt_version: "0.0.81"
+
+# The factory's own repository. A public repository's ready skill or factory retro group is promoted to
+# an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
+# fail those promotions closed.
+factory_repo: nateinaction/factory

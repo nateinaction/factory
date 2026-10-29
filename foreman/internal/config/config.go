@@ -142,6 +142,9 @@ type Config struct {
 	// UnhostedRoles are the agent roles no worker host takes, rendered by Ansible from the worker
 	// hosts' role labels. Empty means every agent role has a host.
 	UnhostedRoles []workflow.Role `json:"unhosted_roles" mapstructure:"unhosted_roles"`
+	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
+	// Empty means no repository is configured, so such a promotion fails closed.
+	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
 }
 
 // Unhosted reports whether no worker host takes role. Its issues stay queued.
@@ -217,7 +220,11 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateUnhosted(path, c.UnhostedRoles)
+	if err := validateUnhosted(path, c.UnhostedRoles); err != nil {
+		return err
+	}
+
+	return validateFactoryRepo(path, c.FactoryRepo)
 }
 
 // validateUnhosted rejects an unhosted role the workflow does not know.
@@ -226,6 +233,19 @@ func validateUnhosted(path string, roles []workflow.Role) error {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
 			return fmt.Errorf("config %s: unhosted roles: %w", path, err)
 		}
+	}
+
+	return nil
+}
+
+// validateFactoryRepo checks the configured factory repository, when there is one, is owner/name.
+func validateFactoryRepo(path, repo string) error {
+	if repo == "" {
+		return nil
+	}
+
+	if err := workflow.ValidateRepo(repo); err != nil {
+		return fmt.Errorf("config %s: factory repo: %w", path, err)
 	}
 
 	return nil
