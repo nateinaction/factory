@@ -68,7 +68,7 @@ func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []workflow
 		Capture: true, Timeout: MintTimeout,
 	})
 	if err != nil {
-		d.log().Warn("cannot list installations; treating the App as installed nowhere", "role", role, "error", err)
+		d.log().Warn("cannot list installations; treating the App as installed nowhere", "agent_role", role, "error", err)
 		return nil
 	}
 
@@ -216,7 +216,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		// A run waiting for a worker is not a run in progress, so an agent role with one is not claimed
 		// for yet: its queued issue is what the worker takes next.
 		if runs.waiting[q.role] {
-			d.log().Info("leaving an agent role's queue while its DAG is busy", "role", q.role)
+			d.log().Info("leaving an agent role's queue while its DAG is busy", "agent_role", q.role)
 
 			continue
 		}
@@ -224,7 +224,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 		// Runs in progress still leave room while the fleet-wide capacity is not full.
 		slots := runs.free(q.role, cfg.Capacity(q.role))
 		if slots == 0 {
-			d.log().Info("leaving an agent role's queue while its runs fill its capacity", "role", q.role)
+			d.log().Info("leaving an agent role's queue while its runs fill its capacity", "agent_role", q.role)
 
 			continue
 		}
@@ -243,7 +243,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 func warnUnhosted(d Deps, cfg config.Config) {
 	for _, role := range workflow.KnownRoles() {
 		if cfg.Unhosted(role) {
-			d.log().Warn("no worker host takes this agent role; its issues stay queued", "role", role)
+			d.log().Warn("no worker host takes this agent role; its issues stay queued", "agent_role", role)
 		}
 	}
 }
@@ -318,7 +318,7 @@ func prepareRepo(
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		d.log().Warn("cannot mint token; treating the repository as unassigned",
-			"role", role, "repo", repo, "error", err)
+			"agent_role", role, "repo", repo, "error", err)
 
 		return nil
 	}
@@ -380,7 +380,7 @@ func failDeadRun(
 	agent, ok := cfg.Agents[string(role)]
 	if !ok || agent.Deadline() <= 0 {
 		d.log().Warn("cannot date a running label without its agent role's deadline",
-			"repo", repo, "issue", issue.Number, "role", role)
+			"repo", repo, "issue", issue.Number, "agent_role", role)
 
 		return false, nil
 	}
@@ -406,12 +406,12 @@ func failDeadRun(
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		d.log().Warn("cannot mint the dead run's own token; leaving the issue claimed",
-			"role", role, "repo", repo, "issue", issue.Number, "error", err)
+			"agent_role", role, "repo", repo, "issue", issue.Number, "error", err)
 
 		return false, nil
 	}
 
-	d.log().Info("failing a dead run", "repo", repo, "issue", issue.Number, "role", role,
+	d.log().Info("failing a dead run", "repo", repo, "issue", issue.Number, "agent_role", role,
 		"since", since, "deadline", agent.Deadline(), "margin", margin)
 
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: state, To: workflow.Failed}
@@ -482,7 +482,7 @@ func repairIssue(
 		return fmt.Errorf("repair #%d as %s: %w", issue.Number, t.Role, err)
 	}
 
-	d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state, "role", t.Role)
+	d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state, "agent_role", t.Role)
 
 	return d.client(token).AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state))
 }
@@ -523,7 +523,7 @@ func wakeIssue(
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		d.log().Warn("cannot mint the waking agent role's token; leaving the issue where it is",
-			"role", role, "repo", repo, "issue", issue.Number, "error", err)
+			"agent_role", role, "repo", repo, "issue", issue.Number, "error", err)
 
 		return false, nil
 	}
@@ -690,7 +690,7 @@ func claimFromQueue(
 		token, err := d.mintToken(ctx, q.role, repo)
 		if err != nil {
 			d.log().Warn("cannot mint token; treating the repository as unassigned",
-				"role", q.role, "repo", repo, "error", err)
+				"agent_role", q.role, "repo", repo, "error", err)
 
 			continue
 		}
@@ -1024,7 +1024,7 @@ func claimAndEnqueue(
 		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(issue.Number),
 	}})
 	if err != nil {
-		d.log().Error("enqueue failed", "role", q.role, "repo", repo, "issue", issue.Number, "error", err)
+		d.log().Error("enqueue failed", "agent_role", q.role, "repo", repo, "issue", issue.Number, "error", err)
 
 		t.From, t.To = q.dst, workflow.Failed
 
@@ -1105,7 +1105,7 @@ func finishRun(
 	}
 
 	d.log().Error("cannot mint the owning App's token; reporting the failure as another App",
-		"role", role, "repo", ref.Repo, "issue", ref.Number, "error", err)
+		"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "error", err)
 
 	t.To = workflow.Failed
 
@@ -1135,7 +1135,7 @@ func finishRun(
 func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) int {
 	code, err := runAsFactory(ctx, d, cfg, role, ref)
 	if err != nil {
-		d.log().Error("run as factory failed", "role", role, "issue", ref, "error", err)
+		d.log().Error("run as factory failed", "agent_role", role, "issue", ref, "error", err)
 		return -1
 	}
 

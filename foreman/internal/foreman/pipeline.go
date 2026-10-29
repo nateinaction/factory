@@ -251,7 +251,7 @@ func settleRun(ctx context.Context, d Deps, role workflow.Role, ref workflow.Iss
 
 	if err := finishRun(ctx, d, role, ref, q.Running, r.dst, r.text); err != nil {
 		d.log().Warn("cannot record the run's outcome before its retro; start will retry it",
-			"role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
+			"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
 	}
 }
 
