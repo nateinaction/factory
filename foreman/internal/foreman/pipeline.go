@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -74,13 +73,16 @@ type roleRun struct {
 type agentRole struct {
 	// run is the pipeline `foreman run` executes.
 	run roleRun
-	// route is what `start` records for the exit code of the agent role's run.
-	route func(cfg config.Config, ref workflow.IssueRef, code int) route
+	// route is the outcome both halves record for a run's exit code: the factory half before the
+	// retro, and `start` afterwards as the safety net. limit is the review round limit, which only
+	// the Reviewer reads.
+	route func(limit int, ref workflow.IssueRef, code int) route
 	// names are the names the agent role's run directories and output file carry.
 	names roleNames
 }
 
-// route is what `start` does with a run's exit code.
+// route is the outcome of a run: the transition to record, or the line to print when there is
+// none.
 type route struct {
 	// dst is the state the issue moves to from the agent role's running label; empty records no
 	// transition.
@@ -138,7 +140,7 @@ func failed(role workflow.Role, code int) route {
 }
 
 // routePlanner records nothing for a posted round: the factory half already moved the issue to waiting.
-func routePlanner(_ config.Config, _ workflow.IssueRef, code int) route {
+func routePlanner(_ int, _ workflow.IssueRef, code int) route {
 	if code == 0 {
 		return route{text: "The Planner posted a round; see the issue."}
 	}
@@ -147,7 +149,7 @@ func routePlanner(_ config.Config, _ workflow.IssueRef, code int) route {
 }
 
 // routeImplementer queues a finished implementation for review.
-func routeImplementer(_ config.Config, _ workflow.IssueRef, code int) route {
+func routeImplementer(_ int, _ workflow.IssueRef, code int) route {
 	if code == 0 {
 		return route{
 			dst:  workflow.Review,
@@ -159,7 +161,7 @@ func routeImplementer(_ config.Config, _ workflow.IssueRef, code int) route {
 }
 
 // routeResearcher closes a resolved ticket, with no label replacing the claim.
-func routeResearcher(_ config.Config, _ workflow.IssueRef, code int) route {
+func routeResearcher(_ int, _ workflow.IssueRef, code int) route {
 	if code == 0 {
 		return route{dst: workflow.Closed}
 	}
@@ -168,7 +170,7 @@ func routeResearcher(_ config.Config, _ workflow.IssueRef, code int) route {
 }
 
 // routeReviewer routes the issue by what the review found.
-func routeReviewer(cfg config.Config, _ workflow.IssueRef, code int) route {
+func routeReviewer(limit int, _ workflow.IssueRef, code int) route {
 	switch code {
 	case workflow.ReviewClean:
 		return route{dst: workflow.Done, text: "Review found no high or medium issues; see the pull request."}
@@ -180,7 +182,7 @@ func routeReviewer(cfg config.Config, _ workflow.IssueRef, code int) route {
 	case workflow.ReviewExhausted:
 		return route{dst: workflow.Failed, exit: 1, text: fmt.Sprintf(
 			"Review still found high or medium issues after %d rounds. A person needs to look at the pull request.",
-			cfg.ReviewRoundLimit)}
+			limit)}
 	}
 
 	return failed(workflow.Reviewer, code)
@@ -188,7 +190,7 @@ func routeReviewer(cfg config.Config, _ workflow.IssueRef, code int) route {
 
 // routeCurator records nothing on GitHub: the dashboard carries no factory label, and a finished run's
 // output was already applied to its body.
-func routeCurator(_ config.Config, ref workflow.IssueRef, code int) route {
+func routeCurator(_ int, ref workflow.IssueRef, code int) route {
 	if code != 0 {
 		return route{exit: 1, err: fmt.Errorf("the Curator failed on %s (exit %d); see the dagu run log", ref, code)}
 	}
@@ -202,21 +204,52 @@ func committerIdentity() []string {
 	return []string{"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com"}
 }
 
+// settle applies a run's outcome before its retro starts, so the retro is only ever an epilogue and
+// a slow one can never get its run marked dead. It is best effort: a transition it cannot record is
+// logged and `start` applies the same one from the run's exit code afterwards.
+type settle func(ctx context.Context, code int, runErr error)
+
 // runRole runs one agent role's pipeline in a fresh sandbox directory and logs the run's one usage
 // line, even when the run failed.
-func runRole(ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun) (int, error) {
+func runRole(
+	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, record settle,
+) (int, error) {
 	return withSandboxRun(d, spec, role, func(files sandboxFiles) (runResult, []string, error) {
 		return withRunSecrets(ctx, d, spec, role,
 			func(sec secrets, baseURL, token, proxyAddr string, network sandbox.Network) (runResult, error) {
-				return pipeline(ctx, d, spec, role, rr, sec, baseURL, token, proxyAddr, network, files)
+				return pipeline(ctx, d, spec, role, rr, record, sec, baseURL, token, proxyAddr, network, files)
 			})
 	})
 }
 
+// settleRun applies the outcome the run's exit code routes to, before the retro. A role with nowhere
+// to move records nothing here, and one whose transition fails is logged: `start` retries it.
+func settleRun(ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, limit, code int, runErr error) {
+	ar, ok := agentRoleFor(role)
+	if !ok {
+		return
+	}
+
+	r := ar.route(limit, ref, startCode(runErr, code))
+	if r.dst == "" {
+		return
+	}
+
+	q, ok := workflow.QueueOf(role)
+	if !ok {
+		return
+	}
+
+	if err := finishRun(ctx, d, role, ref, q.Running, r.dst, r.text); err != nil {
+		d.log().Warn("cannot record the run's outcome before its retro; start will retry it",
+			"role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
+	}
+}
+
 // pipeline is every agent role's run, with its proxies already up: job, clone and inputs, sandbox,
-// agent, then the agent role's post-agent step and the retro epilogue.
+// agent, the agent role's post-agent step, the outcome it settles, and the retro epilogue.
 func pipeline(
-	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, sec secrets,
+	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, record settle, sec secrets,
 	baseURL, token, proxyAddr string, network sandbox.Network, files sandboxFiles,
 ) (runResult, error) {
 	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.ref.Number)
@@ -263,12 +296,15 @@ func pipeline(
 		Role: role, Prompt: prep.prompt, Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
 	})
 	if err != nil {
+		record(ctx, 1, err)
+
 		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err))}, err
 	}
 
 	oc := prep.after(ctx, s, res)
-	usage := res.Usage
+	record(ctx, oc.code, oc.err)
 
+	usage := res.Usage
 	if oc.retro {
 		usage = usage.Add(s.retroEpilogue(
 			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.retroKey, oc.err, spec.retro,

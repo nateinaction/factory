@@ -257,6 +257,7 @@ var _ = Describe("Client", func() {
 			_, err := c.Finish(ctx, ref(number), transition, "done")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p.Summary()).To(Equal([]string{
+				"GET /repos/o/r/issues/" + itoa(number) + "/comments",
 				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
 				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:reviewing",
 				"POST /repos/o/r/issues/" + itoa(number) + "/labels",
@@ -268,6 +269,36 @@ var _ = Describe("Client", func() {
 			))
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/labels")[0]).To(
 				ContainSubstring(workflow.LabelDone))
+		})
+
+		It("records the same transition once, however many times it is applied", func() {
+			number := issue(workflow.LabelReviewing)
+
+			first, err := c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(second).To(Equal(first), "a repeat returned another comment")
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(HaveLen(1),
+				"posted the same transition twice")
+		})
+
+		It("restores the destination label when the marker is already recorded", func() {
+			number := issue(workflow.LabelReviewing)
+
+			_, err := c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(emulator.RemoveLabel(ctx, "o/r", number, workflow.LabelDone)).To(Succeed())
+
+			_, err = c.Finish(ctx, ref(number), transition, "done")
+			Expect(err).NotTo(HaveOccurred())
+
+			got, err := emulator.Issue(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Labels).To(ContainElement(HaveField("Name", workflow.LabelDone)))
 		})
 
 		It("tolerates a label already removed", func() {
@@ -631,6 +662,7 @@ var _ = Describe("Client", func() {
 
 			Expect(c.CloseResolved(ctx, ref(number), transition)).To(Succeed())
 			Expect(p.Summary()).To(Equal([]string{
+				"GET /repos/o/r/issues/" + itoa(number) + "/comments",
 				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
 				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:researching",
 				"PATCH /repos/o/r/issues/" + itoa(number),
@@ -642,6 +674,16 @@ var _ = Describe("Client", func() {
 			got, err := emulator.Issue(ctx, "o/r", number)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(got.State).To(Equal("closed"))
+		})
+
+		It("records the same close once, however many times it is applied", func() {
+			number := issue(workflow.LabelResearching)
+
+			Expect(c.CloseResolved(ctx, ref(number), transition)).To(Succeed())
+			Expect(c.CloseResolved(ctx, ref(number), transition)).To(Succeed())
+
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(HaveLen(1),
+				"posted the same transition twice")
 		})
 
 		It("tolerates a label already removed", func() {

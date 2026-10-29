@@ -678,6 +678,27 @@ func (h *harness) retroComments() []string {
 	return out
 }
 
+// reportComments are the comments posted on o/r#5 that are not handoff markers: what a run says
+// about its own outcome, not the state machine's transition records.
+func (h *harness) reportComments() []string {
+	GinkgoHelper()
+
+	var out []string
+
+	for _, raw := range h.gh.Bodies("POST", "/repos/o/r/issues/5/comments") {
+		var body struct {
+			Body string `json:"body"`
+		}
+		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
+
+		if !strings.HasPrefix(body.Body, workflow.MarkerPrefix+"handoff ") {
+			out = append(out, body.Body)
+		}
+	}
+
+	return out
+}
+
 // seedComment posts a comment on issue 5 as the factory's Implementer App and returns its id: the
 // markers and retro reports it seeds are the factory's own records.
 func (h *harness) seedComment(text string) int64 {

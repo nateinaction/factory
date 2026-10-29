@@ -293,4 +293,34 @@ var _ = Describe("dead runs", func() {
 		Expect(h.markerComments(1)).To(BeEmpty())
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
+
+	It("does not fail a run whose slow retro outlasts the deadline plus margin", func() {
+		h.ensureIssue(5)
+		addLabel(5, workflow.LabelImplementing)
+		h.implementerGH(nil, nil)
+		h.writeToken(workflow.Implementer, "repo-token\n")
+		h.implementerWrites(firstRunOutput)
+		h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+
+		// The run was claimed long before the retro began, so a poll that still saw the running
+		// label would call it dead while the retro is going.
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/5/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, runErr := Run(context.Background(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(runErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		h.out.Reset()
+		pollCode, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(pollCode).To(BeZero())
+
+		Expect(h.labels(5)).To(ConsistOf(workflow.LabelReview))
+		Expect(h.markerComments(5)).NotTo(ContainElement(ContainSubstring("to=factory:failed")))
+		Expect(h.logs.String()).NotTo(ContainSubstring("failing a dead run"))
+	})
 })

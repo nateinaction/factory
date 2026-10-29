@@ -27,9 +27,11 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// Run is the factory half, run as the factory user: it works the issue as the agent role. For the
-// Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted); a run
-// that already reported its failure on the issue returns workflow.ExitReported.
+// Run is the factory half, run as the factory user: it works the issue as the agent role, settles the
+// run's outcome on the issue, then runs the retro as its epilogue. For the Reviewer the code is the
+// verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted); a run that already reported its
+// failure on the issue returns workflow.ExitReported. `start` applies the same settled transition
+// afterwards, from this code, as the safety net for a factory half that never returned.
 func Run(
 	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef,
 	agent config.AgentConfig, retro config.Budget, limit int,
@@ -46,7 +48,9 @@ func Run(
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	code, err := runRole(ctx, d, spec, role, ar.run)
+	code, err := runRole(ctx, d, spec, role, ar.run, func(ctx context.Context, code int, runErr error) {
+		settleRun(ctx, d, role, ref, spec.limit, code, runErr)
+	})
 
 	return exitCode(err, code)
 }
@@ -425,15 +429,25 @@ func (e *reportedError) Unwrap() error { return e.cause }
 // because the factory half already commented; code is what a successful run returns. The error is
 // kept so the dagu log records it too.
 func exitCode(err error, code int) (int, error) {
+	if err == nil {
+		return code, nil
+	}
+
+	return startCode(err, code), err
+}
+
+// startCode is the code `start` reads for a run: a reported failure becomes ExitReported, because the
+// factory half already commented; any other failure is 1; a success is its own verdict.
+func startCode(err error, code int) int {
 	if _, ok := errors.AsType[*reportedError](err); ok {
-		return workflow.ExitReported, err
+		return workflow.ExitReported
 	}
 
 	if err != nil {
-		return 1, err
+		return 1
 	}
 
-	return code, nil
+	return code
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
