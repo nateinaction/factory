@@ -1,0 +1,21 @@
+# The {{ agent_role }} agent role. Queued by factory-poll with the repository and
+# the claimed issue number; executed on a worker. Every role shares one queue
+# with one slot, which keeps agent runs to one at a time on the 8GB host until
+# the run cap and the sandbox land.
+type: graph
+queue: {{ factory_agent_queue }}
+max_active_runs: 1
+worker_selector:
+  {{ dagu_worker_labels.split('=')[0] }}: {{ dagu_worker_labels.split('=')[1] }}
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/repo of the claimed issue
+  - name: ISSUE
+    type: string
+    required: true
+    description: Number of the claimed GitHub issue
+steps:
+  - name: {{ agent_role }}
+    run: /usr/local/bin/foreman start {{ agent_role }} ${params.REPO} ${params.ISSUE}

@@ -111,8 +111,8 @@ func claimAndEnqueue(ctx context.Context, d Deps, c Client, repo string, number 
 		return 1, err
 	}
 	_, err = d.run(ctx, Cmd{Argv: []string{
-		d.Settings.Dagu, "enqueue", d.Settings.WorkDAG, "--",
-		"REPO=" + repo, "ROLE=" + string(q.role), "ISSUE=" + strconv.Itoa(number),
+		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(q.role), "--",
+		"REPO=" + repo, "ISSUE=" + strconv.Itoa(number),
 	}})
 	if err != nil {
 		d.logf("%v", err)

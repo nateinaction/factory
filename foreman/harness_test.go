@@ -75,7 +75,7 @@ func newHarness(t *testing.T) *harness {
 		Settings: Settings{
 			API: gh.srv.URL, TokenFile: filepath.Join(dir, "gh-token"), KeyFile: key,
 			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
-			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", WorkDAG: "finances-agent-work",
+			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
 		Runner: h.runner, HTTP: gh.srv.Client(), Out: h.out, Err: h.errb,
 	}

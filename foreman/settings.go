@@ -50,8 +50,8 @@ type Settings struct {
 	TokenHelper string
 	// Dagu is the dagu binary.
 	Dagu string
-	// WorkDAG is the dagu DAG a poll enqueues.
-	WorkDAG string
+	// DAGPrefix is prepended to an agent role to name the dagu DAG a poll enqueues.
+	DAGPrefix string
 }
 
 // DefaultSettings is the host layout. Config stays under /etc/factory-agent and ~/.config/factory-agent.
@@ -69,7 +69,7 @@ func DefaultSettings(home, configOverride string) Settings {
 		ConfigFile:  config,
 		TokenHelper: "/usr/local/bin/github-app-token",
 		Dagu:        "/usr/local/bin/dagu",
-		WorkDAG:     "finances-agent-work",
+		DAGPrefix:   "factory-",
 	}
 }
 

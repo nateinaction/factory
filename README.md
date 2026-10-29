@@ -11,7 +11,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
-| `agent` | the issue-to-PR agent: `finances-agent`, pinned opencode, the pinned mattpocock skills, and the two DAGs (see below) |
+| `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the pinned mattpocock skills, and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
@@ -68,11 +68,10 @@ reach the UI and the coordinator port, so restrict both with tailscale ACLs. Set
 Labelling an issue `ready-for-agent` opens a PR for it, and the agent then
 reviews that PR.
 
-1. `finances-agent-poll` runs on the server every 5 minutes. It uses no model.
+1. `factory-poll` runs on the server every 5 minutes. It uses no model.
    It takes the oldest open `ready-for-agent-review` issue, or failing that the
-   oldest `ready-for-agent` one, swaps the label to `agent-reviewing` or
-   `agent-working`, and queues `finances-agent-work` with `MODE=review` or
-   `MODE=work`. Nothing ready means it exits.
+   oldest `ready-for-agent` one, swaps the label to `agent-reviewing` or Nothing ready means it exits.
+   `agent-working`, and queues the `factory-<role>` DAG with `REPO` and `ISSUE`.
 2. `finances-agent-work` runs on a worker labelled `runner=agent`, one at a
    time. It mints a one-hour token scoped to the repo
    (`github-app-token token --repo`), writes it to `/run/factory/gh-token`, and
@@ -116,3 +115,13 @@ Things to know:
 - Bootstrapping the admin user and SSH keys (do this when imaging the Pi).
 - Hooking direnv into the admin user's shell.
 - Rotating the app key: replace the key file and rerun the play.
+
+### Cutover from finances-agent
+
+The first apply after the foreman change is the cutover. Before anything else
+changes, the play asks dagu whether a `finances-agent-*` run is active and fails
+if one is. Drain first: suspend `finances-agent-poll` in the dagu UI, let any run
+finish, then apply. The play then installs `/usr/local/bin/foreman`, deploys
+`factory-poll` and one `factory-<role>` DAG per agent role, and removes the old
+DAG files and `/usr/local/bin/finances-agent`. The removal tasks stay for one
+release. Needs `go` on the controller (the flake's dev shell has it).

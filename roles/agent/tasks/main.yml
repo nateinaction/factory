@@ -1,9 +1,28 @@
 ---
-# Every host: the script (poll runs on the server, work on the worker) and its config.
-- name: Install the agent script
+# Every host: foreman (poll runs on the server, start and run on the worker) and its config.
+# Built on the controller, which has the flake's Go toolchain; the binary is static, so the host needs no Go.
+# -trimpath and -buildvcs=false keep the build reproducible, so an unchanged tree copies as unchanged.
+- name: Map the CPU architecture to Go's naming
+  ansible.builtin.set_fact:
+    agent_foreman_goarch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+- name: Build foreman for the host
+  ansible.builtin.command:
+    argv: [go, build, -trimpath, -buildvcs=false, -o, "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}", ./cmd/foreman]
+    chdir: "{{ playbook_dir }}/foreman"
+  environment:
+    GOOS: linux
+    GOARCH: "{{ agent_foreman_goarch }}"
+    CGO_ENABLED: "0"
+  delegate_to: localhost
+  become: false
+  changed_when: false # the copy below reports the change
+  check_mode: false # the build is local, and the copy needs its output
+
+- name: Install foreman
   ansible.builtin.copy:
-    src: finances-agent
-    dest: /usr/local/bin/finances-agent
+    src: "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}"
+    dest: /usr/local/bin/foreman
     owner: root
     group: root
     mode: "0755"
@@ -20,16 +39,40 @@
     dest: /etc/factory-agent/config.json
     mode: "0644"
 
-# Server: poll on a schedule (no model), and the run it queues for a worker.
-- name: Deploy the agent DAGs to the dagu server
+# Server: retire the old DAGs first, so the old and new names never run side by side,
+# then deploy poll (no model) and one DAG per agent role. The cutover guard (drain.yml) has already run.
+- name: Remove the old DAGs from the dagu server
+  ansible.builtin.file:
+    path: "{{ dagu_home }}/.config/dagu/dags/{{ item }}.yaml"
+    state: absent
+  loop: "{{ agent_old_dags }}"
+  when: dagu_mode == 'server'
+
+- name: Deploy the poll DAG to the dagu server
   ansible.builtin.template:
-    src: "{{ item }}.yaml.j2"
-    dest: "{{ dagu_home }}/.config/dagu/dags/{{ item }}.yaml"
+    src: factory-poll.yaml.j2
+    dest: "{{ dagu_home }}/.config/dagu/dags/factory-poll.yaml"
     owner: "{{ dagu_user }}"
     group: "{{ dagu_user }}"
     mode: "0644"
-  loop: [finances-agent-poll, finances-agent-work]
   when: dagu_mode == 'server'
+
+- name: Deploy a DAG per agent role to the dagu server
+  ansible.builtin.template:
+    src: factory-role.yaml.j2
+    dest: "{{ dagu_home }}/.config/dagu/dags/factory-{{ agent_role }}.yaml"
+    owner: "{{ dagu_user }}"
+    group: "{{ dagu_user }}"
+    mode: "0644"
+  loop: "{{ factory_agent_roles }}"
+  loop_control:
+    loop_var: agent_role
+  when: dagu_mode == 'server'
+
+- name: Remove the old binary
+  ansible.builtin.file:
+    path: "{{ agent_old_binary }}"
+    state: absent
 
 - name: Set up the agent runner
   when: dagu_mode == 'worker'
@@ -58,13 +101,9 @@
       ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/factory-agent.conf
       when: agent_tmpfiles is changed
 
-    # Two commands, as one user. The wildcard is the issue number; the script rejects anything else.
-    - name: Allow dagu to run the agent and the reviewer as factory, and nothing else
-      ansible.builtin.copy:
-        # secure_path: sudo resets PATH, which would hide git and the other nix-profile tools from the agent.
-        content: |
-          Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
-          {{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/finances-agent run *, /usr/local/bin/finances-agent review-run *
+    - name: Allow dagu to run foreman as factory, and nothing else
+      ansible.builtin.template:
+        src: dagu-agent.sudoers.j2
         dest: /etc/sudoers.d/dagu-agent
         owner: root
         group: root
