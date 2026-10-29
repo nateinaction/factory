@@ -35,7 +35,7 @@ func prepareImplementer(ctx context.Context, rc runCtx) (prepared, error) {
 					return workflow.ParseImplementerOutput(text, pr != nil, feedback)
 				})
 			if err != nil {
-				return rejected(ctx, rc, err)
+				return rejected(ctx, rc, err, s.headKey(ctx))
 			}
 			// The retro is the run's epilogue whether or not the output applied.
 			err = s.applyImplementer(ctx, rc.j, repo, branch, start, pr, out)
@@ -76,13 +76,14 @@ func prepareResearcher(ctx context.Context, rc runCtx) (prepared, error) {
 func researchAfter(ctx context.Context, rc runCtx, s session) outcome {
 	out, err := readOutput(rc.paths.out, workflow.ResearcherOutputFile, workflow.ParseResearcherOutput)
 	if err != nil {
-		return rejected(ctx, rc, err)
+		return rejected(ctx, rc, err, s.headKey(ctx))
 	}
 
 	branch, err := workflow.ResearchBranch(out.Branch)
 	if err != nil {
 		return rejected(ctx, rc,
-			&workflow.OutputError{File: workflow.ResearcherOutputFile, Problems: []string{err.Error()}})
+			&workflow.OutputError{File: workflow.ResearcherOutputFile, Problems: []string{err.Error()}},
+			s.headKey(ctx))
 	}
 
 	sha, err := s.applyResearch(ctx, rc.j, rc.spec, branch, out)
@@ -135,7 +136,7 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 		after: func(ctx context.Context, _ session, _ opencode.Result) outcome {
 			out, err := readOutput(rc.paths.out, workflow.ReviewerOutputFile, workflow.ParseReviewerOutput)
 			if err != nil {
-				return rejected(ctx, rc, err)
+				return rejected(ctx, rc, err, sha)
 			}
 
 			code, err := postVerdict(ctx, rc.d, rc.j.c, repo, pr.Number, sha, out, rc.j.issue, rc.spec.limit)
@@ -174,7 +175,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 		after: func(ctx context.Context, _ session, _ opencode.Result) outcome {
 			out, err := readOutput(rc.paths.out, workflow.PlannerOutputFile, workflow.ParsePlannerOutput)
 			if err != nil {
-				return rejected(ctx, rc, err)
+				return rejected(ctx, rc, err, "")
 			}
 
 			commentID, final, err := applyPlannerRound(ctx, rc.j, rc.d.runID(), rc.spec.ref.Repo, rc.spec.ref.Number, out)

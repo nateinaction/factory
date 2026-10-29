@@ -71,17 +71,27 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(joined(calls[1])).To(ContainSubstring("--session ses_run"))
 	})
 
-	It("keeps the Reviewer's state in memory", func() {
+	It("keeps the Reviewer's state for its retro, then deletes it", func() {
 		h.reviewerGH(nil)
 		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+		h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+
+		var seen []string
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) {
+				seen = append(seen, c.Env["OPENCODE_DB"])
+			}
+
+			return base(c)
+		})
 		Expect(Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)).
 			Error().NotTo(HaveOccurred())
-		calls := h.opencodeCalls()
-		Expect(calls).To(HaveLen(2), "the review and its retro")
-
-		for _, c := range calls {
-			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DB", ":memory:"))
-		}
+		Expect(seen).To(HaveLen(2), "the review and its retro")
+		Expect(seen[0]).To(And(HavePrefix(h.deps.Settings.WorkRoot), HaveSuffix("opencode.db")),
+			"the review's state does not outlive the process")
+		Expect(seen[1]).To(Equal(seen[0]), "the retro cannot resume the review's session")
+		Expect(filepath.Dir(seen[0])).NotTo(BeAnExistingFile(), "state survived the run and its retro")
 	})
 
 	It("gives the run the agent role's wall-clock deadline", func() {

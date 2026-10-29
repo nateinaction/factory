@@ -266,7 +266,7 @@ func pipeline(
 	}
 
 	j, err := loadJob(
-		ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role), external,
+		ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(), external,
 	)
 	if err != nil {
 		return runResult{}, err
@@ -330,10 +330,15 @@ func failedRetro(
 // headKeyOf is the clone's commit as a retro key.
 func headKeyOf(ctx context.Context, s session) string { return s.headKey(ctx) }
 
-// rejected is the outcome of a run whose output file was rejected: nothing is applied and no retro
-// runs.
-func rejected(ctx context.Context, rc runCtx, err error) outcome {
-	return outcome{err: rejectOutput(ctx, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err)}
+// rejected is the outcome of a run whose output file was rejected: nothing is applied, but the run
+// still gets its retro when the agent role keeps one and the run has a key for it. A key of empty
+// means the role's retro would have nothing to file under, as with a Planner round that is not final.
+func rejected(ctx context.Context, rc runCtx, err error, key string) outcome {
+	return outcome{
+		retro:    key != "",
+		retroKey: key,
+		err:      rejectOutput(ctx, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err),
+	}
 }
 
 // readOutput reads an agent role's output file and parses it strictly. A file foreman cannot read is an
