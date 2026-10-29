@@ -18,16 +18,11 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
-// Ceilings on every process foreman starts.
+// Ceilings on every process foreman starts. A model run's deadline is its agent role's budget
+// (config.AgentConfig), not a constant here.
 const (
 	// GitTimeout bounds git and the small helpers.
 	GitTimeout = proc.DefaultTimeout
-	// AgentTimeout bounds the Implementer's model run.
-	AgentTimeout = 3600 * time.Second
-	// RetroTimeout bounds the retro step.
-	RetroTimeout = 900 * time.Second
-	// ReviewTimeout bounds the Reviewer's model run.
-	ReviewTimeout = 1800 * time.Second
 	// ToolchainTimeout bounds cloning the default branch and resolving its dev environment.
 	ToolchainTimeout = 600 * time.Second
 	// MintTimeout bounds minting a token.

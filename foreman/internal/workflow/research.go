@@ -201,9 +201,6 @@ func ResearchMarker(branch string) string {
 	return MarkerPrefix + "research branch=" + branch + " -->"
 }
 
-// ResearchMarkerPrefix starts every research resolution foreman posts.
-const ResearchMarkerPrefix = MarkerPrefix + "research "
-
 // RenderResolution is the resolution comment: its marker, the answer, and a link to the findings branch.
 // The link is kept whole: the answer is cut to leave room for it.
 func RenderResolution(repo Repo, branch, resolution string) string {

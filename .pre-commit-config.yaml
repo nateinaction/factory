@@ -42,6 +42,20 @@ repos:
         files: ^(site\.yml|ansible\.cfg|(roles|group_vars|inventory|tests)/.*\.ya?ml)$
         pass_filenames: false
 
+      - id: ansible-lint
+        name: ansible-lint
+        entry: ansible-lint
+        language: system
+        files: ^(site\.yml|ansible\.cfg|\.ansible-lint|\.yamllint|(roles|group_vars|inventory|tests)/.*\.ya?ml)$
+        pass_filenames: false
+
+      - id: yamllint
+        name: yamllint
+        entry: yamllint .
+        language: system
+        files: \.ya?ml$|^\.yamllint$
+        pass_filenames: false
+
       - id: ansible-test
         name: ansible tests
         entry: bash -c 'set -euo pipefail; for t in tests/*.test; do echo "== $t"; "$t"; done'

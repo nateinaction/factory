@@ -1,9 +1,9 @@
 ---
 # One GitHub App per agent role; credentials.yml installs each App's files.
+# Fail closed: a missing file stops the play rather than skipping silently.
 - name: Load GitHub App settings
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/secrets/github_app.yml"
-  # Fail closed: a missing file stops the play rather than skipping silently.
 
 - name: Install each App's credentials
   ansible.builtin.include_tasks: credentials.yml
