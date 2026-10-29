@@ -61,6 +61,7 @@ type cliHarness struct {
 	logs   bytes.Buffer
 	home   string
 	dir    string
+	sudo   bool
 }
 
 // newCLIHarness builds a command whose Ansible role config lives in a temp directory.
@@ -90,11 +91,10 @@ func (h *cliHarness) execute(args ...string) int {
 	root, err := newRootCommand(h.deps, config.SettingsViper(h.home))
 	Expect(err).NotTo(HaveOccurred())
 
-	root.SetArgs(args)
 	root.SetOut(&h.out)
 	root.SetErr(&h.errOut)
 
-	cmd, err := root.ExecuteContextC(context.Background())
+	cmd, err := executeCommand(context.Background(), root, args, h.sudo)
 
 	return exit(h.logger, cmd, err)
 }
@@ -212,6 +212,33 @@ var _ = Describe("the foreman command", func() {
 		path := filepath.Join(h.dir, "missing.json")
 
 		Expect(h.execute("poll", "--config", path)).To(Equal(1))
+	})
+
+	Context("under sudo", func() {
+		BeforeEach(func() {
+			h.sudo = true
+		})
+
+		DescribeTable("refuses every flag before anything runs",
+			func(args ...string) {
+				Expect(h.execute(args...)).To(Equal(ExitUsage))
+				Expect(h.logs.String()).To(ContainSubstring("sudo permits only the agent role, repository and issue"))
+				Expect(h.runner.cmds).To(BeEmpty())
+			},
+			Entry("a settings flag", "run", "--srt", "/tmp/elsewhere", "implementer", "o/r", "5"),
+			Entry("a flag before the verb", "--srt", "/tmp/elsewhere", "run", "implementer", "o/r", "5"),
+			Entry("a flag after the arguments", "run", "implementer", "o/r", "5", "--config", "/tmp/elsewhere"),
+			Entry("an assigned flag", "run", "--srt=/tmp/elsewhere", "implementer", "o/r", "5"),
+			Entry("a help flag", "run", "--help"),
+			Entry("a flag on another verb", "start", "--key-file", "/tmp/elsewhere", "implementer", "o/r", "5"),
+		)
+
+		It("accepts the agent role, repository and issue", func() {
+			Expect(h.execute("run", "janitor", "o/r", "5")).To(Equal(ExitUsage))
+			Expect(h.logs.String()).To(ContainSubstring("unknown agent role"))
+			Expect(h.logs.String()).NotTo(ContainSubstring("sudo permits"))
+			Expect(h.runner.cmds).To(BeEmpty())
+		})
 	})
 
 	Context("settings precedence", func() {

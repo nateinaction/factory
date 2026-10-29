@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -77,6 +79,31 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 	root.AddCommand(pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d))
 
 	return root, nil
+}
+
+// executeCommand runs one command line. When sudo started foreman, the line may carry no flag at all:
+// only `run` and its three positional arguments are permitted, so a flag cannot point the factory half
+// at another sandbox binary, key file, skills directory, config or foreman itself. It is checked
+// against the raw arguments, before cobra parses or acts on anything, so even --help is refused.
+func executeCommand(ctx context.Context, root *cobra.Command, args []string, underSudo bool) (*cobra.Command, error) {
+	if underSudo {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "-") {
+				return root, fmt.Errorf(
+					"sudo permits only the agent role, repository and issue: refusing %q", arg,
+				)
+			}
+		}
+	}
+
+	root.SetArgs(args)
+
+	cmd, err := root.ExecuteContextC(ctx)
+	if err != nil {
+		return cmd, fmt.Errorf("execute command: %w", err)
+	}
+
+	return cmd, nil
 }
 
 // addSettingsFlags defines the persistent flags that override Settings. Each flag's name is its
