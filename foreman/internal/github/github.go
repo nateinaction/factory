@@ -269,12 +269,6 @@ func (c Client) CreateIssue(ctx context.Context, repo, title, body string) (int,
 	return created.Number, err
 }
 
-// UpdateIssueBody replaces an issue's body, leaving its title, labels and state alone.
-func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, body string) error {
-	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
-		bodyRequest{Body: body}, nil)
-}
-
 // Label is the part of a repository label foreman reads.
 type Label struct {
 	// Name is the label's text.
