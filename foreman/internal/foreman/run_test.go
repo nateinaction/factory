@@ -34,7 +34,7 @@ var _ = Describe("Run", func() {
 		})
 
 		// retroOut is where the retro of issue 5 is written.
-		retroOut := func() string { return filepath.Join(h.deps.Settings.WorkRoot, "issue-5.retro.md") }
+		retroOut := func() string { return h.retroOut() }
 
 		It("on a first run clones, runs the model, force-pushes, opens the PR and posts the retro", func() {
 			h.opencodeWrites("--session", retroOut(), "lessons\n")
@@ -128,7 +128,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("clears stale scratch from an earlier run", func() {
-			Expect(os.MkdirAll(h.deps.Settings.WorkRoot, 0o700)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Dir(retroOut()), 0o700)).To(Succeed())
 			Expect(os.WriteFile(retroOut(), []byte("stale retro"), 0o600)).To(Succeed())
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 			Expect(h.retroNumber()).To(BeZero(), "posted a stale retro")
@@ -161,6 +161,20 @@ var _ = Describe("Run", func() {
 		It("approves a clean review of the head commit", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+
+			var spec []byte
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) {
+					var err error
+
+					spec, err = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "run-reviewer-5", "spec.md"))
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				return base(c)
+			})
+
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
 				ContainSubstring(`"event":"APPROVE"`), ContainSubstring(`"commit_id":"sha-head"`),
@@ -178,8 +192,6 @@ var _ = Describe("Run", func() {
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
 
-			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "review-5.spec.md"))
-			Expect(err).NotTo(HaveOccurred())
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))
 			h.expectLeakFree("repo-token", "or-key")
 		})
@@ -230,7 +242,7 @@ var _ = Describe("Run", func() {
 			outside := filepath.Join(h.dir, "outside.json")
 			Expect(os.WriteFile(outside, []byte(cleanReview), 0o600)).To(Succeed())
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-				if c.Argv[0] == "opencode" {
+				if isModel(c) {
 					Expect(os.Symlink(outside, h.reviewOut())).To(Succeed())
 				}
 

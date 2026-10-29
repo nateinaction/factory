@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -23,6 +28,11 @@ import (
 func Run(
 	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, number int,
 ) (int, error) {
+	// A host the sandbox adapter cannot serve does no work: there is never an unsandboxed fallback.
+	if err := sandbox.Supported(runtime.GOOS); err != nil {
+		return 1, err
+	}
+
 	switch role {
 	case workflow.Implementer:
 		if err := runImplementer(ctx, d, repo, agent, number); err != nil {
@@ -103,6 +113,10 @@ type session struct {
 	gitEnv   map[string]string
 	agentEnv map[string]string
 	gitArgv  []string
+	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
+	// Both are required: a session with either missing refuses to start the model.
+	srt      string
+	settings string
 	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
 	key string
 }
@@ -122,7 +136,7 @@ func (s session) head(ctx context.Context) (string, error) {
 // clone clones the repository into the session's workdir.
 func (s session) clone(ctx context.Context, repo string) error {
 	_, err := s.d.run(ctx, proc.Cmd{
-		Argv: []string{"git", "clone", "https://github.com/" + repo + ".git", s.workdir}, Env: s.gitEnv,
+		Argv: []string{gitProgram, "clone", "https://github.com/" + repo + ".git", s.workdir}, Env: s.gitEnv,
 	})
 
 	return err
@@ -139,6 +153,23 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitArgv:  append([]string{"git", "-C", workdir}, identity...),
 		key:      j.sec.openrouterKey,
 	}
+}
+
+// sandbox puts the model process inside the run's sandbox: its own HOME and XDG directories, the
+// default branch's toolchain, and the srt settings compiled from the role's spec.
+func (s session) sandboxed(f runFiles, spec sandbox.Spec, toolchainPath string, proxyPort int) (session, error) {
+	if err := f.writeSettings(spec, proxyPort); err != nil {
+		return session{}, err
+	}
+
+	env := f.env(toolchainPath)
+	maps.Copy(env, s.agentEnv)
+
+	s.srt = s.d.Settings.Srt
+	s.settings = f.settings
+	s.agentEnv = env
+
+	return s, nil
 }
 
 // job is what an agent role reads before it touches a clone: its secrets, the model's environment, a
@@ -171,25 +202,33 @@ func loadJob(
 	return job{sec: sec, env: env, c: c, issue: issue}, nil
 }
 
-// withProxy runs fn with the run's OpenRouter proxy up and stops it when fn returns, folding the
-// usage the proxy read into the run's usage. A proxy that cannot start fails the run: the model has
-// no other way to reach OpenRouter, and there is never an unsandboxed fallback.
+// withProxy runs fn with the run's OpenRouter key proxy and its egress proxy up, and stops both when
+// fn returns. The usage the key proxy read and the domains the egress proxy saw are the run's. A
+// proxy that cannot start fails the run: the model has no other way to reach OpenRouter, and there is
+// never an unsandboxed fallback.
 func (d Deps) withProxy(
-	key string, fn func(baseURL string) (opencode.Usage, error),
-) (opencode.Usage, error) {
+	ctx context.Context, network sandbox.Network, key string,
+	fn func(baseURL, proxyAddr string) (opencode.Usage, error),
+) (opencode.Usage, []string, error) {
 	p, err := d.proxy(key)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	usage, err := fn(p.URL())
+	e, err := d.egress(ctx, network, p.URL())
+	if err != nil {
+		return opencode.Usage{}, nil, errors.Join(err, p.Close())
+	}
+
+	usage, err := fn(e.URL(), e.Address())
 	// Read the usage before stopping: a response still being relayed when the model exits cannot be
 	// counted, and Close is what ends it.
 	read := p.Usage()
-	// A failure to stop the proxy is part of the run's outcome, not a diagnostic to drop.
-	err = errors.Join(err, p.Close())
+	domains := e.Domains()
+	// A failure to stop either proxy is part of the run's outcome, not a diagnostic to drop.
+	err = errors.Join(err, e.Close(), p.Close())
 
-	return usage.Use(reported(read)), err
+	return usage.Use(reported(read)), domains, err
 }
 
 // proxy starts the run's OpenRouter proxy with key on the configured loopback address.
@@ -207,48 +246,80 @@ func (d Deps) proxy(key string) (Forwarder, error) {
 	return start(key, addr)
 }
 
+// egress starts the run's egress proxy with the role's policy, forwarding its API calls to apiURL.
+func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
+	start := d.Egress
+	if start == nil {
+		start = func(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
+			return egress.Start(ctx, policy, apiURL, d.egressAddr())
+		}
+	}
+
+	return start(ctx, policy, apiURL)
+}
+
+// egressAddr is the loopback address the egress proxy binds.
+func (d Deps) egressAddr() string {
+	if d.EgressAddr == "" {
+		return egress.Loopback
+	}
+
+	return d.EgressAddr
+}
+
 // reported is the proxy's usage as the adapter's type.
 func reported(u openrouter.Usage) opencode.Usage {
 	return opencode.Usage{Input: u.Input, Output: u.Output, Cached: u.Cached, Cost: u.Cost}
 }
 
-// runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
+// runImplementer works the issue in a fresh run directory and logs the run's one usage line, even
 // when the run failed.
-func runImplementer(ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int) error {
-	var usage opencode.Usage
+func runImplementer(ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int) (err error) {
+	var (
+		usage   opencode.Usage
+		domains []string
+	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Implementer, number, func(db string) error {
-		var err error
-
-		usage, err = implement(ctx, d, repo, agent, number, db)
-
+	files, err := newRunFiles(d.Settings.WorkRoot, workflow.Implementer, number)
+	if err != nil {
 		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Implementer, repo, number, d.Host, agent, usage))
+	}
+
+	defer func() { err = errors.Join(err, files.remove()) }()
+
+	usage, domains, err = implement(ctx, d, repo, agent, number, files)
+	d.logUsage(opencode.NewUsageReport(workflow.Implementer, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	return err
 }
 
-// implement clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
+// implement clones, runs the model under the sandbox, pushes, opens or updates the pull request, and
+// writes the retro.
 func implement(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, db string,
-) (opencode.Usage, error) {
-	sec, err := readSecrets(d.Settings, workflow.Implementer)
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, files runFiles,
+) (opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return implementRun(ctx, d, sec, baseURL, repo, agent, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Implementer)
+	if err != nil {
+		return opencode.Usage{}, nil, err
+	}
+
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+		return implementRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, number, files)
 	})
 }
 
-// implementRun is the Implementer's work, with its proxy already up.
+// implementRun is the Implementer's work, with its proxies already up.
 func implementRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, number int, files runFiles,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, files.db(workflow.Implementer))
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -270,8 +341,22 @@ func implementRun(
 		return opencode.Usage{}, err
 	}
 
+	toolchain, err := d.toolchain(ctx, j.c, repo, sec.githubToken, "", files)
+	if err != nil {
+		return opencode.Usage{}, err
+	}
+
 	docs, err := prompt.ReadRepoDocs(workdir)
 	if err != nil {
+		return opencode.Usage{}, err
+	}
+
+	retroOut := files.output("retro.md")
+
+	spec := sandbox.Plan(workflow.Implementer, files.layout(d, workdir, retroOut, toolchainPaths(toolchain)))
+	spec.Network = network
+
+	if s, err = s.sandboxed(files, spec, toolchain, proxyPort(proxyAddr)); err != nil {
 		return opencode.Usage{}, err
 	}
 
@@ -286,12 +371,28 @@ func implementRun(
 		return res.Usage, err
 	}
 	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
-	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session)
+	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session, retroOut)
 	if err != nil {
 		d.log().Warn("retro failed", "repo", repo, "issue", number, "error", err)
 	}
 
 	return res.Usage.Add(retroUsage), nil
+}
+
+// proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
+// the settings compile, so the run never starts without its egress boundary.
+func proxyPort(addr string) int {
+	parsed, err := url.Parse("http://" + addr)
+	if err != nil {
+		return 0
+	}
+
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		return 0
+	}
+
+	return port
 }
 
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if
@@ -403,17 +504,13 @@ func openPR(
 	return &pr, nil
 }
 
-// retro resumes the finished session, by its explicit id, for its retro and posts it on the retro ticket.
+// retro resumes the finished session, by its explicit id, for its retro and posts it on the retro
+// ticket. It runs inside the same sandbox, and writes to the run's own output file.
 func (s session) retro(
-	ctx context.Context, c github.Client, repo string, number int, session string,
+	ctx context.Context, c github.Client, repo string, number int, session, out string,
 ) (opencode.Usage, error) {
 	if session == "" {
 		return opencode.Usage{}, errors.New("the run reported no session to resume")
-	}
-
-	out, err := freshPath(s.d.Settings.WorkRoot, fmt.Sprintf("issue-%d.retro.md", number))
-	if err != nil {
-		return opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
@@ -444,18 +541,22 @@ func (s session) retro(
 // runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
 func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int) (int, error) {
 	var (
-		usage opencode.Usage
-		code  int
+		usage   opencode.Usage
+		domains []string
+		code    int
+		err     error
 	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Reviewer, number, func(db string) error {
-		var err error
+	files, err := newRunFiles(d.Settings.WorkRoot, workflow.Reviewer, number)
+	if err != nil {
+		return 1, err
+	}
 
-		code, usage, err = review(ctx, d, repo, agent, number, db)
+	defer func() { err = errors.Join(err, files.remove()) }()
 
-		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Reviewer, repo, number, d.Host, agent, usage))
+	code, usage, domains, err = review(ctx, d, repo, agent, number, files)
+	d.logUsage(opencode.NewUsageReport(workflow.Reviewer, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	if err != nil && code == 0 {
 		code = 1
@@ -464,33 +565,40 @@ func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentCon
 	return code, err
 }
 
-// review clones the pull request's branch, runs the review, posts it, and returns the verdict code.
+// review clones the pull request's branch, runs the review under the sandbox, posts it, and returns
+// the verdict code.
 func review(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, db string,
-) (int, opencode.Usage, error) {
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, files runFiles,
+) (int, opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
+	if err != nil {
+		return 1, opencode.Usage{}, nil, err
+	}
+
 	sec, err := readSecrets(d.Settings, workflow.Reviewer)
 	if err != nil {
-		return 1, opencode.Usage{}, err
+		return 1, opencode.Usage{}, nil, err
 	}
 
 	var code int
 
-	usage, err := d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, number, db)
-		code = runCode
+	usage, domains, err := d.withProxy(
+		ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+			runCode, u, e := reviewRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, number, files)
+			code = runCode
 
-		return u, e
-	})
+			return u, e
+		})
 
-	return code, usage, err
+	return code, usage, domains, err
 }
 
-// reviewRun is the Reviewer's work, with its proxy already up.
+// reviewRun is the Reviewer's work, with its proxies already up.
 func reviewRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, number int, files runFiles,
 ) (int, opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, files.db(workflow.Reviewer))
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
@@ -500,31 +608,46 @@ func reviewRun(
 		return 1, opencode.Usage{}, err
 	}
 
-	paths, err := reviewPaths(d.Settings.WorkRoot, number)
+	workdir, err := freshPath(d.Settings.WorkRoot, "review-"+strconv.Itoa(number))
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
 
-	s := newSession(d, j, paths.workdir, nil)
+	s := newSession(d, j, workdir, nil)
 
 	sha, err := s.checkoutForReview(ctx, repo, workflow.BranchName(number))
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
 
-	docs, err := writeSpec(paths, j.issue)
+	toolchain, err := d.toolchain(ctx, j.c, repo, sec.githubToken, base, files)
+	if err != nil {
+		return 1, opencode.Usage{}, err
+	}
+
+	out := files.output("review.json")
+	specPath := files.output("spec.md")
+
+	spec := sandbox.Plan(workflow.Reviewer, files.layout(d, workdir, out, toolchainPaths(toolchain)))
+	spec.Network = network
+
+	if s, err = s.sandboxed(files, spec, toolchain, proxyPort(proxyAddr)); err != nil {
+		return 1, opencode.Usage{}, err
+	}
+
+	docs, err := writeSpec(workdir, specPath, j.issue)
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, paths.spec, paths.out), Timeout: ReviewTimeout,
+		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, specPath, out), Timeout: ReviewTimeout,
 	})
 	if err != nil {
 		return 1, res.Usage, err
 	}
 
-	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, paths.out)
+	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out)
 
 	return code, res.Usage, err
 }
@@ -545,38 +668,15 @@ func reviewTarget(ctx context.Context, c github.Client, repo, branch string) (*g
 	return pr, base, err
 }
 
-// writeSpec writes the issue where the Reviewer reads it, outside the clone, and returns the clone's
-// repository docs.
-func writeSpec(paths reviewFiles, issue workflow.Issue) ([]prompt.Doc, error) {
+// writeSpec writes the issue where the Reviewer reads it, inside the run directory, and returns the
+// clone's repository docs.
+func writeSpec(workdir, specPath string, issue workflow.Issue) ([]prompt.Doc, error) {
 	spec := fmt.Sprintf("# %s\n\n%s\n", issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars))
-	if err := os.WriteFile(paths.spec, []byte(spec), privateFileMode); err != nil {
+	if err := os.WriteFile(specPath, []byte(spec), privateFileMode); err != nil {
 		return nil, fmt.Errorf("write spec: %w", err)
 	}
 
-	return prompt.ReadRepoDocs(paths.workdir)
-}
-
-// reviewFiles are a review run's scratch paths.
-type reviewFiles struct {
-	workdir, spec, out string
-}
-
-// reviewPaths clears and returns the scratch paths of a review run.
-func reviewPaths(root string, number int) (reviewFiles, error) {
-	var (
-		f   reviewFiles
-		err error
-	)
-	for _, p := range []struct {
-		dst    *string
-		suffix string
-	}{{&f.workdir, ""}, {&f.spec, ".spec.md"}, {&f.out, ".json"}} {
-		if *p.dst, err = freshPath(root, "review-"+strconv.Itoa(number)+p.suffix); err != nil {
-			return reviewFiles{}, err
-		}
-	}
-
-	return f, nil
+	return prompt.ReadRepoDocs(workdir)
 }
 
 // checkoutForReview clones the repository on the pull request's branch and returns the reviewed commit.

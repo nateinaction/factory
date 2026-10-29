@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +25,11 @@ func Backoff(attempt int) time.Duration {
 
 // InMemoryDB is OPENCODE_DB's value for a run whose state never touches the disk.
 const InMemoryDB = ":memory:"
+
+// ProxyAPIKey is the placeholder opencode sends as its provider key. The egress proxy forwards the
+// request to the run's key proxy, which replaces the Authorization header with the real OpenRouter
+// key. The placeholder is never a secret.
+const ProxyAPIKey = "factory-egress-proxy" //nolint:gosec // a placeholder, never a credential
 
 // FailureKind says why a model run failed. Its text is safe to put in a comment: it names the kind and
 // carries nothing from the response.
@@ -284,7 +290,11 @@ func Env(baseURL, stateDB string, a config.AgentConfig) (map[string]string, erro
 	inline, err := json.Marshal(map[string]any{
 		"compaction": map[string]bool{"auto": a.Compaction},
 		"provider": map[string]any{
-			"openrouter": map[string]any{"options": map[string]string{"baseURL": baseURL}},
+			"openrouter": map[string]any{"options": map[string]string{
+				// opencode v1.19.3 refuses to call a provider with no key. This placeholder is
+				// replaced by the key proxy; the real key is never here.
+				"baseURL": baseURL, "apiKey": ProxyAPIKey,
+			}},
 		},
 	})
 	if err != nil {
@@ -348,8 +358,21 @@ type UsageReport struct {
 	Missing     []string      `json:"missing"`
 }
 
-// NewUsageReport builds the report. The adapter cannot yet observe contacted domains (the sandbox
-// slice will), so they are always listed as missing.
+// WithDomains records every domain the run contacted. A nil slice means the adapter could not
+// observe egress, and domains stays listed as missing rather than reported as none.
+func (r UsageReport) WithDomains(domains []string) UsageReport {
+	if domains == nil {
+		return r
+	}
+
+	r.Domains = domains
+	r.Missing = slices.DeleteFunc(r.Missing, func(field string) bool { return field == "domains" })
+
+	return r
+}
+
+// NewUsageReport builds the report. Domains stays missing until the egress proxy reports them
+// through WithDomains.
 func NewUsageReport(
 	role workflow.Role, repo string, number int, host string, a config.AgentConfig, u Usage,
 ) UsageReport {

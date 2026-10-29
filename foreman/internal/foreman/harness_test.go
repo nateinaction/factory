@@ -24,6 +24,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -190,7 +191,10 @@ func newHarness() *harness {
 	h.deps = Deps{
 		Settings: config.Settings{
 			API: gh.URL(), TokenDir: dir, KeyFile: key,
-			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
+			WorkRoot: filepath.Join(dir, "work"), Home: filepath.Join(dir, "home"),
+			DaguHome: filepath.Join(dir, "dagu"), Srt: "srt", Skills: filepath.Join(dir, "skills"),
+			ConfigFile:  filepath.Join(dir, "config.json"),
+			Self:        "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
 		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs),
@@ -200,16 +204,21 @@ func newHarness() *harness {
 	return h
 }
 
+// isModel reports whether c starts a model run: opencode under srt, or bare opencode.
+func isModel(c proc.Cmd) bool { return strings.Contains(joined(c), "opencode run") }
+
 // defaultRun answers token minting and git queries, and a clone makes its directory, as git does;
 // everything else succeeds silently.
 func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 	line := joined(c)
 	switch {
-	case len(c.Argv) > 3 && c.Argv[0] == "git" && c.Argv[1] == "clone":
-		Expect(os.MkdirAll(c.Argv[3], 0o700)).To(Succeed())
+	case len(c.Argv) > 1 && c.Argv[0] == "git" && c.Argv[1] == "clone":
+		Expect(os.MkdirAll(c.Argv[len(c.Argv)-1], 0o700)).To(Succeed())
 		return "", nil
-	case c.Argv[0] == "opencode":
+	case isModel(c):
 		return okStream("ses_1"), nil
+	case c.Argv[0] == "nix":
+		return devEnvJSON, nil
 	case strings.Contains(line, "github-app-token"):
 		return h.tokenHelper(c)
 	case strings.Contains(line, "rev-parse HEAD"):
@@ -220,6 +229,9 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 
 	return "", nil
 }
+
+// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH.
+const devEnvJSON = `{"variables":{"PATH":"/nix/store/toolchain/bin"}}`
 
 // tokenHelper answers github-app-token: an App lists and mints only where it is installed.
 func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
@@ -517,7 +529,12 @@ func (h *harness) reviewerGH(reviews []workflow.Item) {
 
 // reviewOut is where a Reviewer run on issue 5 writes its verdict.
 func (h *harness) reviewOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "review-5.json")
+	return filepath.Join(h.deps.Settings.WorkRoot, "run-reviewer-5", "review.json")
+}
+
+// retroOut is where an Implementer run on issue 5 writes its retro.
+func (h *harness) retroOut() string {
+	return filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5", "retro.md")
 }
 
 // cleanReview is a review with no findings.
@@ -531,8 +548,10 @@ const blockingReview = `{"summary":"bad","findings":[` +
 // marker.
 func (h *harness) opencodeWrites(marker, path, text string) {
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] == "opencode" && strings.Contains(joined(c), marker) {
+		if isModel(c) && strings.Contains(joined(c), marker) {
+			Expect(os.MkdirAll(filepath.Dir(path), 0o700)).To(Succeed())
 			Expect(os.WriteFile(path, []byte(text), 0o600)).To(Succeed())
+
 			return okStream("ses_1"), nil
 		}
 
@@ -564,7 +583,7 @@ type fakeProxy struct {
 	closed bool
 }
 
-// URL is the base URL the model is told to call.
+// URL is the base URL the key proxy serves.
 func (p *fakeProxy) URL() string { return p.url }
 
 // Usage is what the proxy read.
@@ -572,6 +591,31 @@ func (p *fakeProxy) Usage() openrouter.Usage { return p.usage }
 
 // Close records that the run stopped the proxy.
 func (p *fakeProxy) Close() error {
+	p.closed = true
+
+	return nil
+}
+
+// fakeEgress is a stand-in for the run's egress proxy.
+type fakeEgress struct {
+	url     string
+	address string
+	domains []string
+	policy  sandbox.Network
+	closed  bool
+}
+
+// URL is the model's OpenRouter base URL.
+func (p *fakeEgress) URL() string { return p.url }
+
+// Address is the loopback host:port srt settings point at.
+func (p *fakeEgress) Address() string { return p.address }
+
+// Domains is every domain the run contacted.
+func (p *fakeEgress) Domains() []string { return p.domains }
+
+// Close records that the run stopped the proxy.
+func (p *fakeEgress) Close() error {
 	p.closed = true
 
 	return nil
@@ -622,7 +666,7 @@ func (h *harness) answerOpencode(outs ...string) {
 	n := 0
 
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] != "opencode" {
+		if !isModel(c) {
 			return base(c)
 		}
 
