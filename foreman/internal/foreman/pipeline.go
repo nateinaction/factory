@@ -2,9 +2,9 @@ package foreman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
-	"slices"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
@@ -18,11 +18,35 @@ type runResult struct {
 	code  int
 }
 
+// run is one run of an agent role: the edge it reads the world through, the agent role's entry, and
+// the settings it runs under.
+type run struct {
+	d Deps
+	// role is the agent role, as the command edge named it.
+	role workflow.Role
+	// ar is the agent role's entry, resolved once when the run started. No step looks it up again.
+	ar   agentRole
+	spec runSpec
+}
+
+// runEnv is what the run's proxies hand the rest of the run: the secrets read at the edge, the
+// addresses the model reaches its proxies at, and the egress policy the sandbox enforces.
+type runEnv struct {
+	// sec are the factory half's two secrets, read at the edge.
+	sec secrets
+	// baseURL is the OpenRouter base URL the model is told to call.
+	baseURL string
+	// token is the run's proxy token, which is the model's OpenRouter credential.
+	token string
+	// egressPort is the loopback port the run's srt settings point at.
+	egressPort int
+	// network is the agent role's egress policy: what the model may reach through the egress proxy.
+	network sandbox.Network
+}
+
 // runCtx is what an agent role's prepare step reads: the run and the clone it works.
 type runCtx struct {
-	d     Deps
-	spec  runSpec
-	role  workflow.Role
+	run
 	j     job
 	s     session
 	paths runPaths
@@ -48,9 +72,8 @@ type prepared struct {
 type outcome struct {
 	// code is the verdict code a successful run returns.
 	code int
-	// retro asks for the retro epilogue. The retro never changes the run's outcome.
-	retro bool
-	// retroKey is the key the retro comment is filed under.
+	// retroKey is the key the retro comment is filed under. An empty key means this run has no
+	// retro: there is nothing to file it under.
 	retroKey string
 	// err is the run's failure, if any.
 	err error
@@ -204,135 +227,175 @@ func committerIdentity() []string {
 	return []string{"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com"}
 }
 
-// settle applies a run's outcome before its retro starts, so the retro is only ever an epilogue and
-// a slow one can never get its run marked dead. It is best effort: a transition it cannot record is
-// logged and `start` applies the same one from the run's exit code afterwards.
-type settle func(ctx context.Context, code int, runErr error)
+// pipeline is one run, top to bottom: its private directories, its egress policy and secrets, its
+// proxies, then its work. Each step's cleanup is deferred where the step opened the resource, so the
+// run releases everything it took, however it ends.
+func (r run) pipeline(ctx context.Context) (result runResult, err error) {
+	files, err := newSandboxFiles(r.d.Settings.WorkRoot, r.role, r.spec.ref.Number)
+	if err != nil {
+		return runResult{}, err
+	}
+	// The run directory and the toolchain clone are removed before the run's code is returned, so a
+	// failure anywhere below leaves nothing behind.
+	defer func() { err = errors.Join(err, files.remove()) }()
 
-// runRole runs one agent role's pipeline in a fresh sandbox directory and logs the run's one usage
-// line, even when the run failed.
-func runRole(
-	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, record settle,
-) (int, error) {
-	return withSandboxRun(d, spec, role, func(files sandboxFiles) (runResult, []string, error) {
-		return withRunSecrets(ctx, d, spec, role,
-			func(sec secrets, baseURL, token, proxyAddr string, network sandbox.Network) (runResult, error) {
-				return pipeline(ctx, d, spec, role, rr, record, sec, baseURL, token, proxyAddr, network, files)
-			})
-	})
+	// The domains the egress proxy saw are the run's, and are read in the defer below.
+	var domains []string
+
+	// The run's one usage line is logged even when the run failed, once the proxies have added what
+	// they read: that merge happens in the defer below, which runs first.
+	defer func() {
+		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage).
+			WithDomains(domains))
+	}()
+
+	network, err := sandbox.ParseNetwork(r.spec.agent.Egress.AllowedDomains)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	sec, err := readSecrets(r.d.Settings, r.role)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	token, err := r.d.token()
+	if err != nil {
+		return runResult{}, err
+	}
+
+	p, err := r.d.proxy(sec.openrouterKey, token)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	e, err := r.d.egress(ctx, network, p.URL(), token)
+	if err != nil {
+		// A failure to stop the key proxy is part of the run's outcome, not a diagnostic to drop.
+		return runResult{}, errors.Join(err, p.Close())
+	}
+	// The usage the key proxy read and the domains the egress proxy saw are the run's. Both are read
+	// before the proxies stop: a response still being relayed when the model exits cannot be counted,
+	// and Close is what ends it.
+	defer func() {
+		result.usage = result.usage.Use(reported(p.Usage()))
+		domains = e.Domains()
+		err = errors.Join(err, e.Close(), p.Close())
+	}()
+
+	env := runEnv{
+		sec: sec, baseURL: e.URL(), token: token, egressPort: proxyPort(e.Address()), network: network,
+	}
+
+	return r.work(ctx, env, files)
 }
 
-// settleRun applies the outcome the run's exit code routes to, before the retro. A role with nowhere
-// to move records nothing here, and one whose transition fails is logged: `start` retries it.
-func settleRun(ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, limit, code int, runErr error) {
-	// A role the pipeline table does not know has no route to settle: the run stops here and
-	// `start` cannot record it either, so log why rather than leave the run silently unrecorded.
-	ar, ok := agentRoleFor(role)
-	if !ok {
-		d.log().Warn("not settling the run: no pipeline is defined for this agent role",
-			"agent_role", role, "repo", ref.Repo, "issue", ref.Number)
-
-		return
-	}
-
-	r := ar.route(limit, ref, startCode(runErr, code))
-	if r.dst == "" {
-		return
-	}
-
-	// A role with no queue has nowhere to move the issue to, so the run stops with no transition.
-	q, ok := workflow.QueueOf(role)
-	if !ok {
-		d.log().Warn("not settling the run: this agent role has no handoff queue",
-			"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst)
-
-		return
-	}
-
-	if err := finishRun(ctx, d, role, ref, q.Running, r.dst, r.text); err != nil {
-		d.log().Warn("cannot record the run's outcome before its retro; start will retry it",
-			"agent_role", role, "repo", ref.Repo, "issue", ref.Number, "state", r.dst, "error", err)
-	}
-}
-
-// pipeline is every agent role's run, with its proxies already up: job, clone and inputs, sandbox,
-// agent, the agent role's post-agent step, the outcome it settles, and the retro epilogue.
-func pipeline(
-	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, record settle, sec secrets,
-	baseURL, token, proxyAddr string, network sandbox.Network, files sandboxFiles,
-) (runResult, error) {
-	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.ref.Number)
+// work is the run's work, top to bottom: the job it reads, the clone its agent role prepares, the
+// sandboxed model, the agent role's post-agent step, the outcome the run settles before its retro,
+// and the retro itself.
+func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResult, error) {
+	paths, err := newRunPaths(r.d.Settings.WorkRoot, r.ar.names, r.spec.ref.Number)
 	if err != nil {
 		return runResult{}, err
 	}
 
-	// The model may touch only this run's directories and output file outside its clone. The
-	// inline opencode config denies every other external path, so a sibling run's scratch
-	// directory is never reachable even though it sits under the same work root.
-	external := []string{files.dir, paths.scratch}
-	if rr.retro {
-		external = append(external, retroPath(d.Settings.WorkRoot, spec.ref.Number, role))
-	}
-
-	j, err := loadJob(
-		ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(), external,
-	)
+	// The model may touch only this run's directories and output file outside its clone. The inline
+	// opencode config denies every other external path, so a sibling run's scratch directory is never
+	// reachable even though it sits under the same work root.
+	j, err := r.loadJob(ctx, env, dedupe([]string{files.dir, paths.scratch, r.retroFile()}), files.db())
 	if err != nil {
 		return runResult{}, err
 	}
 
-	rc := runCtx{d: d, spec: spec, role: role, j: j, s: newSession(d, j, paths.workdir, rr.identity), paths: paths}
+	rc := runCtx{run: r, j: j, s: newSession(r.d, j, paths.workdir, r.ar.run.identity), paths: paths}
 
-	prep, err := rr.prepare(ctx, rc)
+	prep, err := r.ar.run.prepare(ctx, rc)
 	if err != nil {
 		return runResult{}, err
 	}
 
-	extra := slices.Clone(prep.extraWrite)
-	if rr.retro {
-		extra = append(extra, retroPath(d.Settings.WorkRoot, spec.ref.Number, role))
-	}
-
-	s, err := d.sandboxedWithToolchain(
-		ctx, rc.s, j, sec, spec.ref.Repo, prep.toolchainBranch, files, role, paths.workdir, paths.out, extra,
-		network, proxyAddr,
-	)
+	s, err := rc.sandboxed(ctx, files, env, prep)
 	if err != nil {
 		return runResult{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: role, Prompt: prep.prompt, Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
+		Role: r.role, Prompt: prep.prompt, Timeout: r.spec.agent.Deadline(), Steps: r.spec.agent.Steps,
 	})
 	if err != nil {
-		record(ctx, 1, err)
+		// A model that failed is the run's failure too, but the run still settles and still gets the
+		// retro its agent role keeps for a failed run.
+		r.settle(ctx, 1, err)
 
 		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err))}, err
 	}
 
 	oc := prep.after(ctx, s, res)
-	record(ctx, oc.code, oc.err)
+	// The outcome is settled before the retro starts, so a slow retro can never get its run marked
+	// dead.
+	r.settle(ctx, oc.code, oc.err)
 
 	usage := res.Usage
-	if oc.retro {
+	if oc.retroKey != "" {
 		usage = usage.Add(s.retroEpilogue(
-			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.retroKey, oc.err, spec.retro,
+			ctx, j, r.spec.ref.Repo, r.spec.ref.Number, r.role, res.Session, oc.retroKey, oc.err, r.spec.retro,
 		))
 	}
 
 	return runResult{usage: usage, code: oc.code}, oc.err
 }
 
-// failedRetro runs the retro of a run whose agent failed, for an agent role that keeps one then.
+// retroFile is where the run's retro writes its findings, outside the clone and the run's own
+// directories. An agent role that keeps no retro has no file, so the model may not write one.
+func (r run) retroFile() string {
+	if !r.ar.run.retro {
+		return ""
+	}
+
+	return retroPath(r.d.Settings.WorkRoot, r.spec.ref.Number, r.role)
+}
+
+// settle applies the outcome the run's exit code routes to, before the retro starts, so the retro is
+// only ever an epilogue and a slow one can never get its run marked dead. It is best effort: a
+// transition it cannot record is logged and `start` applies the same one from the run's exit code
+// afterwards.
+func (r run) settle(ctx context.Context, code int, runErr error) {
+	rt := r.ar.route(r.spec.limit, r.spec.ref, startCode(runErr, code))
+	if rt.dst == "" {
+		return
+	}
+
+	// A role with no queue has nowhere to move the issue to, so the run stops with no transition.
+	q, ok := workflow.QueueOf(r.role)
+	if !ok {
+		r.d.log().Warn("not settling the run: this agent role has no handoff queue",
+			"agent_role", r.role, "repo", r.spec.ref.Repo, "issue", r.spec.ref.Number, "state", rt.dst)
+
+		return
+	}
+
+	if err := finishRun(ctx, r.d, r.role, r.spec.ref, q.Running, rt.dst, rt.text); err != nil {
+		r.d.log().Warn("cannot record the run's outcome before its retro; start will retry it",
+			"agent_role", r.role, "repo", r.spec.ref.Repo, "issue", r.spec.ref.Number, "state", rt.dst, "error", err)
+	}
+}
+
+// failedRetro runs the retro of a run whose agent failed, for an agent role that keeps one then. A
+// run whose key cannot be read has no retro: nothing would file it.
 func failedRetro(
 	ctx context.Context, rc runCtx, s session, prep prepared, res opencode.Result, err error,
 ) opencode.Usage {
-	if prep.failKey == nil {
+	key := ""
+	if prep.failKey != nil {
+		key = prep.failKey(ctx, s)
+	}
+
+	if key == "" {
 		return opencode.Usage{}
 	}
 
 	return s.retroEpilogue(
-		ctx, rc.j, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, res.Session, prep.failKey(ctx, s), err, rc.spec.retro,
+		ctx, rc.j, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, res.Session, key, err, rc.spec.retro,
 	)
 }
 
@@ -340,11 +403,10 @@ func failedRetro(
 func headKeyOf(ctx context.Context, s session) string { return s.headKey(ctx) }
 
 // rejected is the outcome of a run whose output file was rejected: nothing is applied, but the run
-// still gets its retro when the agent role keeps one and the run has a key for it. A key of empty
-// means the role's retro would have nothing to file under, as with a Planner round that is not final.
+// still gets its retro when the run has a key for it. A key of empty means the role's retro would
+// have nothing to file under, as with a Planner round that is not final.
 func rejected(ctx context.Context, rc runCtx, err error, key string) outcome {
 	return outcome{
-		retro:    key != "",
 		retroKey: key,
 		err:      rejectOutput(ctx, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err),
 	}
@@ -371,27 +433,19 @@ type runPaths struct {
 
 // runPathsFor is where the agent role's run for an issue works, scratches and writes, before anything
 // is created: the agent role table owns the names.
-func runPathsFor(root string, role workflow.Role, number int) (runPaths, error) {
-	ar, ok := agentRoleFor(role)
-	if !ok {
-		return runPaths{}, fmt.Errorf("no run paths for agent role %q", role)
-	}
-
+func runPathsFor(root string, names roleNames, number int) runPaths {
 	named := func(prefix string) string { return filepath.Join(root, fmt.Sprintf("%s-%d", prefix, number)) }
 
 	return runPaths{
-		workdir: named(ar.names.workdir),
-		scratch: named(ar.names.scratch),
-		out:     filepath.Join(named(ar.names.scratch), ar.names.file),
-	}, nil
+		workdir: named(names.workdir),
+		scratch: named(names.scratch),
+		out:     filepath.Join(named(names.scratch), names.file),
+	}
 }
 
 // newRunPaths clears and returns the paths of the agent role's run for an issue.
-func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) {
-	paths, err := runPathsFor(root, role, number)
-	if err != nil {
-		return runPaths{}, err
-	}
+func newRunPaths(root string, names roleNames, number int) (runPaths, error) {
+	paths := runPathsFor(root, names, number)
 
 	// freshPath and scratchDir take a name under the work root, so they get the paths' last element.
 	workdir, err := freshPath(root, filepath.Base(paths.workdir))

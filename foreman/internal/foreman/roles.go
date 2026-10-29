@@ -40,7 +40,7 @@ func prepareImplementer(ctx context.Context, rc runCtx) (prepared, error) {
 			// The retro is the run's epilogue whether or not the output applied.
 			err = s.applyImplementer(ctx, rc.j, repo, branch, start, pr, out)
 
-			return outcome{retro: true, retroKey: s.headKey(ctx), err: err}
+			return outcome{retroKey: s.headKey(ctx), err: err}
 		},
 	}, nil
 }
@@ -88,10 +88,10 @@ func researchAfter(ctx context.Context, rc runCtx, s session) outcome {
 
 	sha, err := s.applyResearch(ctx, rc.j, rc.spec, branch, out)
 	if err != nil {
-		return outcome{retro: true, retroKey: s.headKey(ctx), err: err}
+		return outcome{retroKey: s.headKey(ctx), err: err}
 	}
 
-	return outcome{retro: true, retroKey: sha}
+	return outcome{retroKey: sha}
 }
 
 // reviewSpecFile is the issue spec the Reviewer reads, in its scratch directory beside its output.
@@ -144,7 +144,7 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 
 			code, err := postVerdict(ctx, rc.d, rc.j.c, repo, pr.Number, sha, out, rc.j.issue, rc.spec.limit)
 
-			return outcome{code: code, retro: true, retroKey: sha, err: err}
+			return outcome{code: code, retroKey: sha, err: err}
 		},
 	}, nil
 }
@@ -186,7 +186,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 				return outcome{err: err}
 			}
 
-			return outcome{retro: true, retroKey: fmt.Sprint(commentID)}
+			return outcome{retroKey: fmt.Sprint(commentID)}
 		},
 	}, nil
 }

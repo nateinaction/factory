@@ -41,18 +41,17 @@ func Run(
 		return 1, err
 	}
 
-	spec := runSpec{ref: ref, agent: agent, retro: retro, limit: limit}
-
+	// The agent role's entry is resolved here, once: every step of the run reads it from the run.
 	ar, ok := agentRoleFor(role)
 	if !ok {
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	code, err := runRole(ctx, d, spec, role, ar.run, func(ctx context.Context, code int, runErr error) {
-		settleRun(ctx, d, role, ref, spec.limit, code, runErr)
-	})
+	r := run{d: d, role: role, ar: ar, spec: runSpec{ref: ref, agent: agent, retro: retro, limit: limit}}
 
-	return exitCode(err, code)
+	result, err := r.pipeline(ctx)
+
+	return startCode(err, result.code), err
 }
 
 // runSpec is one run's work: what it works, the agent role's settings, and the budgets it runs under.
@@ -67,49 +66,6 @@ type runSpec struct {
 	retro config.Budget
 	// limit is the review round limit, which only the Reviewer reads.
 	limit int
-}
-
-// withSandboxRun gives one run its private sandbox directories, runs work, and logs the run's one
-// usage line even when the work failed. The sandbox directories are removed afterwards; the retro
-// file lives in the work root and stays.
-func withSandboxRun(
-	d Deps, spec runSpec, role workflow.Role,
-	work func(files sandboxFiles) (runResult, []string, error),
-) (code int, err error) {
-	files, err := newSandboxFiles(d.Settings.WorkRoot, role, spec.ref.Number)
-	if err != nil {
-		return 1, err
-	}
-
-	defer func() { err = errors.Join(err, files.remove()) }()
-
-	result, domains, err := work(files)
-	d.logUsage(opencode.NewUsageReport(role, spec.ref, d.Host, spec.agent, result.usage).
-		WithDomains(domains))
-
-	return result.code, err
-}
-
-// withRunSecrets reads the agent role's token and the OpenRouter key, starts the run's proxies and
-// calls work inside them. A parse, read or bind failure fails the run: there is never an unsandboxed
-// or unproxied fallback.
-func withRunSecrets(
-	ctx context.Context, d Deps, spec runSpec, role workflow.Role,
-	work func(sec secrets, baseURL, token, proxyAddr string, network sandbox.Network) (runResult, error),
-) (runResult, []string, error) {
-	network, err := sandbox.ParseNetwork(spec.agent.Egress.AllowedDomains)
-	if err != nil {
-		return runResult{}, nil, err
-	}
-
-	sec, err := readSecrets(d.Settings, role)
-	if err != nil {
-		return runResult{}, nil, err
-	}
-
-	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, token, proxyAddr string) (runResult, error) {
-		return work(sec, baseURL, token, proxyAddr, network)
-	})
 }
 
 // secrets are the two values the factory half reads at the edge.
@@ -260,91 +216,45 @@ type job struct {
 	issue workflow.Issue
 }
 
-// loadJob reads the issue an agent role works and builds its model environment around the run's
-// proxy. The secrets are already read: the key belongs to the proxy, never to the model. The model's
-// one GitHub credential is a read-only token of its own App's, scoped to the repository.
-func loadJob(
-	ctx context.Context, d Deps, sec secrets, baseURL, token string, repo workflow.Repo, role workflow.Role,
-	agent config.AgentConfig, number int, db string, external []string,
-) (job, error) {
-	env, err := opencode.Env(baseURL, token, db, external, agent)
+// loadJob reads the issue the run works and builds its model environment around the run's proxies.
+// The secrets are already read at the edge: the key belongs to the proxy, never to the model. The
+// model's one GitHub credential is a read-only token of its own App's, scoped to the repository.
+// external names the paths outside the clone the model may reach, and db is its state database.
+func (r run) loadJob(ctx context.Context, env runEnv, external []string, db string) (job, error) {
+	model, err := opencode.Env(env.baseURL, env.token, db, external, r.spec.agent)
 	if err != nil {
 		return job{}, err
 	}
 
-	readOnly, err := d.mint(ctx, role, repo, readOnlyToken)
+	readOnly, err := r.d.mint(ctx, r.role, r.spec.ref.Repo, readOnlyToken)
 	if err != nil {
 		return job{}, err
 	}
 
-	env["GH_TOKEN"] = readOnly
+	model["GH_TOKEN"] = readOnly
 
-	c := d.client(sec.githubToken)
+	c := r.d.client(env.sec.githubToken)
 
-	issue, err := c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
+	issue, err := c.GetIssue(ctx, r.spec.ref)
 	if err != nil {
 		return job{}, err
 	}
 
-	return job{sec: sec, env: env, token: token, c: c, issue: issue}, nil
-}
-
-// withProxy runs fn with the run's OpenRouter key proxy and its egress proxy up, and stops both when
-// fn returns. The usage the key proxy read and the domains the egress proxy saw are the run's. A
-// proxy that cannot start fails the run: the model has no other way to reach OpenRouter, and there is
-// never an unsandboxed fallback.
-func (d Deps) withProxy(
-	ctx context.Context, network sandbox.Network, key string,
-	fn func(baseURL, token, proxyAddr string) (runResult, error),
-) (runResult, []string, error) {
-	token, err := d.token()
-	if err != nil {
-		return runResult{}, nil, err
-	}
-
-	p, err := d.proxy(key, token)
-	if err != nil {
-		return runResult{}, nil, err
-	}
-
-	e, err := d.egress(ctx, network, p.URL(), token)
-	if err != nil {
-		return runResult{}, nil, errors.Join(err, p.Close())
-	}
-
-	result, err := fn(e.URL(), token, e.Address())
-	// Read the usage before stopping: a response still being relayed when the model exits cannot be
-	// counted, and Close is what ends it.
-	read := p.Usage()
-	domains := e.Domains()
-	// A failure to stop either proxy is part of the run's outcome, not a diagnostic to drop.
-	err = errors.Join(err, e.Close(), p.Close())
-
-	result.usage = result.usage.Use(reported(read))
-
-	return result, domains, err
+	return job{sec: env.sec, env: model, token: env.token, c: c, issue: issue}, nil
 }
 
 // egress starts the run's egress proxy with the agent role's policy, forwarding its API calls to
-// apiURL.
+// apiURL. A proxy that cannot start fails the run: the model has no other egress, and there is never
+// an unsandboxed fallback.
 func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
 		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
-			return egress.StartWithLogger(ctx, policy, apiURL, token, d.egressAddr(), d.log())
+			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, d.log())
 		}
 	}
 
 	return start(ctx, policy, apiURL, token)
-}
-
-// egressAddr is the loopback address the egress proxy binds.
-func (d Deps) egressAddr() string {
-	if d.EgressAddr == "" {
-		return egress.Loopback
-	}
-
-	return d.EgressAddr
 }
 
 // proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
@@ -363,7 +273,8 @@ func proxyPort(addr string) int {
 	return port
 }
 
-// proxy starts the run's OpenRouter proxy with key on the configured loopback address.
+// proxy starts the run's OpenRouter proxy with key on the loopback address. A proxy that cannot start
+// fails the run: the model has no other way to reach OpenRouter.
 func (d Deps) proxy(key, token string) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
@@ -372,12 +283,7 @@ func (d Deps) proxy(key, token string) (Forwarder, error) {
 		}
 	}
 
-	addr := d.ProxyAddr
-	if addr == "" {
-		addr = openrouter.Loopback
-	}
-
-	return start(key, token, addr)
+	return start(key, token, openrouter.Loopback)
 }
 
 // tokenBytes is the entropy of the per-run proxy token.
@@ -425,17 +331,6 @@ func (e *reportedError) Error() string { return e.cause.Error() }
 // Unwrap exposes the reported failure.
 func (e *reportedError) Unwrap() error { return e.cause }
 
-// exitCode maps a finished run to the code `start` reads: a reported failure becomes ExitReported,
-// because the factory half already commented; code is what a successful run returns. The error is
-// kept so the dagu log records it too.
-func exitCode(err error, code int) (int, error) {
-	if err == nil {
-		return code, nil
-	}
-
-	return startCode(err, code), err
-}
-
 // startCode is the code `start` reads for a run: a reported failure becomes ExitReported, because the
 // factory half already commented; any other failure is 1; a success is its own verdict.
 func startCode(err error, code int) int {
@@ -469,14 +364,20 @@ func buildImplementerPrompt(
 }
 
 // rework reads what a run that was sent back must answer: every comment since the marker that woke
-// the issue, and the CI failure report when that is why it came back.
+// the issue, and the CI failure report when that is why it came back. Both come from one listing of
+// the issue's comments.
 func rework(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, string, error) {
-	thread, err := guidance(ctx, c, ref)
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return nil, "", err
 	}
 
-	ci, err := ciFeedback(ctx, c, ref)
+	thread, err := issueThread(ctx, c, ref, comments)
+	if err != nil {
+		return nil, "", err
+	}
+
+	ci, err := ciFeedback(comments, ref)
 
 	return thread, ci, err
 }
@@ -489,10 +390,21 @@ func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]wo
 		return nil, err
 	}
 
+	return issueThread(ctx, c, ref, comments)
+}
+
+// issueThread is the guidance the issue's comments carry: the open pull request's comments join them,
+// everything is put in id order, and the markers that woke the issue are read.
+func issueThread(
+	ctx context.Context, c github.Client, ref workflow.IssueRef, comments []workflow.Item,
+) ([]workflow.Item, error) {
 	pr, err := c.ExistingPR(ctx, ref.Repo, workflow.BranchName(ref.Number))
 	if err != nil {
 		return nil, err
 	}
+
+	// The caller's listing is left as it is: the CI report reads the same issue's comments.
+	thread := slices.Clone(comments)
 
 	if pr != nil {
 		onPR, err := c.ListComments(ctx, workflow.IssueRef{Repo: ref.Repo, Number: pr.Number})
@@ -500,24 +412,19 @@ func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]wo
 			return nil, err
 		}
 
-		comments = append(comments, onPR...)
+		thread = append(thread, onPR...)
 	}
 
-	slices.SortStableFunc(comments, func(a, b workflow.Item) int {
+	slices.SortStableFunc(thread, func(a, b workflow.Item) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
 
-	return workflow.Guidance(comments, ref.Repo.Owner()), nil
+	return workflow.Guidance(thread, ref.Repo.Owner()), nil
 }
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
 // handoff that sent the pull request to review. A report from an earlier round is stale and left out.
-func ciFeedback(ctx context.Context, c github.Client, ref workflow.IssueRef) (string, error) {
-	comments, err := c.ListComments(ctx, ref)
-	if err != nil {
-		return "", err
-	}
-
+func ciFeedback(comments []workflow.Item, ref workflow.IssueRef) (string, error) {
 	report, ok, err := workflow.LatestCIFailure(comments, ref.Repo.Owner())
 	if err != nil || !ok {
 		return "", err
