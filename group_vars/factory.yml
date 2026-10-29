@@ -250,3 +250,58 @@ factory_srt_version: "0.0.81"
 # an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
 # fail those promotions closed.
 factory_repo: nateinaction/factory
+
+# The OpenTelemetry Collector (contrib distribution, from the nixpkgs revision above) on every host.
+# It receives foreman's OTLP on loopback only. Do not widen the host: a sandboxed run must not reach
+# it, and the egress proxy refuses loopback.
+factory_collector: true
+factory_collector_user: otelcol
+factory_collector_host: 127.0.0.1
+factory_collector_grpc_port: 4317
+factory_collector_http_port: 4318
+# The host whose telemetry backend this collector forwards to (traces, metrics and logs, each to its
+# own port). Empty means no backend: the collector keeps receiving and deriving metrics, and exports nothing.
+factory_collector_backend_host: "{{ factory_telemetry_host if factory_telemetry | bool else '' }}"
+# Attributes (span, resource and metric) that may leave the host. Everything else is redacted, so a
+# new attribute is dropped until someone adds it here. The first four are spanmetrics' own dimensions.
+factory_collector_allowed_attributes:
+  - service.name
+  - span.name
+  - span.kind
+  - status.code
+  - service.version
+  - host.name
+  - factory.agent_role
+  - factory.outcome
+# Fixed bounds. While the backend is unreachable the queue holds at most this many batches, each of at
+# most factory_collector_batch_size spans or data points; memory is capped separately.
+factory_collector_queue_size: 1000
+factory_collector_batch_size: 512
+factory_collector_memory_limit_mib: 128
+
+# The telemetry backend, on the dagu server only (nixpkgs packages at the revision above): Prometheus
+# (OTLP metrics), Tempo (traces), Loki (diagnostics) and Grafana in front. Every service binds
+# loopback; tailscale serve exposes them to the tailnet and nothing else. Restrict with tailscale ACLs.
+factory_telemetry: true
+factory_telemetry_host: "{{ groups['dagu_server'][0] }}"
+factory_telemetry_host_loopback: 127.0.0.1
+factory_telemetry_prometheus_port: 9090 # OTLP metrics at /api/v1/otlp/v1/metrics
+factory_telemetry_tempo_otlp_port: 14317 # not 4317: the server's own collector holds that on loopback
+factory_telemetry_tempo_http_port: 3200
+factory_telemetry_tempo_grpc_port: 9097
+factory_telemetry_loki_port: 3100 # OTLP logs at /otlp/v1/logs
+factory_telemetry_loki_grpc_port: 9096
+factory_telemetry_grafana_port: 3000 # tailnet HTTPS port; Grafana's login is its own
+# Every store is bounded, so the Pi's disk cannot fill. Tempo has no size cap, so it is bounded by age.
+factory_telemetry_prometheus_retention_time: 15d
+factory_telemetry_prometheus_retention_size: 2GB
+factory_telemetry_tempo_retention: 168h
+factory_telemetry_loki_retention: 168h
+# What the whole stack may use on the 2GB server next to dagu. Each unit's MemoryMax is its share;
+# the Go services also get GOMEMLIMIT at 80% of it so the garbage collector works before the cap.
+factory_telemetry_memory_budget_mib: 800
+factory_telemetry_memory_max_mib:
+  prometheus: 256
+  tempo: 192
+  loki: 192
+  grafana: 160

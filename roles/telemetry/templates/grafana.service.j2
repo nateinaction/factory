@@ -1,0 +1,24 @@
+[Unit]
+Description=Grafana (foreman telemetry UI, loopback only)
+After=network-online.target prometheus.service tempo.service loki.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=grafana
+ExecStart=/nix/var/nix/profiles/default/bin/grafana server --config=/etc/grafana/grafana.ini --homepath=/nix/var/nix/profiles/default/share/grafana
+Environment=GOMEMLIMIT={{ (factory_telemetry_memory_max_mib.grafana * 0.8) | int }}MiB
+MemoryMax={{ factory_telemetry_memory_max_mib.grafana }}M
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

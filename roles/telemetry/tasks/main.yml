@@ -1,0 +1,113 @@
+---
+# Each package is installed from the pinned nixpkgs revision into the default profile, like the
+# collector. `creates` makes a second run a no-op.
+- name: Install the telemetry backend packages
+  ansible.builtin.command: >-
+    /nix/var/nix/profiles/default/bin/nix profile add
+    --profile /nix/var/nix/profiles/default
+    github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#{{ item.package }}
+  args:
+    creates: "/nix/var/nix/profiles/default/bin/{{ item.binary }}"
+  environment:
+    PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+  loop:
+    - { package: prometheus, binary: prometheus }
+    - { package: tempo, binary: tempo }
+    - { package: loki, binary: loki }
+    - { package: grafana, binary: grafana }
+  loop_control:
+    label: "{{ item.package }}"
+
+- name: Create the config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/prometheus
+    - /etc/tempo
+    - /etc/loki
+    - /etc/grafana
+    - /etc/grafana/provisioning
+    - /etc/grafana/provisioning/datasources
+
+# Prometheus scrapes nothing: every host's collector pushes OTLP to it.
+- name: Configure Prometheus
+  ansible.builtin.copy:
+    content: |
+      # {{ ansible_managed }}
+      global: {}
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart prometheus
+
+- name: Configure the rest of the backend
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: tempo.yaml.j2, dest: /etc/tempo/tempo.yaml, handler: tempo }
+    - { src: loki.yaml.j2, dest: /etc/loki/loki.yaml, handler: loki }
+    - { src: grafana.ini.j2, dest: /etc/grafana/grafana.ini, handler: grafana }
+    - { src: datasources.yaml.j2, dest: /etc/grafana/provisioning/datasources/factory.yaml, handler: grafana }
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: "Restart {{ item.handler }}"
+
+- name: Install the systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [prometheus, tempo, loki, grafana]
+  notify: "Restart {{ item }}"
+
+- name: Enable and start the backend
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [prometheus, tempo, loki, grafana]
+
+# The backend stays on loopback; tailscaled forwards to it, so it is on the tailnet and nowhere
+# else. The collectors on the other hosts reach the three ingest ports as raw TCP (tailnet
+# traffic is already encrypted); Grafana is served over HTTPS.
+- name: Read the current tailscale serve config
+  ansible.builtin.command: tailscale serve status
+  register: telemetry_serve_status
+  changed_when: false
+  failed_when: false # tailscale not up yet is reported by the assert below
+  check_mode: false
+
+- name: Fail if tailscale is not available
+  ansible.builtin.assert:
+    that: telemetry_serve_status.rc == 0
+    fail_msg: "tailscale serve status failed: {{ telemetry_serve_status.stderr | default('') }}"
+
+# The `when` below already asks whether the listener is missing, so a task that runs did change it.
+- name: Serve the ingest ports to the tailnet
+  ansible.builtin.command: >-
+    tailscale serve --bg --tcp={{ item }} tcp://{{ factory_telemetry_host_loopback }}:{{ item }}
+  changed_when: true
+  when: (item | string) not in telemetry_serve_status.stdout
+  loop:
+    - "{{ factory_telemetry_tempo_otlp_port }}"
+    - "{{ factory_telemetry_prometheus_port }}"
+    - "{{ factory_telemetry_loki_port }}"
+
+- name: Serve Grafana to the tailnet over HTTPS
+  ansible.builtin.command: >-
+    tailscale serve --bg --https={{ factory_telemetry_grafana_port }}
+    http://{{ factory_telemetry_host_loopback }}:{{ factory_telemetry_grafana_port }}
+  changed_when: true
+  when: not (telemetry_serve_status.stdout is search('(?m)^https://\\S+:' ~ factory_telemetry_grafana_port ~ '\\b'))

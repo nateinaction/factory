@@ -284,28 +284,55 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 func fetchPages[T any](
 	ctx context.Context, path string, fetch func(context.Context, string) ([]T, error),
 ) ([]T, error) {
-	var items []T
+	items, truncated, err := fetchPagesUpTo(ctx, path, MaxPages, fetch)
+	if err != nil {
+		return nil, err
+	}
 
+	if truncated {
+		return nil, fmt.Errorf("github GET %s: listing over %d pages of %d", path, MaxPages, PageSize)
+	}
+
+	return items, nil
+}
+
+// fetchPagesUpTo reads at most maxPages pages of the listing at path. truncated is true when the last
+// page it read was full, so more items may exist that it did not read.
+func fetchPagesUpTo[T any](
+	ctx context.Context, path string, maxPages int, fetch func(context.Context, string) ([]T, error),
+) (items []T, truncated bool, err error) {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
 
-	for page := 1; page <= MaxPages; page++ {
+	for page := 1; page <= maxPages; page++ {
 		p := fmt.Sprintf("%s%sper_page=%d&page=%d", path, sep, PageSize, page)
 
 		got, err := fetch(ctx, p)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 
 		items = append(items, got...)
 		if len(got) < PageSize {
-			return items, nil
+			return items, false, nil
 		}
 	}
 
-	return nil, fmt.Errorf("github GET %s: listing over %d pages of %d", path, MaxPages, PageSize)
+	return items, true, nil
+}
+
+// PagedUpTo returns the items of at most maxPages pages of a list endpoint, and whether the listing
+// may go on past them.
+func PagedUpTo[T any](ctx context.Context, c Client, path string, maxPages int) ([]T, bool, error) {
+	return fetchPagesUpTo(ctx, path, maxPages, func(ctx context.Context, p string) ([]T, error) {
+		var got []T
+
+		err := c.Call(ctx, http.MethodGet, p, nil, &got)
+
+		return got, err
+	})
 }
 
 // ListLabeled lists the oldest open issues carrying label.
@@ -722,6 +749,27 @@ func (c Client) CommentReturningID(ctx context.Context, ref workflow.IssueRef, t
 		bodyRequest{Body: text}, &comment)
 
 	return comment.ID, err
+}
+
+// ListIssuesUpTo is ListIssues limited to maxPages pages; the bool is true when more issues may exist.
+func (c Client) ListIssuesUpTo(
+	ctx context.Context, repo workflow.Repo, state, direction string, maxPages int,
+) ([]workflow.Issue, bool, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {direction}}
+
+	return PagedUpTo[workflow.Issue](ctx, c, repoPath(repo, "issues")+"?"+q.Encode(), maxPages)
+}
+
+// CommentsUpTo is ListComments limited to maxPages pages; the bool is true when more may exist.
+func (c Client) CommentsUpTo(ctx context.Context, ref workflow.IssueRef, maxPages int) ([]workflow.Item, bool, error) {
+	return PagedUpTo[workflow.Item](ctx, c, issuePath(ref, "comments"), maxPages)
+}
+
+// TimelineUpTo is Timeline limited to maxPages pages; the bool is true when more events may exist.
+func (c Client) TimelineUpTo(
+	ctx context.Context, ref workflow.IssueRef, maxPages int,
+) ([]workflow.TimelineEvent, bool, error) {
+	return PagedUpTo[workflow.TimelineEvent](ctx, c, issuePath(ref, "timeline"), maxPages)
 }
 
 // Timeline lists an issue's timeline events, oldest first.
