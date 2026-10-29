@@ -1,6 +1,7 @@
 package github_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,33 @@ var _ = Describe("Client", func() {
 			_, err := c.DefaultBranch(ctx, testRepo())
 			Expect(err).To(MatchError(ContainSubstring("403")))
 			Expect(err.Error()).NotTo(ContainSubstring("secret-token"))
+		})
+	})
+
+	Describe("an answer it cannot trust", func() {
+		It("refuses a response over the size cap", func() {
+			// 16 MiB is the cap; one byte more must fail rather than be decoded or truncated.
+			const overCap = 16<<20 + 1
+
+			p.Handle("GET /repos/o/r", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write(bytes.Repeat([]byte(" "), overCap))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			_, err := c.DefaultBranch(ctx, testRepo())
+			Expect(err).To(MatchError(ContainSubstring("response over")))
+		})
+
+		It("fails on a malformed response rather than reading it as empty", func() {
+			p.Handle("GET /repos/o/r", func(w http.ResponseWriter, _ *http.Request) {
+				_, err := w.Write([]byte(`{"default_branch": `))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			branch, err := c.DefaultBranch(ctx, testRepo())
+			Expect(err).To(MatchError(ContainSubstring("decode")))
+			Expect(branch).To(BeEmpty())
 		})
 	})
 

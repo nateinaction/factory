@@ -247,6 +247,21 @@ var _ = Describe("when the Curator is due", func() {
 		Expect(workflow.CuratorDue(nil, state, now, ttl)).To(BeTrue())
 	})
 
+	It("refuses a second curate on the same day as the last run", func() {
+		state := workflow.DashboardState{
+			Curator: workflow.DashboardCurator{LastRun: now.Add(-time.Hour)},
+			Actions: []workflow.DashboardAction{
+				{Kind: workflow.ActionCurate, By: "o", At: now.Add(-2 * time.Hour)},
+				{Kind: workflow.ActionCurate, By: "o", At: now.Add(-time.Minute)},
+			},
+		}
+
+		Expect(workflow.CuratorDue(nil, state, now, ttl)).To(BeFalse())
+
+		// Once the day is over, the same request starts a run.
+		Expect(workflow.CuratorDue(nil, state, now.Add(workflow.CuratorDay), ttl)).To(BeTrue())
+	})
+
 	It("starts when a writer's merge makes a group ready, with no new report", func() {
 		state := workflow.DashboardState{
 			Actions: []workflow.DashboardAction{{
