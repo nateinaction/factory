@@ -447,6 +447,22 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(state.Rejected[0].ID).To(Equal("p1"))
 	})
 
+	It("does not report a command applied when it cannot be recorded as handled", func() {
+		r := &commandRun{
+			d: h.deps, cfg: pollConfig(workflow.Implementer, workflow.Reviewer),
+			c: h.deps.client("minted-token-implementer"), perms: newPermissions(),
+			repo: "o/r", role: workflow.Implementer,
+		}
+		comment := workflow.Item{
+			ID: 42, Author: "stranger", Body: "promote " + skillGroup.String(),
+		}
+		state := workflow.DashboardState{Handled: []int64{comment.ID}}
+
+		next, done := r.onComment(ctx, state, nil, comment)
+		Expect(done).To(BeFalse(), "settled a command it could not record")
+		Expect(next.Handled).To(ConsistOf(comment.ID))
+	})
+
 	It("leaves a promoted issue inert until a writer comments", func() {
 		h.graphql(true)
 

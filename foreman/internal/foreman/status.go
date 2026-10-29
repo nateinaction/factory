@@ -403,6 +403,7 @@ func table(rows [][]string) string {
 		_, _ = fmt.Fprintln(w, strings.Join(row, "\t"))
 	}
 
+	// Flushing a tabwriter over a strings.Builder cannot fail: the builder's writes always succeed.
 	_ = w.Flush()
 
 	return b.String()

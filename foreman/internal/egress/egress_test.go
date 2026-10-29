@@ -4,16 +4,45 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
+
+// logBuffer is a test log sink safe for the proxy's goroutines.
+type logBuffer struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+// Write appends p to the buffer.
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n, err := b.text.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("log buffer: %w", err)
+	}
+
+	return n, nil
+}
+
+// String returns what was written.
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.text.String()
+}
 
 // policy builds an allowlist policy, failing the spec on an invalid entry.
 func policy(allowed ...string) sandbox.Network {
@@ -216,6 +245,30 @@ var _ = Describe("Proxy", func() {
 		}
 
 		Expect(p.Domains()).To(Equal([]string{"127.0.0.1"}))
+	})
+
+	It("caps open tunnels and logs the refusal", func() {
+		var logged logBuffer
+
+		logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", "127.0.0.1:0", logger)
+		Expect(err).NotTo(HaveOccurred())
+
+		DeferCleanup(p.Close)
+
+		for range MaxTunnels {
+			Expect(p.reserveTunnel()).To(BeTrue())
+		}
+
+		echo, stop := echoServer()
+		DeferCleanup(stop)
+
+		resp, conn := connect(p.Address(), echo)
+		defer func() { _ = conn.Close() }()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
+		Expect(logged.String()).To(ContainSubstring("tunnel limit reached"))
 	})
 
 	It("refuses to bind anywhere but loopback", func() {

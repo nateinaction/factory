@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
@@ -18,72 +17,47 @@ import (
 
 // runCurator reads a repository's dashboard and retro log in a fresh sandbox directory, and logs the
 // run's one usage line even when the run failed. It runs no retro.
-func runCurator(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int,
-) (err error) {
-	var (
-		usage   opencode.Usage
-		domains []string
-	)
-
-	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Curator, number)
-	if err != nil {
-		return err
-	}
-
-	defer func() { err = errors.Join(err, files.remove()) }()
-
-	usage, domains, err = curate(ctx, d, repo, agent, number, files)
-	d.logUsage(opencode.NewUsageReport(workflow.Curator, repo, number, d.Host, agent, usage).
-		WithDomains(domains))
-
-	return err
+func runCurator(ctx context.Context, d Deps, spec runSpec) error {
+	return withSandboxRun(d, spec, workflow.Curator, func(files sandboxFiles) (opencode.Usage, []string, error) {
+		return curate(ctx, d, spec, files)
+	})
 }
 
 // curate runs the Curator's work behind the run's proxies.
 func curate(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, files sandboxFiles,
+	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
 ) (opencode.Usage, []string, error) {
-	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
-	if err != nil {
-		return opencode.Usage{}, nil, err
-	}
-
-	sec, err := readSecrets(d.Settings, workflow.Curator)
-	if err != nil {
-		return opencode.Usage{}, nil, err
-	}
-
-	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
-		return curateRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, number, files)
-	})
+	return withRunSecrets(ctx, d, spec, workflow.Curator,
+		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
+			return curateRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
+		})
 }
 
 // curateRun clones the default branch read-only, reads the retro log and the dashboard state, runs the
 // model under the sandbox, and applies its proposals.
 func curateRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
-	repo string, agent config.AgentConfig, number int, files sandboxFiles,
+	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
+	network sandbox.Network, files sandboxFiles,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Curator, agent, number,
+	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Curator, spec.agent, spec.number,
 		files.db(workflow.Curator))
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
-	paths, err := curatorPaths(d.Settings.WorkRoot, number)
+	paths, err := curatorPaths(d.Settings.WorkRoot, spec.number)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
-	branch, err := j.c.DefaultBranch(ctx, repo)
+	branch, err := j.c.DefaultBranch(ctx, spec.repo)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
 	s := newSession(d, j, paths.workdir, nil)
 
-	if err := s.cloneDefault(ctx, repo, branch); err != nil {
+	if err := s.cloneDefault(ctx, spec.repo, branch); err != nil {
 		return opencode.Usage{}, err
 	}
 
@@ -92,7 +66,7 @@ func curateRun(
 		return opencode.Usage{}, err
 	}
 
-	reports, state, private, err := curatorInputs(ctx, d, j.c, repo, j.issue)
+	reports, state, private, err := curatorInputs(ctx, d, j.c, spec.repo, j.issue)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -100,15 +74,16 @@ func curateRun(
 	view := workflow.BuildDashboard(reports, state, d.now())
 
 	if s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, repo, branch, files, workflow.Curator, paths.workdir, paths.out, nil, network, proxyAddr,
+		ctx, s, j, sec, spec.repo, branch, files, workflow.Curator, paths.workdir, paths.out,
+		nil, network, proxyAddr,
 	); err != nil {
 		return opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
 		Role:    workflow.Curator,
-		Prompt:  prompt.Curator(docs, repo, number, private, reports, view, paths.out),
-		Timeout: agent.Deadline(), Steps: agent.Steps,
+		Prompt:  prompt.Curator(docs, spec.repo, spec.number, private, reports, view, paths.out),
+		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
 	})
 	if err != nil {
 		return res.Usage, err
@@ -121,7 +96,7 @@ func curateRun(
 		return res.Usage, err
 	}
 
-	return res.Usage, s.applyCurator(ctx, j, repo, number, out, private)
+	return res.Usage, s.applyCurator(ctx, j, spec.repo, spec.number, out, private)
 }
 
 // curatorInputs reads the repository's retro log, the dashboard's state and the repository's

@@ -3,12 +3,15 @@ package foreman
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -65,14 +68,33 @@ var _ = Describe("the Planner", func() {
 
 		Expect(h.opencodeCalls()).To(HaveLen(1), "the questions round has no retro")
 		Expect(h.runner.find("--session")).To(BeEmpty())
-		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
-			"the Planner never clones the planned repository")
-		Expect(h.runner.find("commit -m")).To(BeEmpty())
+		Expect(h.runner.find("git clone", "plan-5")).To(HaveLen(1),
+			"the Planner reads the default branch's docs from a read-only clone")
+		Expect(h.runner.find("commit -m")).To(BeEmpty(), "the Planner never commits")
 	})
 
-	It("gives the model the issue thread, the output path and a read-only token", func() {
+	It("gives the model the repository docs, the issue thread, the output path and a read-only token", func() {
 		h.comment(5, "o", "Earlier context for the plan")
 		plannerWrites(plannerQuestions)
+
+		// git clone makes the directory; the docs come from the default branch it holds.
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if len(c.Argv) > 1 && c.Argv[0] == "git" && c.Argv[1] == "clone" {
+				dir := c.Argv[len(c.Argv)-1]
+				Expect(os.MkdirAll(filepath.Join(dir, "docs", "agents"), 0o700)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+					[]byte("Run the tests first."), 0o600)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(dir, "GLOSSARY.md"),
+					[]byte("Widget: a unit of work."), 0o600)).To(Succeed())
+				Expect(os.MkdirAll(filepath.Join(dir, "docs", "adr"), 0o700)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(dir, "docs", "agents", "domain.md"),
+					[]byte("ADRs live in docs/adr."), 0o600)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(dir, "docs", "adr", "0001-go.md"),
+					[]byte("We write Go."), 0o600)).To(Succeed())
+			}
+
+			return base(c)
+		})
 
 		Expect(runPlanner()).To(BeZero())
 
@@ -81,6 +103,10 @@ var _ = Describe("the Planner", func() {
 		Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-planner"))
 		Expect(oc[0].Argv[len(oc[0].Argv)-1]).To(And(
 			ContainSubstring("Earlier context for the plan"),
+			ContainSubstring("Run the tests first."),
+			ContainSubstring("Widget: a unit of work."),
+			ContainSubstring("ADRs live in docs/adr."),
+			ContainSubstring("We write Go."),
 			ContainSubstring("Write the JSON to "+h.deps.Settings.WorkRoot+"/planner-5/"+workflow.PlannerOutputFile),
 			ContainSubstring("Domain changes"),
 		))

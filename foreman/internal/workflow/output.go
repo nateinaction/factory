@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -123,12 +124,13 @@ type ReviewerOutput struct {
 }
 
 // ParseImplementerOutput reads implementer-output.json strictly. rework says the run had an open pull
-// request, so it answers a review and needs a reply; a first run needs the pull request text instead.
-func ParseImplementerOutput(text string, rework bool) (ImplementerOutput, error) {
+// request, so it answers a review and needs a reply per finding; review is the latest rendered review
+// it is answering, empty when there is none. A first run needs the pull request text instead.
+func ParseImplementerOutput(text string, rework bool, review string) (ImplementerOutput, error) {
 	var out ImplementerOutput
 
 	problems := decodeStrict(text, &out)
-	problems = append(problems, implementerProblems(out, rework)...)
+	problems = append(problems, implementerProblems(out, rework, review)...)
 
 	if len(problems) > 0 {
 		return ImplementerOutput{}, &OutputError{File: ImplementerOutputFile, Problems: problems}
@@ -138,7 +140,7 @@ func ParseImplementerOutput(text string, rework bool) (ImplementerOutput, error)
 }
 
 // implementerProblems checks the fields an Implementer output carries beyond the strict decode.
-func implementerProblems(out ImplementerOutput, rework bool) []string {
+func implementerProblems(out ImplementerOutput, rework bool, review string) []string {
 	var problems []string
 
 	if out.CommitMessage == "" {
@@ -156,11 +158,84 @@ func implementerProblems(out ImplementerOutput, rework bool) []string {
 		problems = append(problems, "pr_body is required on a first run")
 	}
 
-	return append(problems, replyProblems(out.Replies)...)
+	return append(problems, replyProblems(out.Replies, ParseReviewFindings(review))...)
 }
 
-// replyProblems checks every reply names a finding and says fixed or contested, with a reason.
-func replyProblems(replies []Reply) []string {
+// ReviewFindings reads the findings RenderReview wrote, in the order it grouped them. A body that is
+// not foreman's rendered review has none.
+func ParseReviewFindings(body string) []ReviewFinding {
+	var (
+		findings []ReviewFinding
+		severity Severity
+	)
+
+	for line := range strings.SplitSeq(body, "\n") {
+		if title, ok := strings.CutPrefix(line, "### "); ok {
+			severity = severityOf(title)
+
+			continue
+		}
+
+		rest, ok := strings.CutPrefix(line, "- **`")
+		if !ok || !slices.Contains(Severities(), severity) {
+			continue
+		}
+
+		location, claim, ok := strings.Cut(rest, "`**: ")
+		if !ok {
+			continue
+		}
+
+		findings = append(findings, ReviewFinding{
+			Severity: severity, Path: pathOf(location), Line: lineOf(location), Claim: claim,
+		})
+	}
+
+	return findings
+}
+
+// severityOf reads a RenderReview heading like "High (2)".
+func severityOf(heading string) Severity {
+	name, _, _ := strings.Cut(heading, " (")
+	name = strings.ToLower(name)
+
+	for _, s := range Severities() {
+		if string(s) == name {
+			return s
+		}
+	}
+
+	return ""
+}
+
+// pathOf reads the path out of a finding location like "a.go:3".
+func pathOf(location string) string {
+	path, _, ok := strings.Cut(location, ":")
+	if !ok {
+		return location
+	}
+
+	return path
+}
+
+// lineOf reads the line out of a finding location like "a.go:3", or zero when it names none.
+func lineOf(location string) int {
+	_, text, ok := strings.Cut(location, ":")
+	if !ok {
+		return 0
+	}
+
+	line, err := strconv.Atoi(text)
+	if err != nil {
+		return 0
+	}
+
+	return line
+}
+
+// replyProblems checks every reply names a finding and says fixed or contested, with a reason, and
+// that every finding of the review being answered has one.
+func replyProblems(replies []Reply, findings []ReviewFinding) []string {
 	var problems []string
 
 	for i, r := range replies {
@@ -178,7 +253,29 @@ func replyProblems(replies []Reply) []string {
 		}
 	}
 
+	return append(problems, coverageProblems(replies, findings)...)
+}
+
+// coverageProblems names each finding of the review that no reply answers. A reply names its finding
+// by the location or the claim the rendered review shows.
+func coverageProblems(replies []Reply, findings []ReviewFinding) []string {
+	var problems []string
+
+	for _, finding := range findings {
+		if !slices.ContainsFunc(replies, func(r Reply) bool { return answers(r.Finding, finding) }) {
+			problems = append(problems, fmt.Sprintf("replies needs a reply to the %s finding %s: %s",
+				finding.Severity, finding.Location(), finding.Claim))
+		}
+	}
+
 	return problems
+}
+
+// answers reports whether reply names finding, by its location or its claim, ignoring case and space.
+func answers(reply string, finding ReviewFinding) bool {
+	named := strings.TrimSpace(strings.ToLower(reply))
+
+	return named == strings.ToLower(finding.Location()) || named == strings.ToLower(finding.Claim)
 }
 
 // ParseReviewerOutput reads reviewer-output.json strictly.

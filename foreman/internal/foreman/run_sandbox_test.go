@@ -233,7 +233,7 @@ var _ = Describe("the sandbox", func() {
 		Expect(h.opencodeCalls()).To(BeEmpty())
 	})
 
-	It("puts the Planner and its retro under srt with no clone in its spec", func() {
+	It("puts the Planner and its retro under srt with a read-only clone", func() {
 		var settings []srtSettings
 
 		h.installed[workflow.Planner] = []string{"o/r"}
@@ -248,16 +248,19 @@ var _ = Describe("the sandbox", func() {
 
 		Expect(h.runner.find("srt --settings")).To(HaveLen(2), "want the run and its retro")
 		Expect(settings).To(HaveLen(2))
-		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
-			"the Planner has no clone")
+		Expect(h.runner.find("git clone", "plan-5")).To(HaveLen(1),
+			"the Planner reads the default branch's docs from a clone")
 
 		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-planner-5")
+		clone := filepath.Join(h.deps.Settings.WorkRoot, "plan-5")
 		out := filepath.Join(h.deps.Settings.WorkRoot, "planner-5", workflow.PlannerOutputFile)
 
 		for _, s := range settings {
 			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
 				out, runDir, retroPath(h.deps.Settings.WorkRoot, 5, workflow.Planner),
 			))
+			Expect(s.Filesystem.AllowWrite).NotTo(ContainElement(clone), "the Planner may not change its clone")
+			Expect(s.Filesystem.AllowRead).To(ContainElement(clone))
 			Expect(s.Filesystem.AllowRead).NotTo(ContainElement(""), "an empty path re-allowed the host")
 		}
 	})

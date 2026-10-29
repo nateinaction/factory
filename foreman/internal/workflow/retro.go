@@ -327,6 +327,11 @@ func ParseRetroComment(body string) (RetroComment, bool, error) {
 	return rc, true, nil
 }
 
+// retroMarkerSpec is the retro marker's wire format.
+var retroMarkerSpec = markerSpec{ //nolint:gochecknoglobals // a read-only format
+	prefix: RetroMarkerPrefix, fields: retroMarkerFields, what: "retro",
+}
+
 // parseRetroMarker parses one complete marker line: its issue, agent role and run key.
 func parseRetroMarker(line string) (RetroComment, error) {
 	if !strings.HasPrefix(line, RetroMarkerPrefix) {
@@ -337,50 +342,46 @@ func parseRetroMarker(line string) (RetroComment, error) {
 		return RetroComment{}, errors.New("retro marker spans lines")
 	}
 
-	closed, ok := strings.CutSuffix(line, " -->")
-	if !ok {
-		return RetroComment{}, errors.New("retro marker is not closed")
+	var rc RetroComment
+
+	_, err := parseMarkerFields(line, retroMarkerSpec, func(key, value string) error {
+		return setRetroMarkerField(&rc, key, value)
+	})
+	if err != nil {
+		return RetroComment{}, err
 	}
 
-	return retroMarkerFieldsOf(strings.TrimPrefix(closed, RetroMarkerPrefix))
+	return rc, nil
 }
 
-// retroMarkerFieldsOf parses the issue, role and key of a marker line.
-func retroMarkerFieldsOf(text string) (RetroComment, error) {
-	fields := strings.Fields(text)
-	if len(fields) != retroMarkerFields {
-		return RetroComment{}, fmt.Errorf("retro marker has %d fields, want %d", len(fields), retroMarkerFields)
-	}
-
-	values := make(map[string]string, len(fields))
-	for _, field := range fields {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !slices.Contains([]string{"issue", "role", "key"}, key) || value == "" {
-			return RetroComment{}, fmt.Errorf("bad retro marker field %q", field)
+// setRetroMarkerField fills one field of a retro marker.
+func setRetroMarkerField(rc *RetroComment, key, value string) error {
+	switch key {
+	case "issue":
+		issue, err := ParseIssueNumber(value)
+		if err != nil {
+			return err
 		}
 
-		if _, seen := values[key]; seen {
-			return RetroComment{}, fmt.Errorf("repeated retro marker field %q", key)
+		rc.Issue = issue
+	case "role":
+		role, err := ParseRole(value)
+		if err != nil {
+			return err
 		}
 
-		values[key] = value
+		rc.Role = role
+	case "key":
+		if !retroKeyRE.MatchString(value) {
+			return fmt.Errorf("run key %q is not a marker-safe token", value)
+		}
+
+		rc.Key = value
+	default:
+		return fmt.Errorf("bad retro marker field %q", key)
 	}
 
-	issue, err := ParseIssueNumber(values["issue"])
-	if err != nil {
-		return RetroComment{}, err
-	}
-
-	role, err := ParseRole(values["role"])
-	if err != nil {
-		return RetroComment{}, err
-	}
-
-	if !retroKeyRE.MatchString(values["key"]) {
-		return RetroComment{}, fmt.Errorf("run key %q is not a marker-safe token", values["key"])
-	}
-
-	return RetroComment{Issue: issue, Role: role, Key: values["key"]}, nil
+	return nil
 }
 
 // RetroGroup is an existing group shown to a retro: its key and the first one-line claim reported for

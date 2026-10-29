@@ -44,6 +44,14 @@ pass "curate skill"
 if grep -rq "setup-matt-pocock-skills" "$skills"; then fail "a fork keeps the upstream setup instruction"; fi
 if grep -rq "ask the user" "$skills"; then fail "a fork asks the user"; fi
 
+# The Planner's forks name its real output fields, so a model following them cannot write a rejected
+# file: grilling writes kind/comment, and the implement fork names the reply fields.
+grep -q '"kind": "questions"' "$skills/grilling/SKILL.md" || fail "grilling: no kind/questions field"
+if grep -q 'goes in `questions`' "$skills/grilling/SKILL.md"; then fail "grilling: stale questions field"; fi
+grep -q '`replies`' "$skills/implement/SKILL.md" || fail "implement: no replies field"
+grep -q '`status`' "$skills/implement/SKILL.md" || fail "implement: no reply status field"
+pass "skill output fields"
+
 # code-review runs both halves itself and records a verdict.
 review="$skills/code-review/SKILL.md"
 grep -q "Do not dispatch sub-agents" "$review" || fail "code-review: sub-agents are not denied"

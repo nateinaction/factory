@@ -104,7 +104,13 @@ func (r *commandRun) onComment(
 		r.d.log().Info("a non-writer's dashboard command is minimized and takes no action",
 			"repo", r.repo, "comment", comment.ID, "by", comment.Author, "command", cmd.Kind)
 
-		next, _ := state.WithHandled(comment.ID)
+		next, ok := state.WithHandled(comment.ID)
+		if !ok {
+			r.d.log().Warn("a command comment could not be recorded as handled",
+				"repo", r.repo, "comment", comment.ID)
+
+			return state, false
+		}
 
 		return next, true
 	}
@@ -114,7 +120,14 @@ func (r *commandRun) onComment(
 		return state, false
 	}
 
-	next, _ = next.WithHandled(comment.ID)
+	next, recorded := next.WithHandled(comment.ID)
+	if !recorded {
+		// Not recording the command would let the next poll apply it again, so it is not settled.
+		r.d.log().Warn("a command comment could not be recorded as handled",
+			"repo", r.repo, "comment", comment.ID)
+
+		return state, false
+	}
 
 	return next, true
 }

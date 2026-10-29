@@ -192,10 +192,12 @@ factory_agent_limits:
   implementer: { steps: 200, deadline_minutes: 90 }
   reviewer: { steps: 60, deadline_minutes: 30 }
   curator: { steps: 60, deadline_minutes: 30 }
-# A retro has its own budget, shared by every agent role: hitting either drops the retro and never
-# fails the run.
+# A retro has its own budget. The shared default covers every agent role; an entry in
+# factory_retro_limits overrides it for that role, and may set only one of the two. Hitting either
+# limit drops the retro and never fails the run.
 factory_retro_steps: 20
 factory_retro_deadline_minutes: 15
+factory_retro_limits: {}
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
 # moves the issue to factory:failed. Nothing retries a dead run automatically.
 factory_dead_run_margin_minutes: 10
