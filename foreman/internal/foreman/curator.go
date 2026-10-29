@@ -4,96 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strconv"
 
 	"github.com/nateinaction/factory/foreman/internal/github"
-	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
-	"github.com/nateinaction/factory/foreman/internal/prompt"
-	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
-
-// runCurator reads a repository's dashboard and retro log in a fresh sandbox directory, and logs the
-// run's one usage line even when the run failed. It runs no retro.
-func runCurator(ctx context.Context, d Deps, spec runSpec) error {
-	return withSandboxRun(d, spec, workflow.Curator, func(files sandboxFiles) (opencode.Usage, []string, error) {
-		return curate(ctx, d, spec, files)
-	})
-}
-
-// curate runs the Curator's work behind the run's proxies.
-func curate(
-	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
-) (opencode.Usage, []string, error) {
-	return withRunSecrets(ctx, d, spec, workflow.Curator,
-		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
-			return curateRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
-		})
-}
-
-// curateRun clones the default branch read-only, reads the retro log and the dashboard state, runs the
-// model under the sandbox, and applies its proposals.
-func curateRun(
-	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
-	network sandbox.Network, files sandboxFiles,
-) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Curator, spec.agent, spec.number,
-		files.db(workflow.Curator))
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	paths, err := curatorPaths(d.Settings.WorkRoot, spec.number)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	branch, err := j.c.DefaultBranch(ctx, spec.repo)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	s := newSession(d, j, paths.workdir, nil)
-
-	if err := s.cloneDefault(ctx, spec.repo, branch); err != nil {
-		return opencode.Usage{}, err
-	}
-
-	docs, err := prompt.ReadRepoDocs(paths.workdir)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	reports, state, private, err := curatorInputs(ctx, d, j.c, spec.repo, j.issue)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	view := workflow.BuildDashboard(reports, state, d.now())
-
-	if s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, spec.repo, branch, files, workflow.Curator, paths.workdir, paths.out,
-		nil, network, proxyAddr,
-	); err != nil {
-		return opencode.Usage{}, err
-	}
-
-	res, err := s.curatorAgent(ctx, spec, docs, private, reports, view, paths.out)
-	if err != nil {
-		return res.Usage, err
-	}
-
-	out, err := readCuratorOutput(paths.out)
-	if err != nil {
-		// The dashboard is never commented on, so a rejected file is only logged; the claim ages out and
-		// the next poll retries.
-		return res.Usage, err
-	}
-
-	return res.Usage, s.applyCurator(ctx, j, spec.repo, spec.number, out, private)
-}
 
 // curatorInputs reads the repository's retro log, the dashboard's state and the repository's
 // visibility. The dashboard issue is the run's issue.
@@ -123,22 +38,6 @@ func curatorInputs(
 	return reports, state, repository.Private, nil
 }
 
-// curatorPaths clears and returns a Curator run's clone and output path. The output file sits outside
-// the clone, in the run's own scratch directory.
-func curatorPaths(root string, number int) (runFiles, error) {
-	workdir, err := freshPath(root, "curator-"+strconv.Itoa(number))
-	if err != nil {
-		return runFiles{}, err
-	}
-
-	scratch, err := scratchDir(root, "curator-out-"+strconv.Itoa(number))
-	if err != nil {
-		return runFiles{}, err
-	}
-
-	return runFiles{workdir: workdir, out: filepath.Join(scratch, workflow.CuratorOutputFile)}, nil
-}
-
 // cloneDefault clones only the default branch, which is all the Curator reads.
 func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch string) error {
 	_, err := s.d.run(ctx, proc.Cmd{
@@ -150,16 +49,6 @@ func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch st
 	})
 
 	return err
-}
-
-// readCuratorOutput reads and validates the Curator's output file.
-func readCuratorOutput(path string) (workflow.CuratorOutput, error) {
-	raw, err := readScratch(path)
-	if err != nil {
-		return workflow.CuratorOutput{}, outputProblem(workflow.CuratorOutputFile, err)
-	}
-
-	return workflow.ParseCuratorOutput(string(raw))
 }
 
 // curatedIssue is an issue a Curator draft was filed as, or the one an earlier run already filed.
@@ -237,21 +126,6 @@ func (s session) fileCuratorIssues(
 	}
 
 	return filed, errors.Join(errs...)
-}
-
-// curatorAgent runs the model on the Curator's prompt, built for the run's repository and dashboard
-// number as a checked IssueRef.
-func (s session) curatorAgent(
-	ctx context.Context, spec runSpec, docs []prompt.Doc, private bool,
-	reports []workflow.DashboardReport, view workflow.DashboardView, out string,
-) (opencode.Result, error) {
-	ref := workflow.IssueRef{Repo: spec.repo, Number: spec.number}
-
-	return s.agent(ctx, opencode.Run{
-		Role:    workflow.Curator,
-		Prompt:  prompt.Curator(docs, ref, private, reports, view, out),
-		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
-	})
 }
 
 // promotionRepo checks the configured factory repository at the edge and asks workflow where a group is filed. An

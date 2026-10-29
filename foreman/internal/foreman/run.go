@@ -39,22 +39,14 @@ func Run(
 
 	spec := runSpec{repo: ref.Repo, number: ref.Number, agent: agent, retro: retro, limit: limit}
 
-	switch role {
-	case workflow.Planner:
-		return exitCode(runPlanner(ctx, d, spec), 0)
-	case workflow.Implementer:
-		return exitCode(runImplementer(ctx, d, spec), 0)
-	case workflow.Researcher:
-		return exitCode(runResearcher(ctx, d, spec), 0)
-	case workflow.Reviewer:
-		code, err := runReviewer(ctx, d, spec)
-
-		return exitCode(err, code)
-	case workflow.Curator:
-		return exitCode(runCurator(ctx, d, spec), 0)
+	rr, ok := roleRunFor(role)
+	if !ok {
+		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	return 1, fmt.Errorf("unknown agent role %q", role)
+	code, err := runRole(ctx, d, spec, role, rr)
+
+	return exitCode(err, code)
 }
 
 // runSpec is one run's work: what it works, the agent role's settings, and the budgets it runs under.
@@ -77,20 +69,20 @@ type runSpec struct {
 // usage line even when the work failed. The directories are removed afterwards, retro included.
 func withSandboxRun(
 	d Deps, spec runSpec, role workflow.Role,
-	work func(files sandboxFiles) (opencode.Usage, []string, error),
-) (err error) {
+	work func(files sandboxFiles) (runResult, []string, error),
+) (code int, err error) {
 	files, err := newSandboxFiles(d.Settings.WorkRoot, role, spec.number)
 	if err != nil {
-		return err
+		return 1, err
 	}
 
 	defer func() { err = errors.Join(err, files.remove()) }()
 
-	usage, domains, err := work(files)
-	d.logUsage(opencode.NewUsageReport(role, spec.repo.String(), spec.number, d.Host, spec.agent, usage).
+	result, domains, err := work(files)
+	d.logUsage(opencode.NewUsageReport(role, spec.repo.String(), spec.number, d.Host, spec.agent, result.usage).
 		WithDomains(domains))
 
-	return err
+	return result.code, err
 }
 
 // withRunSecrets reads the agent role's token and the OpenRouter key, starts the run's proxies and
@@ -98,19 +90,19 @@ func withSandboxRun(
 // or unproxied fallback.
 func withRunSecrets(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role,
-	work func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error),
-) (opencode.Usage, []string, error) {
+	work func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (runResult, error),
+) (runResult, []string, error) {
 	network, err := sandbox.ParseNetwork(spec.agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, nil, err
+		return runResult{}, nil, err
 	}
 
 	sec, err := readSecrets(d.Settings, role)
 	if err != nil {
-		return opencode.Usage{}, nil, err
+		return runResult{}, nil, err
 	}
 
-	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (runResult, error) {
 		return work(sec, baseURL, proxyAddr, network)
 	})
 }
@@ -294,19 +286,19 @@ func loadJob(
 // never an unsandboxed fallback.
 func (d Deps) withProxy(
 	ctx context.Context, network sandbox.Network, key string,
-	fn func(baseURL, proxyAddr string) (opencode.Usage, error),
-) (opencode.Usage, []string, error) {
+	fn func(baseURL, proxyAddr string) (runResult, error),
+) (runResult, []string, error) {
 	p, err := d.proxy(key)
 	if err != nil {
-		return opencode.Usage{}, nil, err
+		return runResult{}, nil, err
 	}
 
 	e, err := d.egress(ctx, network, p.URL())
 	if err != nil {
-		return opencode.Usage{}, nil, errors.Join(err, p.Close())
+		return runResult{}, nil, errors.Join(err, p.Close())
 	}
 
-	usage, err := fn(e.URL(), e.Address())
+	result, err := fn(e.URL(), e.Address())
 	// Read the usage before stopping: a response still being relayed when the model exits cannot be
 	// counted, and Close is what ends it.
 	read := p.Usage()
@@ -314,7 +306,9 @@ func (d Deps) withProxy(
 	// A failure to stop either proxy is part of the run's outcome, not a diagnostic to drop.
 	err = errors.Join(err, e.Close(), p.Close())
 
-	return usage.Use(reported(read)), domains, err
+	result.usage = result.usage.Use(reported(read))
+
+	return result, domains, err
 }
 
 // egress starts the run's egress proxy with the role's policy, forwarding its API calls to apiURL.
@@ -402,89 +396,6 @@ func exitCode(err error, code int) (int, error) {
 	return code, nil
 }
 
-// runImplementer works the issue in a fresh run directory and logs the run's one usage line, even
-// when the run failed.
-func runImplementer(ctx context.Context, d Deps, spec runSpec) error {
-	return withSandboxRun(d, spec, workflow.Implementer, func(files sandboxFiles) (opencode.Usage, []string, error) {
-		return implement(ctx, d, spec, files)
-	})
-}
-
-// implement clones, runs the model under the sandbox, applies its output, and writes the retro.
-func implement(
-	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
-) (opencode.Usage, []string, error) {
-	return withRunSecrets(ctx, d, spec, workflow.Implementer,
-		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
-			return implementRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
-		})
-}
-
-// implementRun is the Implementer's work, with its proxies already up.
-func implementRun(
-	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
-	network sandbox.Network, files sandboxFiles,
-) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Implementer, spec.agent, spec.number,
-		files.db(workflow.Implementer))
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	branch := workflow.BranchName(spec.number)
-
-	paths, err := implementerPaths(d.Settings.WorkRoot, spec.number)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	s := newSession(d, j, paths.workdir, []string{
-		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
-	})
-
-	pr, feedback, start, err := s.prepare(ctx, j.c, spec.repo, branch)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	implementerPrompt, err := buildImplementerPrompt(ctx, j.c, spec.repo, j.issue, paths.workdir, feedback, paths.out)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	if s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, spec.repo, "", files, workflow.Implementer, paths.workdir, paths.out,
-		[]string{retroPath(d.Settings.WorkRoot, spec.number, workflow.Implementer)}, network, proxyAddr,
-	); err != nil {
-		return opencode.Usage{}, err
-	}
-
-	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: implementerPrompt,
-		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
-	})
-	if err != nil {
-		return res.Usage.Add(s.retroEpilogue(
-			ctx, j, spec.repo, spec.number, workflow.Implementer, res.Session, s.headKey(ctx), err, spec.retro,
-		)), err
-	}
-
-	out, err := readImplementerOutput(paths.out, pr != nil, feedback)
-	if err != nil {
-		return res.Usage, rejectOutput(ctx, j.c, spec.repo, spec.number, workflow.Implementer, err)
-	}
-
-	if err := s.applyImplementer(ctx, j, spec.repo, branch, start, pr, out); err != nil {
-		return res.Usage.Add(s.retroEpilogue(
-			ctx, j, spec.repo, spec.number, workflow.Implementer, res.Session, s.headKey(ctx), err, spec.retro,
-		)), err
-	}
-	// The output is applied: the retro is the run's epilogue and never changes its outcome.
-	return res.Usage.Add(s.retroEpilogue(
-		ctx, j, spec.repo, spec.number, workflow.Implementer, res.Session, s.headKey(ctx), nil, spec.retro,
-	)), nil
-}
-
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
 // and the comments that woke the issue.
 func buildImplementerPrompt(
@@ -561,27 +472,6 @@ func ciFeedback(ctx context.Context, c github.Client, repo workflow.Repo, number
 	return workflow.CIFailureText(report.Body), nil
 }
 
-// implementerPaths clears and returns an Implementer run's clone and scratch paths. The output file
-// sits outside the clone, in the run's own scratch directory, with the name the spec fixes.
-func implementerPaths(root string, number int) (runFiles, error) {
-	workdir, err := freshPath(root, fmt.Sprintf("issue-%d", number))
-	if err != nil {
-		return runFiles{}, err
-	}
-
-	scratch, err := scratchDir(root, fmt.Sprintf("implementer-%d", number))
-	if err != nil {
-		return runFiles{}, err
-	}
-
-	return runFiles{workdir: workdir, out: filepath.Join(scratch, workflow.ImplementerOutputFile)}, nil
-}
-
-// runFiles are the clone and output path of an Implementer run.
-type runFiles struct {
-	workdir, out string
-}
-
 // scratchDir clears and creates one run's scratch directory, which is outside the clone.
 func scratchDir(root, name string) (string, error) {
 	path, err := freshPath(root, name)
@@ -594,18 +484,6 @@ func scratchDir(root, name string) (string, error) {
 	}
 
 	return path, nil
-}
-
-// readImplementerOutput reads and validates the Implementer's output file. review is the latest
-// rendered review it answers. A file foreman cannot read is an output error too, so the model that
-// wrote none fails the same way as a bad one.
-func readImplementerOutput(path string, rework bool, review string) (workflow.ImplementerOutput, error) {
-	raw, err := readScratch(path)
-	if err != nil {
-		return workflow.ImplementerOutput{}, outputProblem(workflow.ImplementerOutputFile, err)
-	}
-
-	return workflow.ParseImplementerOutput(string(raw), rework, review)
 }
 
 // outputProblem turns an unreadable output file into the error a rejected one returns.
@@ -834,116 +712,6 @@ func openPR(
 	return &pr, nil
 }
 
-// runResearcher researches the ticket in a fresh sandbox directory and logs the run's one usage line,
-// even when the run failed.
-func runResearcher(ctx context.Context, d Deps, spec runSpec) error {
-	return withSandboxRun(d, spec, workflow.Researcher, func(files sandboxFiles) (opencode.Usage, []string, error) {
-		return research(ctx, d, spec, files)
-	})
-}
-
-// research clones, runs the model under the sandbox, applies its findings, and writes the retro.
-func research(
-	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
-) (opencode.Usage, []string, error) {
-	return withRunSecrets(ctx, d, spec, workflow.Researcher,
-		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
-			return researchRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
-		})
-}
-
-// researchRun is the Researcher's work, with its proxies already up.
-func researchRun(
-	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
-	network sandbox.Network, files sandboxFiles,
-) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Researcher, spec.agent, spec.number,
-		files.db(workflow.Researcher))
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	paths, err := researcherPaths(d.Settings.WorkRoot, spec.number)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	s, docs, thread, err := researchContext(ctx, d, spec, j, sec, paths, files, network, proxyAddr)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Researcher, Prompt: prompt.Researcher(docs, spec.repo.String(), j.issue, thread, paths.out),
-		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
-	})
-	if err != nil {
-		return s.researchOutcome(ctx, spec, j, res, s.headKey(ctx), err)
-	}
-
-	out, err := readResearcherOutput(paths.out)
-	if err != nil {
-		return res.Usage, rejectOutput(ctx, j.c, spec.repo, spec.number, workflow.Researcher, err)
-	}
-
-	branch, err := workflow.ResearchBranch(out.Branch)
-	if err != nil {
-		return res.Usage, rejectOutput(ctx, j.c, spec.repo, spec.number, workflow.Researcher,
-			&workflow.OutputError{File: workflow.ResearcherOutputFile, Problems: []string{err.Error()}})
-	}
-
-	sha, err := s.applyResearch(ctx, j, spec, branch, out)
-	if err != nil {
-		return s.researchOutcome(ctx, spec, j, res, s.headKey(ctx), err)
-	}
-	// The output is applied: the retro is the run's epilogue and never changes its outcome.
-	return s.researchOutcome(ctx, spec, j, res, sha, nil)
-}
-
-// researchContext clones the repository, reads its docs and the ticket's guidance, and puts the
-// Researcher's session inside its sandbox. The clone and the reads are foreman's, outside the
-// sandbox; only the model and its retro run inside.
-func researchContext(
-	ctx context.Context, d Deps, spec runSpec, j job, sec secrets, paths researcherFiles,
-	files sandboxFiles, network sandbox.Network, proxyAddr string,
-) (session, []prompt.Doc, []workflow.Item, error) {
-	s := newSession(d, j, paths.workdir, []string{
-		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
-	})
-
-	if err := s.clone(ctx, spec.repo); err != nil {
-		return session{}, nil, nil, err
-	}
-
-	docs, err := prompt.ReadRepoDocs(paths.workdir)
-	if err != nil {
-		return session{}, nil, nil, err
-	}
-
-	thread, err := guidance(ctx, j.c, spec.repo, spec.number)
-	if err != nil {
-		return session{}, nil, nil, err
-	}
-
-	s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, spec.repo, "", files, workflow.Researcher, paths.workdir, paths.out,
-		[]string{retroPath(d.Settings.WorkRoot, spec.number, workflow.Researcher)}, network, proxyAddr,
-	)
-
-	return s, docs, thread, err
-}
-
-// researchOutcome folds a research run's retro into its usage and returns the run's failure.
-func (s session) researchOutcome(
-	ctx context.Context, spec runSpec, j job, res opencode.Result, key string, err error,
-) (opencode.Usage, error) {
-	usage := res.Usage.Add(s.retroEpilogue(
-		ctx, j, spec.repo, spec.number, workflow.Researcher, res.Session, key, err, spec.retro,
-	))
-
-	return usage, err
-}
-
 // applyResearch publishes the findings and records the resolution. It reads the ticket's map before
 // pushing anything, so a ticket without one fails the run with nothing published.
 func (s session) applyResearch(
@@ -960,37 +728,6 @@ func (s session) applyResearch(
 	}
 
 	return sha, s.resolveResearch(ctx, j, spec.repo, branch, parent, out)
-}
-
-// researcherFiles are a research run's clone and output path.
-type researcherFiles struct {
-	workdir, out string
-}
-
-// researcherPaths clears and returns the clone and scratch paths of a research run. The output file
-// sits outside the clone, in the run's own scratch directory, with the name the spec fixes.
-func researcherPaths(root string, number int) (researcherFiles, error) {
-	workdir, err := freshPath(root, "research-"+strconv.Itoa(number))
-	if err != nil {
-		return researcherFiles{}, err
-	}
-
-	scratch, err := scratchDir(root, "researcher-"+strconv.Itoa(number))
-	if err != nil {
-		return researcherFiles{}, err
-	}
-
-	return researcherFiles{workdir: workdir, out: filepath.Join(scratch, workflow.ResearcherOutputFile)}, nil
-}
-
-// readResearcherOutput reads and validates the Researcher's output file.
-func readResearcherOutput(path string) (workflow.ResearcherOutput, error) {
-	raw, err := readScratch(path)
-	if err != nil {
-		return workflow.ResearcherOutput{}, outputProblem(workflow.ResearcherOutputFile, err)
-	}
-
-	return workflow.ParseResearcherOutput(string(raw))
 }
 
 // parentMap finds the map a research ticket belongs to: its sub-issue parent when the repository has
@@ -1150,105 +887,6 @@ func (s session) resolveResearch(
 	return j.c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: parent.Number}, body)
 }
 
-// runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
-func runReviewer(ctx context.Context, d Deps, spec runSpec) (int, error) {
-	code := 1
-
-	err := withSandboxRun(d, spec, workflow.Reviewer, func(files sandboxFiles) (opencode.Usage, []string, error) {
-		runCode, usage, domains, err := review(ctx, d, spec, files)
-		code = runCode
-
-		return usage, domains, err
-	})
-	if err != nil && code == 0 {
-		code = 1
-	}
-
-	return code, err
-}
-
-// review clones the pull request's branch, runs the review under the sandbox, posts it, and returns
-// the verdict code.
-func review(
-	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
-) (int, opencode.Usage, []string, error) {
-	var code int
-
-	usage, domains, err := withRunSecrets(ctx, d, spec, workflow.Reviewer,
-		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
-			runCode, u, e := reviewRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
-			code = runCode
-
-			return u, e
-		})
-
-	return code, usage, domains, err
-}
-
-// reviewRun is the Reviewer's work, with its proxies already up.
-func reviewRun(
-	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
-	network sandbox.Network, files sandboxFiles,
-) (int, opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Reviewer, spec.agent, spec.number,
-		files.db(workflow.Reviewer))
-	if err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	pr, base, err := reviewTarget(ctx, j.c, spec.repo, workflow.BranchName(spec.number))
-	if err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	paths, err := reviewPaths(d.Settings.WorkRoot, spec.number)
-	if err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	s := newSession(d, j, paths.workdir, nil)
-
-	sha, err := s.checkoutForReview(ctx, spec.repo, workflow.BranchName(spec.number))
-	if err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	if s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, spec.repo, base, files, workflow.Reviewer, paths.workdir, paths.out,
-		[]string{paths.spec, retroPath(d.Settings.WorkRoot, spec.number, workflow.Reviewer)},
-		network, proxyAddr,
-	); err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	docs, err := writeSpec(paths, j.issue)
-	if err != nil {
-		return 1, opencode.Usage{}, err
-	}
-
-	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, paths.spec, paths.out),
-		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
-	})
-	// The retro is keyed by the reviewed PR head SHA, on every path that reached the model.
-	if err != nil {
-		return 1, res.Usage.Add(s.retroEpilogue(
-			ctx, j, spec.repo, spec.number, workflow.Reviewer, res.Session, sha, err, spec.retro,
-		)), err
-	}
-
-	out, err := readReviewerOutput(paths.out)
-	if err != nil {
-		return 1, res.Usage, rejectOutput(ctx, j.c, spec.repo, spec.number, workflow.Reviewer, err)
-	}
-
-	code, err := postVerdict(ctx, d, j.c, spec.repo, pr.Number, sha, out, j.issue, spec.limit)
-
-	return code, res.Usage.Add(s.retroEpilogue(
-		ctx, j, spec.repo, spec.number, workflow.Reviewer, res.Session, sha, err, spec.retro,
-	)), err
-}
-
 // reviewTarget is the open pull request for branch and the branch it merges into.
 func reviewTarget(
 	ctx context.Context, c github.Client, repo workflow.Repo, branch string,
@@ -1269,38 +907,13 @@ func reviewTarget(
 
 // writeSpec writes the issue where the Reviewer reads it, outside the clone, and returns the clone's
 // repository docs.
-func writeSpec(paths reviewFiles, issue workflow.Issue) ([]prompt.Doc, error) {
+func writeSpec(specPath, workdir string, issue workflow.Issue) ([]prompt.Doc, error) {
 	spec := fmt.Sprintf("# %s\n\n%s\n", issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars))
-	if err := os.WriteFile(paths.spec, []byte(spec), privateFileMode); err != nil {
+	if err := os.WriteFile(specPath, []byte(spec), privateFileMode); err != nil {
 		return nil, fmt.Errorf("write spec: %w", err)
 	}
 
-	return prompt.ReadRepoDocs(paths.workdir)
-}
-
-// reviewFiles are a review run's paths: the clone, the spec and the model's output file.
-type reviewFiles struct {
-	workdir, spec, out string
-}
-
-// reviewPaths clears and returns the paths of a review run. The output file and the spec sit in the
-// run's scratch directory, outside the clone, with the names the spec fixes.
-func reviewPaths(root string, number int) (reviewFiles, error) {
-	workdir, err := freshPath(root, "review-"+strconv.Itoa(number))
-	if err != nil {
-		return reviewFiles{}, err
-	}
-
-	scratch, err := scratchDir(root, "reviewer-"+strconv.Itoa(number))
-	if err != nil {
-		return reviewFiles{}, err
-	}
-
-	return reviewFiles{
-		workdir: workdir,
-		spec:    filepath.Join(scratch, "issue.md"),
-		out:     filepath.Join(scratch, workflow.ReviewerOutputFile),
-	}, nil
+	return prompt.ReadRepoDocs(workdir)
 }
 
 // checkoutForReview clones the repository on the pull request's branch and returns the reviewed commit.
@@ -1318,16 +931,6 @@ func (s session) checkoutForReview(ctx context.Context, repo workflow.Repo, bran
 	}
 
 	return s.head(ctx)
-}
-
-// readReviewerOutput reads and validates the Reviewer's output file.
-func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
-	raw, err := readScratch(path)
-	if err != nil {
-		return workflow.ReviewerOutput{}, outputProblem(workflow.ReviewerOutputFile, err)
-	}
-
-	return workflow.ParseReviewerOutput(string(raw))
 }
 
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The
