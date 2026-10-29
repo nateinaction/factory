@@ -8,8 +8,11 @@ uses Seatbelt on macOS and bubblewrap on Linux. There are no containers and no V
 The whole `opencode run` — retry attempts and the retro included — runs under srt. foreman stays
 outside and does every clone, fetch, commit, push and GitHub write itself, running git on the host.
 The model's `git` can read the clone but cannot write `.git`, so the code it runs never becomes a
-commit outside the sandbox. The read-only installation token is the only secret inside the sandbox,
-as `GH_TOKEN`; the token file it was minted from stays in the deny list.
+commit outside the sandbox. Two secrets are inside the sandbox: the read-only installation token, as `GH_TOKEN`, and the
+per-run proxy token, which is opencode's `provider.openrouter.options.apiKey`. The proxy token is
+random for each run, is worth nothing outside this run's two loopback proxies, and never reaches a
+file or a log. The token file the installation token was minted from stays in the deny list, and the
+OpenRouter key itself never enters the sandbox.
 
 ## Filesystem
 
@@ -105,7 +108,7 @@ The adapter therefore gives srt one loopback port and delegates the decision to
 
 - srt settings set `network.httpProxyPort` to the run's egress proxy, so srt still blocks direct
   outbound traffic and routes HTTP(S) through that port.
-- The egress proxy enforces the role's allowlist (empty means open), refuses anything else, and
+- The egress proxy enforces the agent role's allowlist (empty means open), refuses anything else, and
   records every host it is asked for — allowed or refused — for the usage line.
 - It also refuses a destination whose address is not publicly routable, whatever the allowlist
   says: loopback, private space, shared space (`100.64.0.0/10`, which is where a tailnet lives),
@@ -155,7 +158,8 @@ hidden, and checks neither can see the other. That is the safety a per-host run 
 `factory_agent_run_cap` sets the worker's `--worker.max-active-runs`, and the sandbox keeps concurrent
 runs apart.
 
-**Result on this macOS/arm64 development host:** **the specs passed** with the pinned opencode
+**Result on this macOS/arm64 development host, when the test was first run (dated; the spec count
+has since grown, so rerun it for a current figure):** **the specs passed** with the pinned opencode
 **1.19.3** and srt **0.0.81**, run from the dev shell:
 
 ```sh

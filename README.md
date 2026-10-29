@@ -5,13 +5,13 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 
 ## What it sets up
 
-| Role | Result |
+| Ansible role | Result |
 | --- | --- |
 | `base` | hostname, `en_US.UTF-8` locale, a login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
-| `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the pinned mattpocock skills, and the `factory-*` DAGs (see below) |
+| `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the factory's own forked skills (`roles/agent/files/skills/`, each naming the upstream path and ref it was forked from; nothing is cloned or pinned upstream at run time), and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
@@ -65,7 +65,7 @@ live in this repo.
    it. The factory works only the agent roles whose Apps are installed there,
    and other agent roles' issues wait in their queue.
 
-Skip the role with `-e factory_github_app=false`. If the role runs and the
+Skip the Ansible role with `-e factory_github_app=false`. If the Ansible role runs and the
 secrets file is missing, the play fails rather than skipping.
 
 Each App's files go in `/etc/github-app/<agent role>/` (`app-id`,
@@ -95,20 +95,30 @@ reach the UI and the coordinator port, so restrict both with tailscale ACLs. Set
 Every open issue in an assigned repository is the factory's unless it carries
 `factory:paused`. `factory:` labels hold an issue's state, and every handoff
 also posts a marker comment recording the agent role, run id, from-state,
-to-state and commit SHA. Applying `factory:implement` starts the Implementer
-path; the Reviewer takes over from `factory:review`.
+to-state and commit SHA.
+
+There are five agent roles. The Planner, Researcher, Implementer and Reviewer
+work an issue; the Curator looks after the repository's retro dashboard. The
+**human gate** sits between planning and building: the Planner asks questions
+in rounds and ends with a final round holding a proposal, and only a writer's
+reply approving it (or a writer's explicit "ready to build") lets foreman apply
+the proposal and queue the Implementer. A person merges every PR; foreman has
+no code path that merges.
 
 1. `factory-poll` runs on the server every 5 minutes. It uses no model.
    It creates any missing `factory:` labels, repairs a stranded issue from its
    latest marker, and routes a new issue to its first queue: a
    `wayfinder:research` ticket to `factory:research`, and everything else to
-   `factory:plan`. It then works the queues in order (Reviewer, Implementer,
-   Planner, Researcher, oldest issue first): for the first agent role with runs
-   to spare, it claims up to that role's free run capacity, posts each claim
-   marker, swaps the label, and queues the `factory-<role>` DAG with `REPO` and
-   `ISSUE`. An agent role's capacity is each host's run cap
+   `factory:plan`. It redraws each repository's retro dashboard and, when a
+   retro added findings, a group became ready or a writer commented `curate`,
+   queues one Curator run (at most one at a time, once a day). It then works the
+   issue queues in order (Reviewer, Implementer, Planner, Researcher, oldest
+   issue first): for the first agent role with runs to spare, it claims up to
+   that agent role's free run capacity, posts each claim marker, swaps the label, and
+   queues the `factory-<agent role>` DAG with `REPO` and `ISSUE`. The Curator
+   has no issue queue and so comes last in the order. An agent role's capacity is each host's run cap
    (`factory_agent_run_cap`) times the worker hosts that take it, less its runs
-   in progress; a run waiting in dagu blocks new claims for its role. Nothing
+   in progress; a run waiting in dagu blocks new claims for its agent role. Nothing
    ready means it exits. Only a writer's issues and comments count, and a paused
    issue is skipped.
 2. `factory-<agent role>` runs on a worker host that takes that agent role,
@@ -118,14 +128,20 @@ path; the Reviewer takes over from `factory:review`.
    `/run/factory/gh-token-<agent role>`, and runs
    `foreman run <agent role> <owner/repo> <issue>` as `factory` through a
    single-purpose sudoers rule.
-3. Research (`run`): clones the repo, runs `opencode run` with the `research`
+3. Plan (`run`): the Planner reads the issue and its thread and writes a round
+   of numbered questions or a final round with a proposal (one issue, slices,
+   a wayfinder map or a ticket resolution). Foreman posts the round, hides a
+   proposal in its comment, and the issue waits in `factory:waiting` for a
+   writer. A writer's reply wakes the Planner for another round; approval of the
+   final round applies the proposal.
+4. Research (`run`): clones the repo, runs `opencode run` with the `research`
    skill, commits the findings under `docs/research/`, and pushes them to
    `research/<name>`. It never opens a PR: the branch is a record, never merged.
    Foreman posts the resolution (with a link to the branch), appends the
    decision line to the ticket's map, and the ticket closes with no factory
    label. A re-run reuses the branch and updates the same resolution comment.
    A retro follows the push, keyed by the findings branch SHA.
-4. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
+5. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
    with the `implement` skill, pushes, and opens a PR. If the PR already exists
    (a rework), it continues from that branch with the latest review in the
    prompt. Then it continues the same opencode session, by explicit session id,
@@ -134,13 +150,20 @@ path; the Reviewer takes over from `factory:review`.
    repeat for the same key updates that comment. The retro has its own step cap
    and deadline and is best effort: a dropped or invalid retro is logged and
    does not fail the run. The issue becomes `factory:review`.
-5. Review (`review-run`): checks out the PR branch, runs the `code-review` skill
-   against the issue as spec, and posts the findings on the PR as a review. With
-   no high or medium findings it approves and the issue becomes `factory:done`.
-   Otherwise the issue goes back to `factory:implement` for another implement
-   pass, up to 3 reviews, after which it is `factory:failed`. A retro follows
-   the verdict, keyed by the reviewed PR head SHA.
-6. Any failure leaves the issue `factory:failed` with a marker and a comment. A
+6. Review (`run`): first a CI gate. An issue in `factory:review` waits for its
+   PR's checks; a failure sends it back to `factory:implement` with no model
+   run, and checks still pending after `factory_ci_pending_deadline_minutes`
+   fail it. Once CI passes, the Reviewer checks out the PR branch, runs the
+   `code-review` skill against the issue as spec, and posts the verdict as a
+   PR review under its own App. With no high or medium findings it approves,
+   asks a human writer to review (the issue's author, or the latest writer who
+   commented), and the issue becomes `factory:done`. Otherwise it goes back to
+   `factory:implement`. A review round is one commit that was reviewed or failed
+   CI; CI failures count toward the same limit as findings. At
+   `factory_review_round_limit` rounds (3 by default) the issue is
+   `factory:failed` instead. A retro follows the verdict, keyed by the reviewed
+   PR head SHA.
+7. Any failure leaves the issue `factory:failed` with a marker and a comment. A
    writer's comment sends it back to the agent role that failed.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
@@ -154,14 +177,20 @@ Things to know:
   key/value attributes). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
   output, never diagnostics.
-- `foreman --help` lists the verbs (`poll`, `start`, `run`). Settings default to
+- `foreman --help` lists the verbs (`poll`, `start`, `run`, `status`, `logs`). Settings default to
   the host layout and can be overridden by `FACTORY_*` environment variables or
   by the matching flag (`--work-root`, `--config`, ...); a flag wins over the
   environment, which wins over the default.
-- A run past an hour loses its token, and the agent has a one-hour cap.
-- GitHub does not let a PR's author approve it, and the App opens the PRs, so the
-  review agent's approval is rejected. It then posts a comment review saying so;
-  `factory:done` is the real signal. Approving needs a second identity.
+- A run past an hour loses its read-only token. Each agent role has its own step
+  cap and deadline (`factory_agent_limits`: Planner 20 minutes, Researcher 45,
+  Implementer 90, Reviewer 30, Curator 30); hitting either fails the run, and a
+  poll calls a run dead once its label ages `factory_dead_run_margin_minutes`
+  past the deadline.
+- The Reviewer has its own App, so it is not the PR's author and its `APPROVE`
+  or `REQUEST_CHANGES` counts as a native review. It cannot satisfy code-owner
+  review, which needs a human: that is why an approval asks a writer to review.
+  If GitHub still refuses a review as the PR author's own, foreman posts it as a
+  comment review.
 - Each agent role runs opencode under the sandbox, with permission denied by
   default: the agent role allows only the edits, shell commands and skills its
   work needs, and the sandbox bounds what it may read, write and reach. Only a
@@ -182,6 +211,6 @@ The first apply after the foreman change is the cutover. Before anything else
 changes, the play asks dagu whether a `finances-agent-*` run is active and fails
 if one is. Drain first: suspend `finances-agent-poll` in the dagu UI, let any run
 finish, then apply. The play then installs `/usr/local/bin/foreman`, deploys
-`factory-poll` and one `factory-<role>` DAG per agent role, and removes the old
+`factory-poll` and one `factory-<agent role>` DAG per agent role, and removes the old
 DAG files and `/usr/local/bin/finances-agent`. The removal tasks stay for one
 release. Needs `go` on the controller (the flake's dev shell has it).
