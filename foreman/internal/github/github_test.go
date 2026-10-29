@@ -254,7 +254,8 @@ var _ = Describe("Client", func() {
 		It("posts the marker with its outcome, then swaps the labels", func() {
 			number := issue(workflow.LabelReviewing)
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "done")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(p.Summary()).To(Equal([]string{
 				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
 				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:reviewing",
@@ -272,7 +273,8 @@ var _ = Describe("Client", func() {
 		It("tolerates a label already removed", func() {
 			number := issue()
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "done")
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("passes on any other delete error", func() {
@@ -280,7 +282,8 @@ var _ = Describe("Client", func() {
 			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:reviewing",
 				http.StatusBadGateway)
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "x")).NotTo(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "x")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -460,6 +463,51 @@ var _ = Describe("Client", func() {
 		})
 	})
 
+	Describe("planning links", func() {
+		It("reads a parent's sub-issues and links one by its database id", func() {
+			parent := issue()
+			child := issue()
+
+			p.JSON("GET /repos/o/r/issues/"+itoa(parent)+"/sub_issues",
+				[]map[string]any{{"number": child}})
+
+			numbers, supported, err := c.SubIssueNumbers(ctx, "o/r", parent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeTrue())
+			Expect(numbers).To(Equal([]int{child}))
+
+			id, err := c.IssueID(ctx, "o/r", child)
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(parent)+"/sub_issues", http.StatusCreated)
+			Expect(c.AddSubIssue(ctx, "o/r", parent, id)).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(parent)+"/sub_issues")).To(ConsistOf(
+				ContainSubstring(`"sub_issue_id":`)))
+		})
+
+		It("reads blockers and adds an edge by the blocker's database id", func() {
+			child := issue()
+			blocker := issue()
+
+			p.JSON("GET /repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by",
+				[]map[string]any{{"number": blocker}})
+
+			numbers, supported, err := c.BlockedByNumbers(ctx, "o/r", child)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeTrue())
+			Expect(numbers).To(Equal([]int{blocker}))
+
+			id, err := c.IssueID(ctx, "o/r", blocker)
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by", http.StatusCreated)
+			Expect(c.AddBlockedBy(ctx, "o/r", child, id)).To(Succeed())
+
+			raw := p.Bodies("POST", "/repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by")
+			Expect(raw).To(ConsistOf(ContainSubstring(strconv.FormatInt(id, 10))))
+		})
+	})
+
 	Describe("RequestReviewers", func() {
 		It("asks the named people to review the pull request", func() {
 			pr := pullRequest()
@@ -474,6 +522,110 @@ var _ = Describe("Client", func() {
 
 			Expect(c.RequestReviewers(ctx, "o/r", pr.Number, nil)).To(Succeed())
 			Expect(p.Calls()).To(BeEmpty())
+		})
+	})
+
+	Describe("Parent", func() {
+		It("reads the ticket's parent issue", func() {
+			number := issue()
+
+			p.JSON("GET /repos/o/r/issues/"+itoa(number)+"/parent",
+				map[string]any{"number": 9, "labels": []map[string]string{{"name": workflow.LabelMap}}})
+
+			parent, supported, err := c.Parent(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeTrue())
+			Expect(parent.Number).To(Equal(9))
+			Expect(parent.Labels).To(Equal([]string{workflow.LabelMap}))
+		})
+
+		It("reports that sub-issues are unavailable when the endpoint is missing", func() {
+			number := issue()
+
+			_, supported, err := c.Parent(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeFalse())
+		})
+
+		It("passes on any other error", func() {
+			number := issue()
+			p.Status("GET /repos/o/r/issues/"+itoa(number)+"/parent", http.StatusInternalServerError)
+
+			_, _, err := c.Parent(ctx, "o/r", number)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("UpdateIssueBody", func() {
+		It("replaces the issue's body", func() {
+			number := issue()
+
+			Expect(c.UpdateIssueBody(ctx, "o/r", number, "## Decisions so far\n\n- new\n")).To(Succeed())
+			Expect(p.Bodies("PATCH", "/repos/o/r/issues/"+itoa(number))).To(ConsistOf(
+				ContainSubstring(`"body":"## Decisions so far\n\n- new\n"`)))
+
+			got, err := emulator.Issue(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+
+			var body struct {
+				Body string `json:"body"`
+			}
+			Expect(emulator.Do(ctx, http.MethodGet, "/repos/o/r/issues/"+itoa(got.Number),
+				ghtest.AdminToken, nil, &body)).To(Succeed())
+			Expect(body.Body).To(Equal("## Decisions so far\n\n- new\n"))
+		})
+	})
+
+	Describe("PostResolution", func() {
+		It("posts the resolution once and updates it on a repeat", func() {
+			number := issue()
+
+			body := workflow.RenderResolution("o/r", "research/emulate", "It works.")
+			Expect(c.PostResolution(ctx, "o/r", number, "research/emulate", body)).To(Succeed())
+			Expect(c.PostResolution(ctx, "o/r", number, "research/emulate", body+"\n\nmore")).To(Succeed())
+
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(ConsistOf(
+				ContainSubstring(workflow.ResearchMarker("research/emulate"))))
+			Expect(p.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
+		})
+	})
+
+	Describe("CloseResolved", func() {
+		transition := workflow.Transition{
+			Role: workflow.Researcher, RunID: "run-3",
+			From: workflow.Researching, To: workflow.Closed,
+		}
+
+		It("posts the marker, removes the claim and closes the ticket", func() {
+			number := issue(workflow.LabelResearching)
+
+			Expect(c.CloseResolved(ctx, "o/r", number, transition)).To(Succeed())
+			Expect(p.Summary()).To(Equal([]string{
+				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
+				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:researching",
+				"PATCH /repos/o/r/issues/" + itoa(number),
+			}))
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")[0]).To(
+				ContainSubstring("<!-- factory:handoff role=researcher run=run-3 " +
+					"from=factory:researching to=closed sha= -->"))
+
+			got, err := emulator.Issue(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.State).To(Equal("closed"))
+		})
+
+		It("tolerates a label already removed", func() {
+			number := issue()
+
+			Expect(c.CloseResolved(ctx, "o/r", number, transition)).To(Succeed())
+		})
+
+		It("passes on any other delete error", func() {
+			number := issue(workflow.LabelResearching)
+			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:researching",
+				http.StatusBadGateway)
+
+			Expect(c.CloseResolved(ctx, "o/r", number, transition)).NotTo(Succeed())
 		})
 	})
 })
