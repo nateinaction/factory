@@ -5,18 +5,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -27,6 +32,11 @@ func Run(
 	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
 	number int,
 ) (int, error) {
+	// A host the sandbox adapter cannot serve does no work: there is never an unsandboxed fallback.
+	if err := sandbox.Supported(runtime.GOOS); err != nil {
+		return 1, err
+	}
+
 	switch role {
 	case workflow.Planner:
 		return exitCode(runPlanner(ctx, d, repo, agent, retro, number), 0)
@@ -109,6 +119,10 @@ type session struct {
 	gitEnv   map[string]string
 	agentEnv map[string]string
 	gitArgv  []string
+	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
+	// Both are required: a session with either missing refuses to start the model.
+	srt      string
+	settings string
 	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
 	key string
 }
@@ -148,6 +162,23 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitArgv:  gitArgv,
 		key:      j.sec.openrouterKey,
 	}
+}
+
+// sandboxed puts the model process inside the run's sandbox: its own HOME and XDG directories, the
+// default branch's toolchain, and the srt settings compiled from the role's spec.
+func (s session) sandboxed(f sandboxFiles, spec sandbox.Spec, toolchainPath string, proxyPort int) (session, error) {
+	if err := f.writeSettings(spec, proxyPort); err != nil {
+		return session{}, err
+	}
+
+	env := f.env(toolchainPath)
+	maps.Copy(env, s.agentEnv)
+
+	s.srt = s.d.Settings.Srt
+	s.settings = f.settings
+	s.agentEnv = env
+
+	return s, nil
 }
 
 // nullHooksPath disables every git hook of the clone.
@@ -197,25 +228,70 @@ func loadJob(
 	return job{sec: sec, env: env, c: c, issue: issue}, nil
 }
 
-// withProxy runs fn with the run's OpenRouter proxy up and stops it when fn returns, folding the
-// usage the proxy read into the run's usage. A proxy that cannot start fails the run: the model has
-// no other way to reach OpenRouter, and there is never an unsandboxed fallback.
+// withProxy runs fn with the run's OpenRouter key proxy and its egress proxy up, and stops both when
+// fn returns. The usage the key proxy read and the domains the egress proxy saw are the run's. A
+// proxy that cannot start fails the run: the model has no other way to reach OpenRouter, and there is
+// never an unsandboxed fallback.
 func (d Deps) withProxy(
-	key string, fn func(baseURL string) (opencode.Usage, error),
-) (opencode.Usage, error) {
+	ctx context.Context, network sandbox.Network, key string,
+	fn func(baseURL, proxyAddr string) (opencode.Usage, error),
+) (opencode.Usage, []string, error) {
 	p, err := d.proxy(key)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	usage, err := fn(p.URL())
+	e, err := d.egress(ctx, network, p.URL())
+	if err != nil {
+		return opencode.Usage{}, nil, errors.Join(err, p.Close())
+	}
+
+	usage, err := fn(e.URL(), e.Address())
 	// Read the usage before stopping: a response still being relayed when the model exits cannot be
 	// counted, and Close is what ends it.
 	read := p.Usage()
-	// A failure to stop the proxy is part of the run's outcome, not a diagnostic to drop.
-	err = errors.Join(err, p.Close())
+	domains := e.Domains()
+	// A failure to stop either proxy is part of the run's outcome, not a diagnostic to drop.
+	err = errors.Join(err, e.Close(), p.Close())
 
-	return usage.Use(reported(read)), err
+	return usage.Use(reported(read)), domains, err
+}
+
+// egress starts the run's egress proxy with the role's policy, forwarding its API calls to apiURL.
+func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
+	start := d.Egress
+	if start == nil {
+		start = func(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
+			return egress.Start(ctx, policy, apiURL, d.egressAddr())
+		}
+	}
+
+	return start(ctx, policy, apiURL)
+}
+
+// egressAddr is the loopback address the egress proxy binds.
+func (d Deps) egressAddr() string {
+	if d.EgressAddr == "" {
+		return egress.Loopback
+	}
+
+	return d.EgressAddr
+}
+
+// proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
+// the settings compile, so the run never starts without its egress boundary.
+func proxyPort(addr string) int {
+	parsed, err := url.Parse("http://" + addr)
+	if err != nil {
+		return 0
+	}
+
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		return 0
+	}
+
+	return port
 }
 
 // proxy starts the run's OpenRouter proxy with key on the configured loopback address.
@@ -266,45 +342,57 @@ func exitCode(err error, code int) (int, error) {
 	return code, nil
 }
 
-// runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
+// runImplementer works the issue in a fresh run directory and logs the run's one usage line, even
 // when the run failed.
 func runImplementer(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-) error {
-	var usage opencode.Usage
+) (err error) {
+	var (
+		usage   opencode.Usage
+		domains []string
+	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Implementer, number, func(db string) error {
-		var err error
-
-		usage, err = implement(ctx, d, repo, agent, retro, number, db)
-
+	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Implementer, number)
+	if err != nil {
 		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Implementer, repo, number, d.Host, agent, usage))
+	}
+
+	defer func() { err = errors.Join(err, files.remove()) }()
+
+	usage, domains, err = implement(ctx, d, repo, agent, retro, number, files)
+	d.logUsage(opencode.NewUsageReport(workflow.Implementer, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	return err
 }
 
-// implement clones, runs the model, applies its output, and writes the retro.
+// implement clones, runs the model under the sandbox, applies its output, and writes the retro.
 func implement(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
-) (opencode.Usage, error) {
-	sec, err := readSecrets(d.Settings, workflow.Implementer)
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	files sandboxFiles,
+) (opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return implementRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Implementer)
+	if err != nil {
+		return opencode.Usage{}, nil, err
+	}
+
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+		return implementRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, files)
 	})
 }
 
-// implementRun is the Implementer's work, with its proxy already up.
+// implementRun is the Implementer's work, with its proxies already up.
 func implementRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, retro config.Budget, number int, files sandboxFiles,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Implementer, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Implementer, agent, number,
+		files.db(workflow.Implementer))
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -325,18 +413,20 @@ func implementRun(
 		return opencode.Usage{}, err
 	}
 
-	docs, err := prompt.ReadRepoDocs(paths.workdir)
+	implementerPrompt, err := buildImplementerPrompt(ctx, j.c, repo, j.issue, paths.workdir, feedback, paths.out)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
-	thread, err := guidance(ctx, j.c, repo, number)
-	if err != nil {
+	if s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, repo, "", files, workflow.Implementer, paths.workdir, paths.out,
+		[]string{retroPath(d.Settings.WorkRoot, number, workflow.Implementer)}, network, proxyAddr,
+	); err != nil {
 		return opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread, paths.out),
+		Role: workflow.Implementer, Prompt: implementerPrompt,
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
@@ -359,6 +449,24 @@ func implementRun(
 	return res.Usage.Add(s.retroEpilogue(
 		ctx, j, repo, number, workflow.Implementer, res.Session, s.headKey(ctx), nil, retro,
 	)), nil
+}
+
+// buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
+// and the comments that woke the issue.
+func buildImplementerPrompt(
+	ctx context.Context, c github.Client, repo string, issue workflow.Issue, workdir, feedback, out string,
+) (string, error) {
+	docs, err := prompt.ReadRepoDocs(workdir)
+	if err != nil {
+		return "", err
+	}
+
+	thread, err := guidance(ctx, c, repo, issue.Number)
+	if err != nil {
+		return "", err
+	}
+
+	return prompt.Implementer(docs, repo, issue, feedback, thread, out), nil
 }
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
@@ -655,43 +763,54 @@ func openPR(
 	return &pr, nil
 }
 
-// runResearcher researches the ticket in a fresh state directory and logs the run's one usage line,
+// runResearcher researches the ticket in a fresh sandbox directory and logs the run's one usage line,
 // even when the run failed.
 func runResearcher(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-) error {
-	var usage opencode.Usage
+) (err error) {
+	var (
+		usage   opencode.Usage
+		domains []string
+	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Researcher, number, func(db string) error {
-		var err error
-
-		usage, err = research(ctx, d, repo, agent, retro, number, db)
-
+	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Researcher, number)
+	if err != nil {
 		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Researcher, repo, number, d.Host, agent, usage))
+	}
+
+	defer func() { err = errors.Join(err, files.remove()) }()
+
+	usage, domains, err = research(ctx, d, repo, agent, retro, number, files.db(workflow.Researcher), files)
+	d.logUsage(opencode.NewUsageReport(workflow.Researcher, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	return err
 }
 
-// research clones, runs the model, applies its findings, and writes the retro.
+// research clones, runs the model under the sandbox, applies its findings, and writes the retro.
 func research(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
-) (opencode.Usage, error) {
-	sec, err := readSecrets(d.Settings, workflow.Researcher)
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	db string, files sandboxFiles,
+) (opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return researchRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Researcher)
+	if err != nil {
+		return opencode.Usage{}, nil, err
+	}
+
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+		return researchRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, db, files)
 	})
 }
 
-// researchRun is the Researcher's work, with its proxy already up.
+// researchRun is the Researcher's work, with its proxies already up.
 func researchRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, retro config.Budget, number int, db string, files sandboxFiles,
 ) (opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Researcher, agent, number, db)
 	if err != nil {
@@ -703,20 +822,7 @@ func researchRun(
 		return opencode.Usage{}, err
 	}
 
-	s := newSession(d, j, paths.workdir, []string{
-		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
-	})
-
-	if err := s.clone(ctx, repo); err != nil {
-		return opencode.Usage{}, err
-	}
-
-	docs, err := prompt.ReadRepoDocs(paths.workdir)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	thread, err := guidance(ctx, j.c, repo, number)
+	s, docs, thread, err := researchContext(ctx, d, j, sec, repo, number, paths, files, network, proxyAddr)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -746,6 +852,39 @@ func researchRun(
 	}
 	// The output is applied: the retro is the run's epilogue and never changes its outcome.
 	return s.researchOutcome(ctx, j, repo, number, res, sha, nil, retro)
+}
+
+// researchContext clones the repository, reads its docs and the ticket's guidance, and puts the
+// Researcher's session inside its sandbox. The clone and the reads are foreman's, outside the
+// sandbox; only the model and its retro run inside.
+func researchContext(
+	ctx context.Context, d Deps, j job, sec secrets, repo string, number int, paths researcherFiles,
+	files sandboxFiles, network sandbox.Network, proxyAddr string,
+) (session, []prompt.Doc, []workflow.Item, error) {
+	s := newSession(d, j, paths.workdir, []string{
+		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
+	})
+
+	if err := s.clone(ctx, repo); err != nil {
+		return session{}, nil, nil, err
+	}
+
+	docs, err := prompt.ReadRepoDocs(paths.workdir)
+	if err != nil {
+		return session{}, nil, nil, err
+	}
+
+	thread, err := guidance(ctx, j.c, repo, number)
+	if err != nil {
+		return session{}, nil, nil, err
+	}
+
+	s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, repo, "", files, workflow.Researcher, paths.workdir, paths.out,
+		[]string{retroPath(d.Settings.WorkRoot, number, workflow.Researcher)}, network, proxyAddr,
+	)
+
+	return s, docs, thread, err
 }
 
 // researchOutcome folds a research run's retro into its usage and returns the run's failure.
@@ -969,18 +1108,22 @@ func runReviewer(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
 ) (int, error) {
 	var (
-		usage opencode.Usage
-		code  int
+		usage   opencode.Usage
+		domains []string
+		code    int
+		err     error
 	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Reviewer, number, func(db string) error {
-		var err error
+	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Reviewer, number)
+	if err != nil {
+		return 1, err
+	}
 
-		code, usage, err = review(ctx, d, repo, agent, retro, number, db)
+	defer func() { err = errors.Join(err, files.remove()) }()
 
-		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Reviewer, repo, number, d.Host, agent, usage))
+	code, usage, domains, err = review(ctx, d, repo, agent, retro, number, files)
+	d.logUsage(opencode.NewUsageReport(workflow.Reviewer, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	if err != nil && code == 0 {
 		code = 1
@@ -989,33 +1132,42 @@ func runReviewer(
 	return code, err
 }
 
-// review clones the pull request's branch, runs the review, posts it, and returns the verdict code.
+// review clones the pull request's branch, runs the review under the sandbox, posts it, and returns
+// the verdict code.
 func review(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
-) (int, opencode.Usage, error) {
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	files sandboxFiles,
+) (int, opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
+	if err != nil {
+		return 1, opencode.Usage{}, nil, err
+	}
+
 	sec, err := readSecrets(d.Settings, workflow.Reviewer)
 	if err != nil {
-		return 1, opencode.Usage{}, err
+		return 1, opencode.Usage{}, nil, err
 	}
 
 	var code int
 
-	usage, err := d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
-		code = runCode
+	usage, domains, err := d.withProxy(
+		ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+			runCode, u, e := reviewRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, files)
+			code = runCode
 
-		return u, e
-	})
+			return u, e
+		})
 
-	return code, usage, err
+	return code, usage, domains, err
 }
 
-// reviewRun is the Reviewer's work, with its proxy already up.
+// reviewRun is the Reviewer's work, with its proxies already up.
 func reviewRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, retro config.Budget, number int, files sandboxFiles,
 ) (int, opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number,
+		files.db(workflow.Reviewer))
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
@@ -1034,6 +1186,13 @@ func reviewRun(
 
 	sha, err := s.checkoutForReview(ctx, repo, workflow.BranchName(number))
 	if err != nil {
+		return 1, opencode.Usage{}, err
+	}
+
+	if s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, repo, base, files, workflow.Reviewer, paths.workdir, paths.out,
+		[]string{paths.spec, retroPath(d.Settings.WorkRoot, number, workflow.Reviewer)}, network, proxyAddr,
+	); err != nil {
 		return 1, opencode.Usage{}, err
 	}
 

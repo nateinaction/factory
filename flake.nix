@@ -8,6 +8,10 @@
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
 
+      # The sandbox backend: @anthropic-ai/sandbox-runtime. Pinned to the exact version the worker
+      # hosts install (factory_srt_version in group_vars), so the dev shell and a host agree.
+      srtVersion = "0.0.81";
+
       # vercel-labs/emulate is a Node package and not in nixpkgs. Pin the npm
       # version and its lock file, so the tests' GitHub emulator is reproducible.
       emulate = pkgs: pkgs.buildNpmPackage {
@@ -39,7 +43,10 @@
         default = foreman;
       });
 
-      devShells = forAll (pkgs: {
+      devShells = forAll (pkgs: assert pkgs.lib.assertMsg
+        (pkgs.sandbox-runtime.version == srtVersion)
+        "nixpkgs provides sandbox-runtime ${pkgs.sandbox-runtime.version}, but the factory pins ${srtVersion}";
+      {
         default = pkgs.mkShell {
           packages = [
             pkgs.ansible
@@ -48,6 +55,8 @@
             pkgs.go_1_27
             pkgs.golangci-lint
             pkgs.govulncheck
+            # The sandbox backend every model run is wrapped in; also runs the acceptance test.
+            pkgs.sandbox-runtime
             # Pinned to 4.7.0 by the locked nixpkgs revision (see flake.lock).
             pkgs.pre-commit
             # foreman's tests run the GitHub emulator for their state.

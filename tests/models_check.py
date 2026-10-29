@@ -181,6 +181,9 @@ def main(out: str) -> None:
     assert_no_ask()
     assert CFG["retro"] == {"steps": RETRO[0], "deadline_minutes": RETRO[1]}, "retro budget"
     assert CFG["dead_run_margin_minutes"] == DEAD_RUN_MARGIN, "dead-run margin"
+    for role in ROLES:
+        egress = CFG["agents"][role]["egress"]["allowed_domains"]
+        assert isinstance(egress, list), role + ": egress is not a list"
 
 
 main(sys.argv[1])

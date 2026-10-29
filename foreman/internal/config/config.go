@@ -25,6 +25,14 @@ type Settings struct {
 	KeyFile string `mapstructure:"key-file"`
 	// WorkRoot holds clones and scratch files.
 	WorkRoot string `mapstructure:"work-root"`
+	// Home is the real home directory, hidden from every sandboxed run.
+	Home string `mapstructure:"home"`
+	// DaguHome is dagu's home directory, hidden from every sandboxed run.
+	DaguHome string `mapstructure:"dagu-home"`
+	// Srt is the sandbox backend binary every model process runs under.
+	Srt string `mapstructure:"srt"`
+	// Skills is the factory's forked skills directory, read-only inside every sandbox.
+	Skills string `mapstructure:"skills"`
 	// Self is foreman's installed path, re-run as the factory user.
 	Self string `mapstructure:"self"`
 	// ConfigFile is the role-written JSON config.
@@ -53,6 +61,10 @@ func SettingsViper(home string) *viper.Viper {
 	v.SetDefault("token-dir", "/run/factory")
 	v.SetDefault("key-file", filepath.Join(home, ".config/factory-agent/openrouter-key"))
 	v.SetDefault("work-root", filepath.Join(home, "work"))
+	v.SetDefault("home", home)
+	v.SetDefault("dagu-home", "/var/lib/dagu")
+	v.SetDefault("srt", "/nix/var/nix/profiles/default/bin/srt")
+	v.SetDefault("skills", filepath.Join(home, ".config/opencode/skills"))
 	v.SetDefault("self", "/usr/local/bin/foreman")
 	v.SetDefault("config", "/etc/factory-agent/config.json")
 	v.SetDefault("token-helper", "/usr/local/bin/github-app-token")
@@ -99,8 +111,17 @@ type AgentConfig struct {
 	ContextCap int `json:"context_cap" mapstructure:"context_cap"`
 	// Compaction is whether opencode compacts instead of overflowing.
 	Compaction bool `json:"compaction" mapstructure:"compaction"`
+	// Egress is the role's network policy; an empty allowlist is open egress.
+	Egress EgressConfig `json:"egress" mapstructure:"egress"`
 	// Budget is the agent role's step cap and wall-clock deadline.
 	Budget `mapstructure:",squash"`
+}
+
+// EgressConfig is one agent role's egress allowlist, rendered from `factory_egress` by Ansible. A
+// repository cannot change it.
+type EgressConfig struct {
+	// AllowedDomains limits egress when non-empty. Empty means open egress, the default.
+	AllowedDomains []string `json:"allowed_domains" mapstructure:"allowed_domains"`
 }
 
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
