@@ -21,6 +21,8 @@
     - dagu
     - role: collector
       when: factory_collector | bool
+    - role: telemetry
+      when: factory_telemetry | bool and dagu_mode == 'server'
     - role: github_app
       when: factory_github_app | bool
     - role: agent

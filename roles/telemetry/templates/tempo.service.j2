@@ -1,0 +1,24 @@
+[Unit]
+Description=Tempo (foreman telemetry traces, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=tempo
+ExecStart=/nix/var/nix/profiles/default/bin/tempo -config.file=/etc/tempo/tempo.yaml
+Environment=GOMEMLIMIT={{ (factory_telemetry_memory_max_mib.tempo * 0.8) | int }}MiB
+MemoryMax={{ factory_telemetry_memory_max_mib.tempo }}M
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

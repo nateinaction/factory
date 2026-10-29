@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# What the telemetry role renders to: every store bound to loopback and bounded by age or size, the
+# datasources linked so a run's trace id leads to its metrics and diagnostics, and the memory the
+# services may use fitting the budget. Run against the real group_vars; no host needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+}
+
+# conf <python>: runs the assertions with the parsed configs and the group_vars `v` in scope.
+conf() {
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+tempo, loki, ds, v = d["tempo"], d["loki"], d["datasources"], d["v"]
+exec(sys.argv[2])
+' "$out/config.json" "$1"
+}
+
+if ! ansible-playbook "$root/tests/telemetry.yml" >"$out/.log" 2>&1; then
+  cat "$out/.log" >&2
+  echo "FAIL render playbook" >&2
+  exit 1
+fi
+
+# --- not reachable off the tailnet: every listener is loopback ---
+check "nothing binds a wildcard address" \
+  bash -c "! grep -E '0\.0\.0\.0|\[::\]' '$out'/*.yaml '$out'/grafana.ini '$out'/*.service"
+check "tempo listens on loopback only" conf '
+s = tempo["server"]
+assert s["http_listen_address"] == "127.0.0.1" and s["grpc_listen_address"] == "127.0.0.1"
+g = tempo["distributor"]["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"]
+assert g == "127.0.0.1:%d" % v["factory_telemetry_tempo_otlp_port"], g
+'
+check "loki listens on loopback only" conf '
+s = loki["server"]
+assert s["http_listen_address"] == "127.0.0.1" and s["grpc_listen_address"] == "127.0.0.1"
+'
+check "grafana listens on loopback only" grep -Fxq 'http_addr = 127.0.0.1' "$out/grafana.ini"
+check "prometheus listens on loopback only" \
+  grep -Fq -- '--web.listen-address=127.0.0.1:' "$out/prometheus.service"
+check "prometheus accepts OTLP and stores exemplars" bash -c "
+  grep -Fq -- '--web.enable-otlp-receiver' '$out/prometheus.service' &&
+  grep -Fq -- 'exemplar-storage' '$out/prometheus.service'"
+
+# --- every store has a retention bound ---
+check "prometheus retention is bounded by age and size" bash -c "
+  grep -Eq -- '--storage.tsdb.retention.time=[0-9]+[dh]' '$out/prometheus.service' &&
+  grep -Eq -- '--storage.tsdb.retention.size=[0-9]+[KMG]B' '$out/prometheus.service'"
+check "tempo retention is bounded by age" conf '
+assert tempo["compactor"]["compaction"]["block_retention"].endswith("h")
+'
+check "loki retention is bounded by age and enforced" conf '
+assert loki["limits_config"]["retention_period"].endswith("h")
+assert loki["compactor"]["retention_enabled"] is True
+'
+
+# --- a run is found from its trace id ---
+check "tempo links a trace to its logs and metrics" conf '
+t = next(d for d in ds["datasources"] if d["type"] == "tempo")
+j = t["jsonData"]
+assert j["tracesToLogsV2"]["datasourceUid"] == "loki"
+assert j["tracesToMetrics"]["datasourceUid"] == "prometheus"
+'
+check "loki turns a trace id in a diagnostic into a Tempo link" conf '
+l = next(d for d in ds["datasources"] if d["type"] == "loki")
+f = l["jsonData"]["derivedFields"][0]
+assert f["datasourceUid"] == "tempo" and f["matcherType"] == "label" and f["matcherRegex"] == "trace_id"
+'
+check "datasource uids are the ones the links name" conf '
+assert {d["uid"] for d in ds["datasources"]} == {"prometheus", "tempo", "loki"}
+'
+
+# --- memory budget ---
+check "service memory limits fit the budget" conf '
+total = sum(v["factory_telemetry_memory_max_mib"].values())
+assert total <= v["factory_telemetry_memory_budget_mib"], total
+'
+for svc in prometheus tempo loki grafana; do
+  check "$svc unit is memory-capped and sandboxed" bash -c "
+    grep -Eq '^MemoryMax=[0-9]+M' '$out/$svc.service' &&
+    grep -Fxq 'DynamicUser=yes' '$out/$svc.service' &&
+    grep -Fxq 'NoNewPrivileges=true' '$out/$svc.service'"
+done
+
+[ "$failures" -eq 0 ]
