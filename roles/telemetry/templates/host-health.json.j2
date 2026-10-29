@@ -46,7 +46,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, host_name) (rate(traces_span_metrics_duration_bucket{span_name=~\"^($run_span)$\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, host_name) (rate(traces_span_metrics_duration_bucket{span_name=\"$run_span\"}[$__rate_interval])))",
           "legendFormat": "p95 ${__field.labels.host_name}",
           "range": true,
           "refId": "A"

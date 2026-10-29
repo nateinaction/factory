@@ -273,6 +273,7 @@ factory_collector_allowed_attributes:
   - host.name
   - factory.agent_role
   - factory.outcome
+  - factory.worker_host
   # Host health's metric attributes: the disk's mountpoint, device and filesystem type, and the
   # throttling bit's kind and state (now or since boot).
   - mountpoint
@@ -331,9 +332,9 @@ factory_telemetry_memory_max_mib:
   tempo: 192
   loki: 192
   grafana: 160
-# A regex for a foreman run's root span name. The spanmetrics connector turns every span into
-# traces_span_metrics_duration (in Prometheus, traces_span_metrics_duration_bucket); the dashboard's
-# run-duration panel keeps only names matching this, so it reports the run, not its stages. It covers
-# the names the tracing tickets may pick; an operator can override it in the dashboard without a
+# A foreman run's root span name (telemetry.RootSpanName("run")). The spanmetrics connector turns
+# every span into traces_span_metrics_duration (in Prometheus,
+# traces_span_metrics_duration_bucket); the dashboard's run-duration panel keeps only this name, so
+# it reports the run, not its stages. An operator can override it in the dashboard without a
 # redeploy.
-factory_telemetry_run_span: "(foreman[. ])?run"
+factory_telemetry_run_span: foreman.run

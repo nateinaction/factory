@@ -66,7 +66,7 @@ assert processors.index("transform/host") < processors.index("redaction"), proce
 '
 check "the health metric attributes survive redaction" conf '
 allowed = c["processors"]["redaction"]["allowed_keys"]
-for key in ("host.name", "mountpoint", "fstype", "device", "kind", "state"):
+for key in ("host.name", "factory.worker_host", "mountpoint", "fstype", "device", "kind", "state"):
     assert key in allowed, key
 '
 

@@ -130,8 +130,8 @@ may use is `factory_telemetry_memory_budget_mib`.
 Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
 host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk
 use, so a slow run can be told apart from a hot or throttled host. The run-duration panel matches
-the run's root span (`factory_telemetry_run_span`, a regex that covers `run` and `foreman.run` by
-default); the dashboard's "Run root span" variable overrides it for one view. Every host reports these with its own collector, via
+the run's root span (`factory_telemetry_run_span`, `foreman.run` by default); the dashboard's "Run
+root span" variable overrides it for one view. Every host reports these with its own collector, via
 `host_health` (see `factory_host_health_*`); node_exporter and the collector both listen on loopback.
 
 ## Issue agent
