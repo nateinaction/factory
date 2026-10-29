@@ -20,21 +20,28 @@ type stageSpans struct {
 	attrs  []attribute.KeyValue
 }
 
-// runAttrs is what every span of one run carries. An empty worker host stays empty rather than being
-// guessed.
-func runAttrs(role workflow.Role, ref workflow.IssueRef, model, host string) []attribute.KeyValue {
-	return []attribute.KeyValue{
+// runAttrs is what every span of one run carries. An empty worker host or run id stays empty rather
+// than being guessed.
+func runAttrs(role workflow.Role, ref workflow.IssueRef, model, host, runID string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
 		attribute.String(telemetry.AttrAgentRole, string(role)),
 		attribute.String(telemetry.AttrRepo, ref.Repo.String()),
 		attribute.Int(telemetry.AttrIssue, ref.Number),
 		attribute.String(telemetry.AttrModel, model),
 		attribute.String(telemetry.AttrWorkerHost, host),
 	}
+	if runID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrRunID, runID))
+	}
+
+	return attrs
 }
 
 // spans is the span builder for one run.
 func (r run) spans() stageSpans {
-	return stageSpans{tracer: r.d.tracer(), attrs: runAttrs(r.role, r.spec.ref, r.spec.agent.Model, r.d.Host)}
+	return stageSpans{
+		tracer: r.d.tracer(), attrs: runAttrs(r.role, r.spec.ref, r.spec.agent.Model, r.d.Host, r.d.runID()),
+	}
 }
 
 // start opens a stage span named for the stage. The returned context carries the span, so a stage's
@@ -62,7 +69,7 @@ func markFailureOf(span trace.Span, err error) {
 // run's root span is the process span for the run verb; a run outside one, or under a no-op tracer,
 // records nothing.
 func (r run) annotateRun(ctx context.Context, st opencode.RunStats, usage opencode.Usage) {
-	attrs := append(runAttrs(r.role, r.spec.ref, r.spec.agent.Model, r.d.Host),
+	attrs := append(runAttrs(r.role, r.spec.ref, r.spec.agent.Model, r.d.Host, r.d.runID()),
 		attribute.String(telemetry.AttrOutcome, string(st.Outcome)))
 
 	if st.Attempts > 0 {
@@ -84,6 +91,11 @@ func (r run) annotateRun(ctx context.Context, st opencode.RunStats, usage openco
 
 	if usage.Cached != nil {
 		attrs = append(attrs, attribute.Int(telemetry.AttrCachedTokens, *usage.Cached))
+	}
+
+	// The peak context is what `status` shows against the cap; the cap itself is config, not telemetry.
+	if usage.PeakContext != nil {
+		attrs = append(attrs, attribute.Int(telemetry.AttrPeakContext, *usage.PeakContext))
 	}
 
 	if usage.Cost != nil {

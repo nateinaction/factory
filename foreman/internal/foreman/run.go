@@ -51,7 +51,11 @@ func Run(
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	r := run{d: d, role: role, entry: entry, spec: runSpec{ref: ref, agent: agent, retro: retro, limit: limit}}
+	r := run{
+		d: d, role: role, entry: entry,
+		spec:   runSpec{ref: ref, agent: agent, retro: retro, limit: limit},
+		alerts: newAlertInstruments(d),
+	}
 
 	result, err := r.pipeline(ctx)
 
@@ -167,6 +171,8 @@ type session struct {
 	gitArgv  []string
 	// spans opens the run's stage spans, each carrying the run's attributes.
 	spans stageSpans
+	// alerts are the run's instruments, so a stage of the run records through the same set.
+	alerts alertInstruments
 	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
@@ -206,7 +212,7 @@ func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
 // environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
 // run outside the sandbox; identity adds the committer a run needs.
-func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans) session {
+func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans, alerts alertInstruments) session {
 	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
 
 	return session{
@@ -216,6 +222,7 @@ func newSession(d Deps, j job, workdir string, identity []string, spans stageSpa
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
 		spans:    spans,
+		alerts:   alerts,
 		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
@@ -394,8 +401,11 @@ func startCode(err error, code int) int {
 }
 
 // emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
-// and is never retried, so the run is worth recording on its own.
-func emitStepCap(ctx context.Context, d Deps, role workflow.Role, repo workflow.Repo, number int, err error) {
+// and is never retried, so the run is worth recording on its own. It records through the run's own
+// instruments, built when the run started.
+func emitStepCap(
+	ctx context.Context, d Deps, alerts alertInstruments, role workflow.Role, repo workflow.Repo, number int, err error,
+) {
 	if opencode.KindOf(err) != opencode.FailStepCap {
 		return
 	}
@@ -404,7 +414,7 @@ func emitStepCap(ctx context.Context, d Deps, role workflow.Role, repo workflow.
 		security.Scope(d.log(), string(role), repo.String(), number),
 		security.EventRunCapped, security.RunStepCap, "",
 	)
-	newAlertInstruments(d).securityEvent(ctx, role, repo, security.EventRunCapped, security.RunStepCap)
+	alerts.securityEvent(ctx, role, repo, number, security.EventRunCapped, security.RunStepCap)
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -517,25 +527,12 @@ func outputProblem(file string, err error) error {
 	}
 }
 
-// outputOutcome names the class of problem a rejected output file carried, for its security event.
-func outputOutcome(problem workflow.OutputProblem) security.Outcome {
-	switch problem {
-	case workflow.OutputFactoryMarker:
-		return security.OutputFactoryMarker
-	case workflow.OutputUnreadable:
-		return security.OutputUnreadable
-	case workflow.OutputInvalid:
-		return security.OutputInvalid
-	}
-
-	return security.OutputInvalid
-}
-
 // rejectOutput posts every problem with a rejected output file in one comment, emits the rejection's
 // security event, then returns the failure the run reports. Nothing in the file is applied: the issue
 // goes to failed instead.
 func rejectOutput(
-	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, number int, role workflow.Role, err error,
+	ctx context.Context, d Deps, alerts alertInstruments, c github.Client, repo workflow.Repo, number int,
+	role workflow.Role, err error,
 ) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
@@ -543,13 +540,15 @@ func rejectOutput(
 	}
 
 	// The event carries the run and the class of problem, never the file's text: it is the model's.
+	// The class is workflow.OutputProblem's own value, which is also the security outcome: one set of
+	// values, so there is no bridge to fall through.
+	outcome := security.Outcome(rejected.Problem)
+
 	security.Emit(
 		security.Scope(d.log(), string(role), repo.String(), number),
-		security.EventOutputRejected, outputOutcome(rejected.Problem), "",
+		security.EventOutputRejected, outcome, "",
 	)
-	newAlertInstruments(d).securityEvent(
-		ctx, role, repo, security.EventOutputRejected, outputOutcome(rejected.Problem),
-	)
+	alerts.securityEvent(ctx, role, repo, number, security.EventOutputRejected, outcome)
 
 	lines := []string{
 		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",

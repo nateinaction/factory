@@ -21,6 +21,7 @@ import (
 func redrawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
 	repo workflow.Repo, roles []workflow.Role, waiting map[workflow.Role]bool, role workflow.Role,
+	alerts alertInstruments,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
@@ -44,7 +45,7 @@ func redrawDashboard(
 
 	run := &commandRun{
 		d: d, cfg: cfg, c: c, perms: perms, repo: repo, role: role,
-		issues: issues, threads: threads, reports: reports,
+		issues: issues, threads: threads, reports: reports, alerts: alerts,
 	}
 	state, settle := run.run(ctx, state, number, found)
 

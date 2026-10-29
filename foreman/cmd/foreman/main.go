@@ -75,7 +75,7 @@ func run() int {
 	}
 
 	sudo := underSudo(os.Getenv("SUDO_UID"), os.Getuid(), os.Geteuid())
-	code := executeTraced(ctx, d.Tracer, logger, root, os.Args[1:], sudo)
+	code := executeTraced(ctx, d.Tracer, logger, root, os.Args[1:], sudo, d.RunID)
 
 	// Flush after the exit code is settled; the flush is bounded and never changes the code.
 	tel.Shutdown(ctx)
@@ -86,7 +86,8 @@ func run() int {
 // executeTraced runs one command line under the process's one root span, named for its verb, and
 // returns the exit code. The span ends only after the failure is logged, so that record carries its ids.
 func executeTraced(
-	ctx context.Context, tracer trace.Tracer, logger *slog.Logger, root *cobra.Command, args []string, sudo bool,
+	ctx context.Context, tracer trace.Tracer, logger *slog.Logger, root *cobra.Command, args []string,
+	sudo bool, runID string,
 ) int {
 	verb := verbOf(root, args)
 
@@ -97,8 +98,13 @@ func executeTraced(
 		logger.WarnContext(ctx, "ignoring malformed trace context", "reason", "malformed traceparent")
 	}
 
-	ctx, span := tracer.Start(ctx, telemetry.RootSpanName(verb),
-		trace.WithAttributes(attribute.String(telemetry.AttrVerb, verb)))
+	attrs := []attribute.KeyValue{attribute.String(telemetry.AttrVerb, verb)}
+	// The run id ties every process of one dagu run together; `status` finds a run's trace by it.
+	if runID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrRunID, runID))
+	}
+
+	ctx, span := tracer.Start(ctx, telemetry.RootSpanName(verb), trace.WithAttributes(attrs...))
 	defer span.End()
 
 	cmd, err := executeCommand(ctx, root, args, sudo)

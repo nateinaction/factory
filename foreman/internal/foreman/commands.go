@@ -359,7 +359,7 @@ func prepareRepo(
 
 	// The dashboard is best effort: an issue cannot be handed off without the work below it, but a
 	// retro dashboard that cannot be drawn is retried on the next poll.
-	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, waiting, role); err != nil {
+	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, waiting, role, inst.alerts); err != nil {
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 
@@ -375,7 +375,7 @@ func prepareRepo(
 			continue
 		}
 
-		if err := settleIssue(ctx, d, cfg, c, perms, repo, issue); err != nil {
+		if err := settleIssue(ctx, d, cfg, c, perms, inst, repo, issue); err != nil {
 			// One unreadable issue fails closed for that issue; the poll carries on.
 			d.log().Warn("skipping an issue the poll cannot read", "repo", repo, "issue", issue.Number, "error", err)
 		}
@@ -410,9 +410,9 @@ func measureIssues(ctx context.Context, inst pollInstruments, repo workflow.Repo
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
 func settleIssue(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
-	repo workflow.Repo, issue workflow.Issue,
+	inst pollInstruments, repo workflow.Repo, issue workflow.Issue,
 ) error {
-	dead, err := failDeadRun(ctx, d, cfg, c, repo, issue)
+	dead, err := failDeadRun(ctx, d, cfg, c, inst, repo, issue)
 	if err != nil || dead {
 		return err
 	}
@@ -424,7 +424,8 @@ func settleIssue(
 // margin to factory:failed, once, with a marker. A missing deadline or timeline event leaves the
 // issue alone: an age it cannot read is never an age that fails a run.
 func failDeadRun(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, inst pollInstruments,
+	repo workflow.Repo, issue workflow.Issue,
 ) (bool, error) {
 	role, state, ok := workflow.RunningState(issue)
 	if !ok {
@@ -475,7 +476,7 @@ func failDeadRun(
 
 	_, err = d.client(token).Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 	if err == nil {
-		newAlertInstruments(d).runReaped(ctx, role, repo)
+		inst.alerts.runReaped(ctx, role, repo)
 	}
 
 	return true, err
@@ -1294,8 +1295,13 @@ func runAsFactory(
 	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
 	// The factory half records the same transition markers, so both halves must name one run.
-	// sudo's env_reset drops the environment, so the sudoers rule keeps each variable by name.
+	// The factory half records the same transition markers, so both halves must name one run.
+	// sudo's env_reset drops the environment, so the sudoers rule keeps each variable by name. The
+	// OTEL_* export variables go too: they are telemetry, never a setting, so a caller cannot use
+	// them to point the factory half at another configuration.
 	env := map[string]string{"DAG_RUN_ID": d.runID()}
+	maps.Copy(env, telemetry.ExportEnv(os.Getenv))
+
 	if traceParent := telemetry.TraceParent(ctx); traceParent != "" {
 		env[telemetry.TraceParentVar] = traceParent
 	}

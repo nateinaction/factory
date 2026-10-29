@@ -71,6 +71,22 @@ var _ = Describe("Start", func() {
 			h.expectLeakFree("minted-token")
 		})
 
+		It("passes the telemetry export environment to the factory half across sudo", func() {
+			GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+			GinkgoT().Setenv("OTEL_SERVICE_NAME", "foreman")
+
+			h.acceptWrites()
+			h.sudoExit(0)
+
+			Expect(start(workflow.Implementer)).To(BeZero())
+
+			sudo := h.runner.find("sudo")
+			Expect(sudo).To(HaveLen(1), "no factory half to export its telemetry")
+			Expect(sudo[0].Env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318"),
+				"sudo drops the environment, so start must pass the endpoint explicitly")
+			Expect(sudo[0].Env).To(HaveKeyWithValue("OTEL_SERVICE_NAME", "foreman"))
+		})
+
 		It("passes its trace context to the factory half across sudo", func() {
 			tracer := sdktrace.NewTracerProvider().Tracer("test")
 			h.deps.Tracer = tracer

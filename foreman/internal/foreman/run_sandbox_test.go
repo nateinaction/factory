@@ -140,6 +140,23 @@ var _ = Describe("the sandbox", func() {
 		}
 	})
 
+	It("never lets an OTEL_ variable reach the model", func() {
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+		GinkgoT().Setenv("OTEL_SERVICE_NAME", "foreman")
+		GinkgoT().Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=test")
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+
+		Expect(h.opencodeCalls()).NotTo(BeEmpty())
+
+		for _, c := range h.opencodeCalls() {
+			for name := range c.Env {
+				Expect(name).NotTo(HavePrefix("OTEL_"),
+					"the model learned where foreman exports telemetry")
+			}
+		}
+	})
+
 	It("deletes the run's HOME, XDG directories and toolchain afterwards", func() {
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 		Expect(h.runDir(workflow.Implementer, 5)).NotTo(BeAnExistingFile())

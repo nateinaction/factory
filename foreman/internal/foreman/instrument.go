@@ -6,7 +6,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
@@ -16,11 +15,13 @@ import (
 )
 
 // pollInstruments are one poll's measurements. Every method is safe on a no-op meter: a measurement
-// never fails or delays the poll.
+// never fails or delays the poll. The alert instruments are built once here too, so a poll that reaps
+// a dead run records it with the same instruments the rest of the poll holds.
 type pollInstruments struct {
 	issues   metric.Int64Counter
 	claims   metric.Int64Counter
 	capacity metric.Int64Gauge
+	alerts   alertInstruments
 }
 
 // newPollInstruments builds the poll's instruments. An instrument that cannot be built records
@@ -29,51 +30,20 @@ func newPollInstruments(d Deps) pollInstruments {
 	m := d.meter()
 
 	return pollInstruments{
-		issues:   int64Counter(m, telemetry.MetricPollIssues, "Open issues in each factory state, per repository."),
-		claims:   int64Counter(m, telemetry.MetricPollClaims, "Issues a poll claimed, per agent role and repository."),
-		capacity: int64Gauge(m, telemetry.MetricPollCapacity, "Run capacity left for an agent role."),
+		issues: telemetry.Int64Counter(m, telemetry.MetricPollIssues,
+			"Open issues in each factory state, per repository."),
+		claims: telemetry.Int64Counter(m, telemetry.MetricPollClaims,
+			"Issues a poll claimed, per agent role and repository."),
+		capacity: telemetry.Int64Gauge(m, telemetry.MetricPollCapacity,
+			"Run capacity left for an agent role."),
+		alerts: newAlertInstruments(d),
 	}
-}
-
-// int64Counter builds a counter, falling back to a no-op instrument the meter refuses it.
-func int64Counter(m metric.Meter, name, description string) metric.Int64Counter {
-	counter, err := m.Int64Counter(name, metric.WithDescription(description))
-	if err != nil {
-		counter, _ = metricnoop.NewMeterProvider().Meter("").Int64Counter(name)
-
-		return counter
-	}
-
-	return counter
-}
-
-// int64Gauge builds a gauge, falling back to a no-op instrument the meter refuses it.
-func int64Gauge(m metric.Meter, name, description string) metric.Int64Gauge {
-	gauge, err := m.Int64Gauge(name, metric.WithDescription(description))
-	if err != nil {
-		gauge, _ = metricnoop.NewMeterProvider().Meter("").Int64Gauge(name)
-
-		return gauge
-	}
-
-	return gauge
-}
-
-// float64Counter builds a counter, falling back to a no-op instrument the meter refuses it.
-func float64Counter(m metric.Meter, name, description string) metric.Float64Counter {
-	counter, err := m.Float64Counter(name, metric.WithDescription(description))
-	if err != nil {
-		counter, _ = metricnoop.NewMeterProvider().Meter("").Float64Counter(name)
-
-		return counter
-	}
-
-	return counter
 }
 
 // alertInstruments are the measurements the alert rules read. Every instrument is safe on a no-op
-// meter, so recording one never fails or delays a run. An issue number is never a label: the issue is
-// a span attribute, and an alert's trace link carries the operator to it.
+// meter, so recording one never fails or delays a run. A per-event measurement carries the issue and
+// the trace that raised it, so its alert can name the issue and link straight to the trace; an
+// aggregate measurement carries only the agent role and repository.
 type alertInstruments struct {
 	security metric.Int64Counter
 	outcomes metric.Int64Counter
@@ -86,38 +56,51 @@ func newAlertInstruments(d Deps) alertInstruments {
 	m := d.meter()
 
 	return alertInstruments{
-		security: int64Counter(m, telemetry.MetricSecurityEvents,
-			"Security events by agent role, repository, event and outcome."),
-		outcomes: int64Counter(m, telemetry.MetricRunOutcomes,
+		security: telemetry.Int64Counter(m, telemetry.MetricSecurityEvents,
+			"Security events by agent role, repository, issue, event, outcome and trace."),
+		outcomes: telemetry.Int64Counter(m, telemetry.MetricRunOutcomes,
 			"Finished runs by agent role, repository and outcome."),
-		cost: float64Counter(m, telemetry.MetricRunCost,
+		cost: telemetry.Float64Counter(m, telemetry.MetricRunCost,
 			"Model cost in US dollars by agent role, repository and model."),
-		reaped: int64Counter(m, telemetry.MetricRunsReaped,
+		reaped: telemetry.Int64Counter(m, telemetry.MetricRunsReaped,
 			"Dead runs a poll called failed by agent role and repository."),
 	}
 }
 
-// securityEvent records one security event. Its issue is a span attribute, so it is not a label.
+// securityEvent records one security event raised by the run working issue.
 func (a alertInstruments) securityEvent(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, event string, outcome security.Outcome,
+	ctx context.Context, role workflow.Role, repo workflow.Repo, issue int, event string, outcome security.Outcome,
 ) {
-	a.securityEvents(ctx, role, repo, event, outcome, 1)
+	a.securityEvents(ctx, role, repo, issue, event, outcome, 1)
 }
 
-// securityEvents records n refused requests of one event and outcome.
+// securityEvents records n refused requests of one event and outcome, raised by one run. The issue
+// and the trace id are labels on purpose: #132's acceptance criterion is that a per-event alert names
+// the issue and links to the trace that raised it, and a Prometheus rule can template only labels.
+// Every other metric keeps the issue out: see telemetry.AttrIssue.
 func (a alertInstruments) securityEvents(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, event string, outcome security.Outcome, n int64,
+	ctx context.Context, role workflow.Role, repo workflow.Repo, issue int, event string,
+	outcome security.Outcome, n int64,
 ) {
 	if n <= 0 {
 		return
 	}
 
-	a.security.Add(ctx, n, metric.WithAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String(telemetry.AttrAgentRole, string(role)),
 		attribute.String(telemetry.AttrRepo, repo.String()),
 		attribute.String(telemetry.AttrEvent, event),
 		attribute.String(telemetry.AttrOutcome, string(outcome)),
-	))
+	}
+	if issue > 0 {
+		attrs = append(attrs, attribute.Int(telemetry.AttrIssue, issue))
+	}
+
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		attrs = append(attrs, attribute.String(telemetry.AttrTraceID, sc.TraceID().String()))
+	}
+
+	a.security.Add(ctx, n, metric.WithAttributes(attrs...))
 }
 
 // runOutcome records how one run ended.
@@ -155,23 +138,28 @@ func (a alertInstruments) runReaped(ctx context.Context, role workflow.Role, rep
 }
 
 // recordAlerts records what the alert rules read for one finished run: its outcome and cost, and
-// every request its two proxies refused, by event and outcome. The run's issue stays a span
-// attribute, so an alert reaches it through the run's trace.
+// every request its two proxies refused, by event and outcome. The alerts instruments are the run's
+// own, built once when the run started. The run's issue and trace ride on each security event, so its
+// alert reaches both directly.
 func (r run) recordAlerts(
 	ctx context.Context, st opencode.RunStats, usage opencode.Usage,
 	egress, key map[security.Outcome]int,
 ) {
-	alerts := newAlertInstruments(r.d)
+	alerts := r.alerts
 
 	alerts.runOutcome(ctx, r.role, r.spec.ref.Repo, st.Outcome)
 	alerts.runCost(ctx, r.role, r.spec.ref.Repo, r.spec.agent.Model, usage.Cost)
 
 	for outcome, n := range egress {
-		alerts.securityEvents(ctx, r.role, r.spec.ref.Repo, security.EventEgressRefused, outcome, int64(n))
+		alerts.securityEvents(
+			ctx, r.role, r.spec.ref.Repo, r.spec.ref.Number, security.EventEgressRefused, outcome, int64(n),
+		)
 	}
 
 	for outcome, n := range key {
-		alerts.securityEvents(ctx, r.role, r.spec.ref.Repo, security.EventKeyProxyRefused, outcome, int64(n))
+		alerts.securityEvents(
+			ctx, r.role, r.spec.ref.Repo, r.spec.ref.Number, security.EventKeyProxyRefused, outcome, int64(n),
+		)
 	}
 }
 

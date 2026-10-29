@@ -15,14 +15,12 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0" // pinned: the GenAI conventions are still in development
 	"go.opentelemetry.io/otel/trace"
-	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // FlushBound is the longest the exit flush waits for the collector, however many exporters there are.
@@ -45,14 +43,17 @@ const (
 	AttrAgentRole = "factory.agent_role"
 	// AttrRepo is the repository a span, event or measurement belongs to.
 	AttrRepo = "factory.repo"
-	// AttrIssue is the issue number a span or event belongs to. It is never a metric label.
+	// AttrIssue is the issue number a span or event belongs to. It is not a metric label, with one
+	// deliberate exception: a security event's metric carries it so the per-event alert can name the
+	// issue it needs a human to look at (see instrument.go's securityEvents and #132).
 	AttrIssue = "factory.issue"
 	// AttrState is the factory handoff state an issue is in.
 	AttrState = "factory.state"
 	// AttrSkipReason is why a poll left a queue alone.
 	AttrSkipReason = "factory.skip_reason"
-	// AttrModel is the model an agent role's run calls.
-	AttrModel = "factory.model"
+	// AttrModel is the model an agent role's run calls. The GenAI conventions name it, so foreman
+	// uses their key against the pinned semconv version instead of inventing its own.
+	AttrModel = string(semconv.GenAIRequestModelKey)
 	// AttrWorkerHost is the host the run ran on.
 	AttrWorkerHost = "factory.worker_host"
 	// AttrOutcome is how a run ended.
@@ -69,13 +70,20 @@ const (
 	AttrBackoffSeconds = "factory.backoff_seconds"
 	// AttrAttempts is how many times a run called the model.
 	AttrAttempts = "factory.attempts"
-	// AttrInputTokens, AttrOutputTokens and AttrCachedTokens are the run's token totals.
-	AttrInputTokens  = "factory.input_tokens"
-	AttrOutputTokens = "factory.output_tokens"
-	//nolint:gosec // G101: an attribute name, not a credential
-	AttrCachedTokens = "factory.cached_tokens"
+	// AttrInputTokens, AttrOutputTokens and AttrCachedTokens are the run's token totals. The first two
+	// are the GenAI conventions' own keys; the conventions name a cache read's input tokens too.
+	AttrInputTokens  = string(semconv.GenAIUsageInputTokensKey)
+	AttrOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
+	AttrCachedTokens = string(semconv.GenAIUsageCacheReadInputTokensKey)
 	// AttrCost is what the run's responses cost, in US dollars.
 	AttrCost = "factory.cost"
+	// AttrPeakContext is the largest context any one model step used.
+	AttrPeakContext = "factory.peak_context"
+	// AttrRunID is the dagu run id one run's spans belong to. It is how `status` finds a run's trace.
+	AttrRunID = "factory.run_id"
+	// AttrTraceID is the W3C trace id a security event was raised under. Only the security-event
+	// metric carries it, so a per-event alert can link to the trace that raised it.
+	AttrTraceID = "factory.trace_id"
 )
 
 // Poll span names. Enqueue is separate from its repository span so a run can continue its trace.
@@ -201,11 +209,12 @@ type Telemetry struct {
 	log       *slog.Logger
 }
 
-// Noop is telemetry that records and exports nothing.
+// Noop is telemetry that records and exports nothing. It is the one no-op tracer and meter, the
+// same fallbacks a Deps built without telemetry gets.
 func Noop() *Telemetry {
 	return &Telemetry{
-		Tracer: tracenoop.NewTracerProvider().Tracer(scope),
-		Meter:  metricnoop.NewMeterProvider().Meter(scope),
+		Tracer: TracerOr(nil),
+		Meter:  MeterOr(nil),
 		log:    slog.New(slog.DiscardHandler),
 	}
 }

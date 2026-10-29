@@ -134,7 +134,9 @@ func runIssue(run dagu.Run) int {
 
 // Status is `foreman status`: a read-only report of active runs, the queues, agent roles with no
 // host, and recent usage. It reads dagu's state, the configuration's deadlines for each agent role,
-// and the usage records the runs on this host left under the work root. It never reads a run's
+// and the usage a run leaves behind. With a telemetry backend configured it reads the run's root span,
+// which is the only record a server can see for a run on another host; without one, or for a run the
+// backend has not seen, it reads the local record under this host's work root. It never reads a run's
 // stdout, so a line there cannot forge a usage figure. It talks to nothing else.
 func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	runs, err := readHistory(ctx, d)
@@ -143,7 +145,7 @@ func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	}
 
 	items := factoryRuns(runs, d.Settings.DAGPrefix)
-	report := statusReport{now: d.now(), runs: items, usage: recentUsage(d, items), cfg: cfg}
+	report := statusReport{now: d.now(), runs: items, usage: recentUsage(ctx, d, cfg, items), cfg: cfg}
 
 	if _, err := io.WriteString(d.Out, report.render()); err != nil {
 		return 1, fmt.Errorf("write status: %w", err)
@@ -158,11 +160,12 @@ type usageRecord struct {
 	report opencode.UsageReport
 }
 
-// recentUsage reads the out-of-band record of the newest runs, the one each run leaves under the
-// work root. It never reads a run's stdout: a line there that mimics a record must not be reported.
+// recentUsage reads the newest runs' usage: from the telemetry backend when one is configured, so a
+// run a worker host executed is visible from the server, and from the local out-of-band record
+// otherwise. It never reads a run's stdout: a line there that mimics a record must not be reported.
 // It is best effort: a run with no readable record is skipped with a warning, because a read-only
 // report must not fail over history.
-func recentUsage(d Deps, runs []factoryRun) []usageRecord {
+func recentUsage(ctx context.Context, d Deps, cfg config.Config, runs []factoryRun) []usageRecord {
 	records := make([]usageRecord, 0, UsageRecordLimit)
 
 	for _, run := range firstRuns(runs, UsageRunLimit) {
@@ -170,12 +173,23 @@ func recentUsage(d Deps, runs []factoryRun) []usageRecord {
 			break
 		}
 
-		if record, ok := readUsageRecord(d, run); ok {
+		if record, ok := usageFor(ctx, d, cfg, run); ok {
 			records = append(records, record)
 		}
 	}
 
 	return firstRecords(records, UsageRecordLimit)
+}
+
+// usageFor reads one run's usage, preferring the backend's copy of the run's root span.
+func usageFor(ctx context.Context, d Deps, cfg config.Config, run factoryRun) (usageRecord, bool) {
+	if d.Settings.TelemetryURL != "" {
+		if record, ok := traceUsage(ctx, d, cfg, run); ok {
+			return record, true
+		}
+	}
+
+	return readUsageRecord(d, run)
 }
 
 // readUsageRecord reads one run's out-of-band record. A record that is missing (a run from before

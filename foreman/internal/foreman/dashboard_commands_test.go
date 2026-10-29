@@ -571,7 +571,7 @@ var _ = Describe("the dashboard's writer commands", func() {
 		r := &commandRun{
 			d: h.deps, cfg: pollConfig(workflow.Implementer, workflow.Reviewer),
 			c: h.deps.client("minted-token-implementer"), perms: newPermissions(),
-			repo: testRepo("o/r"), role: workflow.Implementer,
+			repo: testRepo("o/r"), role: workflow.Implementer, alerts: newAlertInstruments(h.deps),
 		}
 		comment := workflow.Item{
 			ID: 42, Author: "stranger", Body: "promote " + skillGroup.String(),

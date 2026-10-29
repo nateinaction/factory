@@ -33,6 +33,9 @@ type run struct {
 	// up again.
 	entry dispatchEntry
 	spec  runSpec
+	// alerts are the instruments the run's measurements go to, built once when the run started so
+	// every emit site records through the same set.
+	alerts alertInstruments
 }
 
 // runEnv is what the run's proxies hand the rest of the run: the secrets read at the edge, the
@@ -367,7 +370,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 	}
 
 	rc := runCtx{
-		run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity, r.spans()), paths: paths,
+		run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity, r.spans(), r.alerts), paths: paths,
 	}
 
 	prep, err := r.entry.run.prepare(ctx, rc)
@@ -386,7 +389,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 	if err != nil {
 		// A model that failed is the run's failure too, but the run still settles and still gets the
 		// retro its agent role keeps for a failed run.
-		emitStepCap(ctx, r.d, r.role, r.spec.ref.Repo, r.spec.ref.Number, err)
+		emitStepCap(ctx, r.d, r.alerts, r.role, r.spec.ref.Repo, r.spec.ref.Number, err)
 		r.settle(ctx, 1, err)
 
 		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err)), attempts: res.Attempts}, err
@@ -498,7 +501,7 @@ func headKeyOf(ctx context.Context, s session) string { return s.headKey(ctx) }
 func rejected(ctx context.Context, rc runCtx, err error, key string) outcome {
 	return outcome{
 		retroKey: key,
-		err:      rejectOutput(ctx, rc.d, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err),
+		err:      rejectOutput(ctx, rc.d, rc.alerts, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err),
 	}
 }
 

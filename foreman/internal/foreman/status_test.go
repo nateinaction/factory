@@ -3,6 +3,9 @@ package foreman
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,11 +34,12 @@ const statusUsage = `{"event":"usage","repository":"o/r","issue":6,"agent_role":
 	`"cached_tokens":5,"context_cap":200000,"peak_context":15,"cost":0.25,` +
 	`"duration_ms":754000,"attempts":2,"outcome":"rework","missing":[]}`
 
-// leaveUsage writes a run's out-of-band usage record where the run leaves it.
-func leaveUsage(h *harness, runID, record string) {
+// leaveUsage writes a run's out-of-band usage record where the run leaves it. The spec's finished
+// run is run-old.
+func leaveUsage(h *harness, record string) {
 	GinkgoHelper()
 
-	path, err := usageRecordPath(h.deps.Settings.WorkRoot, runID)
+	path, err := usageRecordPath(h.deps.Settings.WorkRoot, "run-old")
 	Expect(err).NotTo(HaveOccurred())
 	Expect(os.MkdirAll(filepath.Dir(path), 0o700)).To(Succeed())
 	Expect(os.WriteFile(path, []byte(record+"\n"), 0o600)).To(Succeed())
@@ -74,7 +78,7 @@ var _ = Describe("Status", func() {
 	}
 
 	It("shows every field of an active run, the queues, roles with no host and recent usage", func() {
-		leaveUsage(h, "run-old", statusUsage)
+		leaveUsage(h, statusUsage)
 		answerDagu()
 
 		code, err := Status(context.Background(), h.deps, cfg)
@@ -113,7 +117,7 @@ var _ = Describe("Status", func() {
 			return statusHistory, nil
 		})
 
-		leaveUsage(h, "run-old", statusUsage)
+		leaveUsage(h, statusUsage)
 
 		Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
 
@@ -124,7 +128,7 @@ var _ = Describe("Status", func() {
 	})
 
 	It("skips a run whose record is absent or unreadable, and still reports the rest", func() {
-		leaveUsage(h, "run-old", `{"event":"usage","repository":"o/r","issue":}`)
+		leaveUsage(h, `{"event":"usage","repository":"o/r","issue":}`)
 		answerDagu()
 
 		code, err := Status(context.Background(), h.deps, cfg)
@@ -163,5 +167,91 @@ var _ = Describe("Status", func() {
 		Expect(code).To(Equal(1))
 		Expect(err).To(MatchError(ContainSubstring("dagu down")))
 		Expect(h.gh.Summary()).To(BeEmpty())
+	})
+
+	Context("with a telemetry backend", func() {
+		// tempoTrace is the run's root span as Tempo's /api/v2/traces serves it: a worker host's run,
+		// which no local record on the server can describe.
+		const tempoTrace = `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"foreman.run",` +
+			`"startTimeUnixNano":"1700000000000000000","endTimeUnixNano":"1700000754000000000",` +
+			`"attributes":[` +
+			`{"key":"factory.repo","value":{"stringValue":"o/r"}},` +
+			`{"key":"factory.issue","value":{"intValue":"6"}},` +
+			`{"key":"gen_ai.request.model","value":{"stringValue":"prov/review"}},` +
+			`{"key":"factory.worker_host","value":{"stringValue":"factory-2"}},` +
+			`{"key":"gen_ai.usage.input_tokens","value":{"intValue":"10"}},` +
+			`{"key":"gen_ai.usage.output_tokens","value":{"intValue":"2"}},` +
+			`{"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":"5"}},` +
+			`{"key":"factory.peak_context","value":{"intValue":"15"}},` +
+			`{"key":"factory.cost","value":{"doubleValue":0.25}},` +
+			`{"key":"factory.attempts","value":{"intValue":"2"}},` +
+			`{"key":"factory.outcome","value":{"stringValue":"rework"}}` +
+			`]}]}]}]}`
+
+		// backend serves a Tempo API for one run. found is false for a trace it has not seen.
+		backend := func(found bool) *httptest.Server {
+			GinkgoHelper()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/search":
+					// Only the run the spec's trace belongs to is in the backend.
+					if !found || !strings.Contains(r.URL.Query().Get("q"), `"run-old"`) {
+						_, _ = io.WriteString(w, `{"traces":[]}`)
+
+						return
+					}
+
+					_, _ = io.WriteString(w, `{"traces":[{"traceID":"abc123"}]}`)
+				case "/api/v2/traces/abc123":
+					_, _ = io.WriteString(w, tempoTrace)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			DeferCleanup(server.Close)
+
+			return server
+		}
+
+		It("reports a run's usage from its trace, so a run on another host is visible", func() {
+			h.deps.Settings.TelemetryURL = backend(true).URL
+
+			answerDagu()
+
+			// No local record exists: this status process runs on another host than the run.
+			Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
+			Expect(h.out.String()).To(MatchRegexp(
+				`(?m)^o/r\s+#6\s+reviewer\s+prov/review\s+factory-2\s+10\s+2\s+5\s+15/200000\s+0\.25\s+` +
+					`12m34s\s+2\s+rework\s+2026-10-28T09:50:00Z\s*$`))
+		})
+
+		It("falls back to the local record for a run the backend has not seen", func() {
+			leaveUsage(h, statusUsage)
+			h.deps.Settings.TelemetryURL = backend(false).URL
+
+			answerDagu()
+
+			Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("prov/review"),
+				"the local record was not read when the backend had no trace")
+		})
+
+		It("never fails the report when the backend is unreachable", func() {
+			leaveUsage(h, statusUsage)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "backend down", http.StatusInternalServerError)
+			}))
+			DeferCleanup(server.Close)
+
+			h.deps.Settings.TelemetryURL = server.URL
+
+			answerDagu()
+
+			Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("prov/review"), "the local record is the fallback")
+			Expect(h.logs.String()).To(ContainSubstring("backend"))
+		})
 	})
 })
