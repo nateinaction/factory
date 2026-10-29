@@ -57,6 +57,7 @@ var _ = Describe("the handoff label table", func() {
 		Entry(nil, "factory:plan", true),
 		Entry(nil, "factory:paused", true),
 		Entry(nil, "factory:done", true),
+		Entry(nil, "closed", true),
 		Entry(nil, "", false),
 		Entry(nil, "plan", false),
 		Entry(nil, "factory:nope", false),
@@ -69,6 +70,11 @@ var _ = Describe("the handoff label table", func() {
 			"factory:implement", "factory:implementing", "factory:review", "factory:reviewing",
 			"factory:waiting", "factory:done", "factory:failed", "factory:paused",
 		))
+	})
+
+	It("gives a closed ticket no label", func() {
+		Expect(workflow.Closed).To(Equal(workflow.State("closed")))
+		Expect(workflow.FactoryLabels()).NotTo(ContainElement("closed"))
 	})
 })
 
@@ -229,6 +235,15 @@ var _ = Describe("recovery", func() {
 
 		paused := workflow.Issue{Labels: []string{"factory:paused"}}
 		_, repair = workflow.Repair(paused, transition, true)
+		Expect(repair).To(BeFalse())
+	})
+
+	It("does not apply a label for a closed ticket", func() {
+		closed := workflow.Transition{
+			Role: workflow.Researcher, RunID: "r", From: workflow.Researching, To: workflow.Closed,
+		}
+
+		_, repair := workflow.Repair(workflow.Issue{}, closed, true)
 		Expect(repair).To(BeFalse())
 	})
 })

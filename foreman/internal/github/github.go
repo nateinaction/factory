@@ -35,6 +35,8 @@ const (
 	apiVersion = "2022-11-28"
 	// stateOpen is the query value that lists open issues only.
 	stateOpen = "open"
+	// stateClosed is the state value that closes an issue.
+	stateClosed = "closed"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
 )
@@ -150,6 +152,28 @@ type (
 	// labelRequest creates a label in a repository.
 	labelRequest struct {
 		Name string `json:"name"`
+	}
+	// createIssueRequest opens an issue.
+	createIssueRequest struct {
+		Title  string   `json:"title"`
+		Body   string   `json:"body"`
+		Labels []string `json:"labels,omitempty"`
+	}
+	// issueBodyRequest replaces an issue's body.
+	issueBodyRequest struct {
+		Body string `json:"body"`
+	}
+	// issueStateRequest changes an issue's state.
+	issueStateRequest struct {
+		State string `json:"state"`
+	}
+	// subIssueRequest links an existing issue as a sub-issue.
+	subIssueRequest struct {
+		SubIssueID int64 `json:"sub_issue_id"`
+	}
+	// dependencyRequest blocks one issue on another. GitHub names the blocker's database id.
+	dependencyRequest struct {
+		IssueID int64 `json:"issue_id"`
 	}
 	// pullRequestRequest opens a pull request.
 	pullRequestRequest struct {
@@ -301,7 +325,7 @@ func (c Client) OpenBlockers(ctx context.Context, repo string, number int) ([]wo
 	open := make([]workflow.Issue, 0, len(blocking))
 
 	for _, b := range blocking {
-		if b.State != "closed" {
+		if b.State != stateClosed {
 			open = append(open, b)
 		}
 	}
@@ -316,6 +340,174 @@ func (c Client) GetIssue(ctx context.Context, repo string, number int) (workflow
 	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), nil, &issue)
 
 	return issue, err
+}
+
+// CreateIssue opens an issue with the labels foreman derived and returns it.
+func (c Client) CreateIssue(
+	ctx context.Context, repo, title, body string, labels []string,
+) (workflow.Issue, error) {
+	var issue workflow.Issue
+
+	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues",
+		createIssueRequest{Title: title, Body: body, Labels: labels}, &issue)
+
+	return issue, err
+}
+
+// UpdateIssueBody replaces an issue's body.
+func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, body string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		issueBodyRequest{Body: body}, nil)
+}
+
+// CloseIssue closes an issue.
+func (c Client) CloseIssue(ctx context.Context, repo string, number int) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		issueStateRequest{State: stateClosed}, nil)
+}
+
+// SubIssueNumbers lists the issues linked as sub-issues of parent. supported is false when the
+// repository has no sub-issues, so the caller can fall back to a "Part of #N" line.
+func (c Client) SubIssueNumbers(ctx context.Context, repo string, parent int) ([]int, bool, error) {
+	var children []workflow.Issue
+
+	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, parent)
+
+	err := c.Call(ctx, http.MethodGet, path, nil, &children)
+	if isStatus(err, http.StatusNotFound) {
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	numbers := make([]int, 0, len(children))
+	for _, child := range children {
+		numbers = append(numbers, child.Number)
+	}
+
+	return numbers, true, nil
+}
+
+// AddSubIssue links child, by database id, as a sub-issue of parent. GitHub's 422 for an existing
+// link is not an error: applying the same proposal again changes nothing.
+func (c Client) AddSubIssue(ctx context.Context, repo string, parent int, childID int64) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", repo, parent)
+
+	err := c.Call(ctx, http.MethodPost, path, subIssueRequest{SubIssueID: childID}, nil)
+	if isStatus(err, http.StatusUnprocessableEntity) {
+		return nil
+	}
+
+	return err
+}
+
+// IssueID reads an issue's database id, which a dependency link names.
+func (c Client) IssueID(ctx context.Context, repo string, number int) (int64, error) {
+	issue, err := c.GetIssue(ctx, repo, number)
+	if err != nil {
+		return 0, err
+	}
+
+	if issue.ID == 0 {
+		return 0, fmt.Errorf("issue %s#%d has no database id", repo, number)
+	}
+
+	return issue.ID, nil
+}
+
+// AddBlockedBy blocks child, by database id, on blocker. GitHub's 422 for an existing edge is not an
+// error: applying the same proposal again changes nothing.
+func (c Client) AddBlockedBy(ctx context.Context, repo string, child int, blockerID int64) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, child)
+
+	err := c.Call(ctx, http.MethodPost, path, dependencyRequest{IssueID: blockerID}, nil)
+	if isStatus(err, http.StatusUnprocessableEntity) {
+		return nil
+	}
+
+	return err
+}
+
+// BlockedByNumbers lists every issue blocking number, open or closed, for an idempotent apply.
+// supported is false when the repository has no issue dependencies.
+func (c Client) BlockedByNumbers(ctx context.Context, repo string, number int) ([]int, bool, error) {
+	var blockers []workflow.Issue
+
+	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", repo, number)
+
+	err := c.Call(ctx, http.MethodGet, path, nil, &blockers)
+	if isStatus(err, http.StatusNotFound) {
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	numbers := make([]int, 0, len(blockers))
+	for _, blocker := range blockers {
+		numbers = append(numbers, blocker.Number)
+	}
+
+	return numbers, true, nil
+}
+
+// Parent reads the issue's parent, when the repository supports sub-issues. supported is false when
+// the endpoint is missing, so the caller can fall back to the body's "Part of #N" convention.
+func (c Client) Parent(ctx context.Context, repo string, number int) (workflow.Issue, bool, error) {
+	var parent workflow.Issue
+
+	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", repo, number), nil, &parent)
+	if isStatus(err, http.StatusNotFound) {
+		return workflow.Issue{}, false, nil
+	}
+
+	if err != nil {
+		return workflow.Issue{}, false, err
+	}
+
+	return parent, true, nil
+}
+
+// PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
+// branch updates that comment rather than adding another.
+func (c Client) PostResolution(ctx context.Context, repo string, number int, branch, text string) error {
+	marker := workflow.ResearchMarker(branch)
+
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return err
+	}
+
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+			bodyRequest{Body: text}, nil)
+	}
+
+	return c.Comment(ctx, repo, number, text)
+}
+
+// CloseResolved records a resolved ticket's final transition, releases its claim and closes it. A
+// closed ticket carries no factory label.
+func (c Client) CloseResolved(ctx context.Context, repo string, number int, t workflow.Transition) error {
+	marker, err := workflow.RenderTransition(t)
+	if err != nil {
+		return err
+	}
+
+	if err := c.Comment(ctx, repo, number, marker); err != nil {
+		return err
+	}
+
+	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
+		// A 404 means a person already removed it: fine, still close the ticket.
+		return err
+	}
+
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		map[string]string{stateParam: stateClosed}, nil)
 }
 
 // Comment posts a comment on an issue.
@@ -380,11 +572,13 @@ func (c Client) Claim(ctx context.Context, repo string, number int, t workflow.T
 }
 
 // Finish posts the transition marker and its outcome, swaps src for dst, and tolerates a label a
-// person already moved.
-func (c Client) Finish(ctx context.Context, repo string, number int, t workflow.Transition, text string) error {
+// person already moved. It returns the comment's id, which a Planner retro is keyed by.
+func (c Client) Finish(
+	ctx context.Context, repo string, number int, t workflow.Transition, text string,
+) (int64, error) {
 	marker, err := workflow.RenderTransition(t)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	body := marker
@@ -392,16 +586,27 @@ func (c Client) Finish(ctx context.Context, repo string, number int, t workflow.
 		body += "\n\n" + text
 	}
 
-	if err := c.Comment(ctx, repo, number, body); err != nil {
-		return err
+	comment, err := c.CommentReturningID(ctx, repo, number, body)
+	if err != nil {
+		return 0, err
 	}
 
 	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
 		// A 404 means a person already removed it: fine, still record the outcome.
-		return err
+		return 0, err
 	}
 
-	return c.addLabel(ctx, repo, number, string(t.To))
+	return comment, c.addLabel(ctx, repo, number, string(t.To))
+}
+
+// CommentReturningID posts a comment and returns its id.
+func (c Client) CommentReturningID(ctx context.Context, repo string, number int, text string) (int64, error) {
+	var comment workflow.Item
+
+	err := c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number),
+		bodyRequest{Body: text}, &comment)
+
+	return comment.ID, err
 }
 
 // Timeline lists an issue's timeline events, oldest first.

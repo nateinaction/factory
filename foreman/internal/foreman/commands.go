@@ -283,7 +283,9 @@ func failDeadRun(
 		"It is not retried automatically; comment to send it back to the %s.",
 		role, agent.Deadline(), margin, role)
 
-	return true, d.client(token).Finish(ctx, repo, issue.Number, t, text)
+	_, err = d.client(token).Finish(ctx, repo, issue.Number, t, text)
+
+	return true, err
 }
 
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
@@ -346,6 +348,12 @@ func wakeIssue(
 	thread, ok, err := wakeThread(ctx, c, repo, issue, comments, latest)
 	if err != nil || !ok {
 		return false, err
+	}
+
+	// A writer's approval of the latest final round applies the stored proposal with no model run.
+	approved, err := approvePending(ctx, d, perms, c, repo, issue, thread, latest)
+	if err != nil || approved {
+		return approved, err
 	}
 
 	state, ok := workflow.WakeState(latest.Transition, true, written(ctx, d, perms, c, repo, thread, latest))
@@ -735,7 +743,9 @@ func ciPendingFailure(
 		"A person needs to look at the pull request; comment to send it back to the Reviewer.",
 		cfg.CIPendingDeadline())
 
-	return c.Finish(ctx, repo, issue.Number, t, text)
+	_, err := c.Finish(ctx, repo, issue.Number, t, text)
+
+	return err
 }
 
 // ciFailureBack reports failed CI on the issue, then sends the issue back to the Implementer with no
@@ -778,7 +788,9 @@ func ciFailureBack(
 		Role: workflow.Reviewer, RunID: d.runID(), From: workflow.Review, To: dst, SHA: report.SHA,
 	}
 
-	return c.Finish(ctx, repo, issue.Number, t, text)
+	_, err = c.Finish(ctx, repo, issue.Number, t, text)
+
+	return err
 }
 
 // claimed reports whether the issue already carries a running label: a run is happening.
@@ -836,7 +848,9 @@ func claimAndEnqueue(
 
 		t.From, t.To = q.dst, workflow.Failed
 
-		return 1, c.Finish(ctx, repo, issue.Number, t, "Could not queue the agent run; see the dagu log.")
+		_, err = c.Finish(ctx, repo, issue.Number, t, "Could not queue the agent run; see the dagu log.")
+
+		return 1, err
 	}
 
 	return 0, nil
@@ -848,15 +862,31 @@ var errNoBehaviour = errors.New("agent role has no behaviour yet")
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
 func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) (int, error) {
 	switch role {
+	case workflow.Planner:
+		return startPlanner(ctx, d, cfg, repo, number)
 	case workflow.Implementer:
 		return startImplementer(ctx, d, cfg, repo, number)
+	case workflow.Researcher:
+		return startResearcher(ctx, d, cfg, repo, number)
 	case workflow.Reviewer:
 		return startReviewer(ctx, d, cfg, repo, number)
-	case workflow.Planner, workflow.Researcher, workflow.Curator:
+	case workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
 
 	return 1, fmt.Errorf("unknown agent role %q", role)
+}
+
+// startPlanner posts the Planner's round, which the factory half records and moves to waiting. A
+// failed run moves planning to failed, with one comment saying why.
+func startPlanner(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Planner, repo, number)
+	if code == 0 {
+		return 0, writeLine(d.Out, "The Planner posted a round; see the issue.")
+	}
+
+	return 1, finishAs(ctx, d, workflow.Planner, repo, number, workflow.Planning, workflow.Failed,
+		failureText(workflow.Planner, code))
 }
 
 // startImplementer implements the issue, then queues it for review or fails it.
@@ -882,6 +912,18 @@ func failureText(role workflow.Role, code int) string {
 
 	return fmt.Sprintf("The %s failed. Check the dagu run log, then comment to send it back to the %s.",
 		name, name)
+}
+
+// startResearcher closes a resolved ticket, with no label replacing the claim, or fails it.
+func startResearcher(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Researcher, repo, number)
+	if code == 0 {
+		return 0, finishRun(ctx, d, workflow.Researcher, repo, number,
+			workflow.Researching, workflow.Closed, "")
+	}
+
+	return 1, finishAs(ctx, d, workflow.Researcher, repo, number, workflow.Researching, workflow.Failed,
+		failureText(workflow.Researcher, code))
 }
 
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
@@ -916,19 +958,34 @@ func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, 
 func finishAs(
 	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
 ) error {
+	return finishRun(ctx, d, role, repo, number, src, dst, text)
+}
+
+// finishRun records a run's outcome. A closed destination closes the ticket instead of labelling it; a
+// mint failure always falls back to factory:failed, reported by an App that is still installed.
+func finishRun(
+	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
+) error {
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
 	token, err := d.mintToken(ctx, role, repo)
 	if err == nil {
+		c := d.client(token)
+		if dst == workflow.Closed {
+			return c.CloseResolved(ctx, repo, number, t)
+		}
+
 		// The commit is recorded when it can be read; the transition itself is what matters.
-		if sha, shaErr := headSHA(ctx, d.client(token), repo, number); shaErr == nil {
+		if sha, shaErr := headSHA(ctx, c, repo, number); shaErr == nil {
 			t.SHA = sha
 		} else {
 			d.log().Warn("cannot read the pull request head for the transition marker",
 				"repo", repo, "issue", number, "error", shaErr)
 		}
 
-		return d.client(token).Finish(ctx, repo, number, t, text)
+		_, err := c.Finish(ctx, repo, number, t, text)
+
+		return err
 	}
 
 	d.log().Error("cannot mint the owning App's token; reporting the failure as another App",
@@ -948,7 +1005,9 @@ func finishAs(
 			continue // that App isn't installed here or has no credential: try the next
 		}
 
-		return d.client(otherToken).Finish(ctx, repo, number, t, notice)
+		_, err := d.client(otherToken).Finish(ctx, repo, number, t, notice)
+
+		return err
 	}
 
 	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", repo, number, err)

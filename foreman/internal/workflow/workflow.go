@@ -126,13 +126,15 @@ const (
 	Failed State = LabelFailed
 	// Paused waits until a writer removes the label.
 	Paused State = LabelPaused
+	// Closed is a resolved ticket's terminal state. It has no label: the ticket is closed instead.
+	Closed State = "closed"
 )
 
 // States is the closed set of handoff states, in spec order.
 func States() []State {
 	return []State{
 		Plan, Planning, Research, Researching, Implement, Implementing, Review, Reviewing,
-		Waiting, Done, Failed, Paused,
+		Waiting, Done, Failed, Paused, Closed,
 	}
 }
 
@@ -199,10 +201,16 @@ func RoleOf(state State) (Role, bool) {
 	return "", false
 }
 
-// FactoryLabels lists every label foreman creates, idempotently, for an assigned repository.
+// FactoryLabels lists every label foreman creates, idempotently, for an assigned repository. A closed
+// ticket carries no label, so Closed is left out.
 func FactoryLabels() []string {
 	out := make([]string, 0, len(States()))
+
 	for _, s := range States() {
+		if s == Closed {
+			continue
+		}
+
 		out = append(out, string(s))
 	}
 
@@ -287,6 +295,8 @@ func ValidateRepo(repo string) error {
 
 // Issue is the part of a GitHub issue foreman reads.
 type Issue struct {
+	// ID is GitHub's database id, which sub-issue and dependency links name.
+	ID            int64
 	Number        int
 	Title         string
 	Body          string
@@ -300,6 +310,7 @@ type Issue struct {
 // UnmarshalJSON reads an issue; the issues endpoint marks pull requests with a pull_request key.
 func (i *Issue) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		ID       int64  `json:"id"`
 		Number   int    `json:"number"`
 		Title    string `json:"title"`
 		Body     string `json:"body"`
@@ -328,7 +339,7 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 	}
 
 	*i = Issue{
-		Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
+		ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
 		Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
 	}
 
@@ -635,9 +646,10 @@ func LatestTransition(comments []Item) (Transition, bool, error) {
 }
 
 // Repair returns the state label to re-apply when the latest marker names a state the issue does not
-// carry. A paused issue is frozen, so it is never repaired.
+// carry. A paused issue is frozen, so it is never repaired. A closed ticket has no label to apply.
 func Repair(issue Issue, latest Transition, found bool) (State, bool) {
-	if !found || HasLabel(issue, LabelPaused) || HasLabel(issue, string(latest.To)) {
+	if !found || latest.To == Closed || HasLabel(issue, LabelPaused) ||
+		HasLabel(issue, string(latest.To)) {
 		return "", false
 	}
 
