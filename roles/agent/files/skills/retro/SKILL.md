@@ -24,7 +24,16 @@ You are suggesting improvements to the coding agent's **environment** to improve
 - **No-ops**: look for instructions in steering files that don't modify the agent's behavior. _Use when_ the steering files are large and unwieldy.
 - **Information access**: look for opportunities to increase the agent's access to information. Teeing dev server logs, readonly access to third-party services. _Use when_ a crucial piece of information was not available to the agent.
 
-4. There is no user to present to: write the candidates, most severe first, to the retro file the run's prompt names. Each candidate names its **target** (`skill:<name>`, `docs:<path>` or `factory:<area>`), a **group key**, a **severity**, a one-line **claim** and its **evidence** from this session, so foreman can post it as an append-only retro entry.
+4. There is no user to present to: write the candidates, most severe first, as JSON to the `retro.json` path the run's prompt names, in exactly this shape:
+
+   ```json
+   {"version": 1, "findings": [
+     {"target": "skill:implement", "group": "guide-misses-tests", "severity": "medium",
+      "claim": "the implement guide never mentions tests", "evidence": "I searched it and found none"}
+   ]}
+   ```
+
+   Each finding names its **target** — `skill:<name>`, `docs:<path>` (the repository's `AGENTS.md` or `docs/agents/`) or `factory:<area>` — a **group key**, a **severity** (`high`, `medium` or `low`), a **one-line claim** and its **evidence** from this session. foreman posts the file as an append-only retro entry on the issue, so an unknown or missing field, a malformed target or a multi-line claim rejects the whole file. The prompt lists the existing groups for each target with their one-line claims; reuse a key when it is the same group, and never treat the wording of a finding as its group. No candidates means an empty `findings` list, not an invented one.
 
 ## Reference
 

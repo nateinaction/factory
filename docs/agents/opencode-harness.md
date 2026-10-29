@@ -50,6 +50,22 @@ agentic step; check that against v1.19.3 output on a worker host.
 Hitting either fails the issue to `factory:failed`, as the spec says. A retro that hits its cap or
 deadline is dropped, logged, and never fails the run.
 
+## The retro epilogue
+
+After foreman has applied the run's output, the same dagu run resumes the model's session by its
+explicit id (`--session <id>`, never `--continue`) with the `retro` skill. The retro has its own
+step cap and deadline (`factory_retro_steps`, `factory_retro_deadline_minutes`), and the same state
+database, so it sees the run as it happened.
+
+- The model writes `retro.json`; `workflow.ParseRetro` validates it strictly, all or nothing.
+- The prompt carries only the existing group keys and one-line claims for the reporting agent role
+  on that issue, never another retro's evidence. Another agent role's retros are left out, so the
+  Reviewer's context never contains the Implementer's.
+- foreman posts the retro whole as a marker comment on the issue, keyed by issue, agent role and
+  run key (the Implementer's commit SHA, the Reviewer's PR head SHA). A repeat updates that comment.
+- A failed run gets a retro too, except a context overflow, running out of credits or an unknown
+  model. A dropped or invalid retro is logged and never changes the run's outcome.
+
 ## What the permissions cannot express
 
 opencode's `external_directory` is static in the rendered config, so it allows the work root
