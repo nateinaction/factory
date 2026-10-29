@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
@@ -23,6 +24,12 @@ func (s session) headKey(ctx context.Context) string {
 	}
 
 	return sha
+}
+
+// retroPath is where a run's retro.json is written, outside the clone and inside the sandbox's one
+// writable scratch area.
+func retroPath(root string, number int, role workflow.Role) string {
+	return filepath.Join(root, fmt.Sprintf("issue-%d-%s.retro.json", number, role))
 }
 
 // retroEpilogue runs a run's retro after its work, in the same session. It is best effort: a skipped,
@@ -70,7 +77,9 @@ func (s session) retro(
 	ctx context.Context, c github.Client, repo string, number int, role workflow.Role, sessionID, key string,
 	budget config.Budget,
 ) (opencode.Usage, error) {
-	out, err := freshPath(s.d.Settings.WorkRoot, fmt.Sprintf("issue-%d-%s.retro.json", number, role))
+	path := retroPath(s.d.Settings.WorkRoot, number, role)
+
+	out, err := freshPath(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
 		return opencode.Usage{}, err
 	}

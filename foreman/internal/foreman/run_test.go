@@ -337,6 +337,19 @@ var _ = Describe("Run", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
 			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+
+			var spec []byte
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) {
+					var err error
+
+					spec, err = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				return base(c)
+			})
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
 				ContainSubstring(`"event":"APPROVE"`), ContainSubstring(`"commit_id":"sha-head"`),
@@ -360,8 +373,6 @@ var _ = Describe("Run", func() {
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
 
-			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
-			Expect(err).NotTo(HaveOccurred())
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))
 
 			Expect(h.retroComments()).To(ConsistOf(
@@ -518,7 +529,7 @@ var _ = Describe("Run", func() {
 			outside := filepath.Join(h.dir, "outside.json")
 			Expect(os.WriteFile(outside, []byte(cleanReview), 0o600)).To(Succeed())
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-				if c.Argv[0] == "opencode" && strings.Contains(joined(c), "code-review") {
+				if isModel(c) && strings.Contains(joined(c), "code-review") {
 					Expect(os.MkdirAll(filepath.Dir(h.reviewOut()), 0o700)).To(Succeed())
 					Expect(os.Symlink(outside, h.reviewOut())).To(Succeed())
 				}

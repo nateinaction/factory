@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
-	"github.com/nateinaction/factory/foreman/internal/workflow"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
 // agent runs the model, retrying transient failures up to twice within r.Timeout.
@@ -87,11 +86,17 @@ func (s session) afterAttempt(
 	return false, nil
 }
 
-// attempt runs opencode once and parses what it printed. The stream goes to the dagu log with the
-// OpenRouter key removed.
+// attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to
+// the dagu log with the OpenRouter key removed. A session without a backend or settings refuses to
+// start the model: there is no unsandboxed fallback.
 func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Duration) (opencode.Stream, error) {
+	argv := sandbox.Argv(s.srt, s.settings, opencode.Argv(r))
+	if argv == nil {
+		return opencode.Stream{}, errors.New("the sandbox is not configured")
+	}
+
 	out, err := s.d.Runner.Run(ctx, proc.Cmd{
-		Argv: opencode.Argv(r), Dir: s.workdir, Env: s.agentEnv, Timeout: timeout, Capture: true,
+		Argv: argv, Dir: s.workdir, Env: s.agentEnv, ReplaceEnv: true, Timeout: timeout, Capture: true,
 	})
 	if out != "" {
 		s.d.log().Info("agent output", "text", s.redact(out))
@@ -107,26 +112,6 @@ func (s session) redact(text string) string {
 	}
 
 	return strings.ReplaceAll(text, s.key, "[redacted]")
-}
-
-// withState gives fn a fresh state database for the role's run and deletes it afterwards. The
-// Reviewer's state is in memory only. A leftover from an earlier run is removed first.
-func withState(root string, role workflow.Role, number int, fn func(db string) error) (err error) {
-	if role == workflow.Reviewer {
-		return fn(opencode.InMemoryDB)
-	}
-
-	dir, err := freshPath(root, fmt.Sprintf("state-%s-%d", role, number))
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(dir, privateDirMode); err != nil {
-		return fmt.Errorf("state directory: %w", err)
-	}
-	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
-
-	return fn(dir + "/opencode.db")
 }
 
 // logUsage writes the run's single usage line to stdout, which dagu captures in the run log.

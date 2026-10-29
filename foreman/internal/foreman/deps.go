@@ -15,12 +15,21 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
 // Ceilings on every process foreman starts.
 const (
 	// GitTimeout bounds git and the small helpers.
 	GitTimeout = proc.DefaultTimeout
+	// AgentTimeout bounds the Implementer's model run.
+	AgentTimeout = 3600 * time.Second
+	// RetroTimeout bounds the retro step.
+	RetroTimeout = 900 * time.Second
+	// ReviewTimeout bounds the Reviewer's model run.
+	ReviewTimeout = 1800 * time.Second
+	// ToolchainTimeout bounds cloning the default branch and resolving its dev environment.
+	ToolchainTimeout = 600 * time.Second
 	// MintTimeout bounds minting a token.
 	MintTimeout = 30 * time.Second
 )
@@ -51,6 +60,18 @@ type Forwarder interface {
 	Close() error
 }
 
+// EgressProxy is the run's egress proxy, as the run lifecycle sees it.
+type EgressProxy interface {
+	// URL is the model's OpenRouter base URL: the proxy's API path.
+	URL() string
+	// Address is the loopback host:port srt settings point at.
+	Address() string
+	// Domains is every host the run contacted.
+	Domains() []string
+	// Close stops the proxy.
+	Close() error
+}
+
 // Deps is everything at the edge: settings, processes, HTTP and the output streams.
 type Deps struct {
 	// Settings are the paths and endpoints.
@@ -75,12 +96,19 @@ type Deps struct {
 	Proxy func(key, addr string) (Forwarder, error)
 	// ProxyAddr is the loopback address the run's proxy binds; empty binds a free loopback port.
 	ProxyAddr string
+	// Egress starts the run's egress proxy; nil starts the real one.
+	Egress func(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error)
+	// EgressAddr is the loopback address the egress proxy binds; empty binds a free loopback port.
+	EgressAddr string
 }
 
 // client returns a GitHub client for token.
 func (d Deps) client(token string) github.Client {
 	return github.NewClient(d.Settings.API, token, d.HTTP)
 }
+
+// gitProgram is the git binary foreman runs on the host, outside every sandbox.
+const gitProgram = "git"
 
 // run starts a process under a ceiling.
 func (d Deps) run(ctx context.Context, c proc.Cmd) (string, error) {

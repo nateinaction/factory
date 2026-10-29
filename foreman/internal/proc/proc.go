@@ -21,8 +21,11 @@ type Cmd struct {
 	Argv []string
 	// Dir is the working directory; empty means the current one.
 	Dir string
-	// Env is added to the inherited environment.
+	// Env is added to the inherited environment, or is the whole environment when ReplaceEnv is set.
 	Env map[string]string
+	// ReplaceEnv makes Env the whole environment. A sandboxed model process gets only what foreman
+	// names, so nothing from foreman's own environment leaks in.
+	ReplaceEnv bool
 	// Timeout bounds the run. Zero is replaced by DefaultTimeout.
 	Timeout time.Duration
 	// Capture returns stdout instead of passing it through.
@@ -64,7 +67,12 @@ func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...) //nolint:gosec // see above
 	cmd.Dir = c.Dir
 
-	cmd.Env = os.Environ()
+	if c.ReplaceEnv {
+		cmd.Env = []string{}
+	} else {
+		cmd.Env = os.Environ()
+	}
+
 	for k, v := range c.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

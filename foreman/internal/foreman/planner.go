@@ -12,47 +12,59 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// runPlanner works the issue in a fresh state directory and logs the run's one usage line.
+// runPlanner works the issue in a fresh sandbox directory and logs the run's one usage line.
 func runPlanner(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-) error {
-	var usage opencode.Usage
+) (err error) {
+	var (
+		usage   opencode.Usage
+		domains []string
+	)
 
-	err := withState(d.Settings.WorkRoot, workflow.Planner, number, func(db string) error {
-		var err error
-
-		usage, err = plan(ctx, d, repo, agent, retro, number, db)
-
+	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Planner, number)
+	if err != nil {
 		return err
-	})
-	d.logUsage(opencode.NewUsageReport(workflow.Planner, repo, number, d.Host, agent, usage))
+	}
+
+	defer func() { err = errors.Join(err, files.remove()) }()
+
+	usage, domains, err = plan(ctx, d, repo, agent, retro, number, files.db(workflow.Planner), files)
+	d.logUsage(opencode.NewUsageReport(workflow.Planner, repo, number, d.Host, agent, usage).
+		WithDomains(domains))
 
 	return err
 }
 
-// plan reads the Planner's secrets and runs its work behind the run's proxy.
+// plan reads the Planner's secrets and runs its work behind the run's proxies.
 func plan(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
-) (opencode.Usage, error) {
-	sec, err := readSecrets(d.Settings, workflow.Planner)
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+	db string, files sandboxFiles,
+) (opencode.Usage, []string, error) {
+	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
 	if err != nil {
-		return opencode.Usage{}, err
+		return opencode.Usage{}, nil, err
 	}
 
-	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return planRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Planner)
+	if err != nil {
+		return opencode.Usage{}, nil, err
+	}
+
+	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
+		return planRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, db, files)
 	})
 }
 
-// planRun is the Planner's work, with its proxy already up. It reads the issue thread, runs the
-// model and applies one round. The retro is the epilogue of the final-round run only, keyed by the
-// id of the comment that stored the proposal.
+// planRun is the Planner's work, with its proxies already up. It reads the issue thread, runs the
+// model under the sandbox and applies one round. The retro is the epilogue of the final-round run
+// only, keyed by the id of the comment that stored the proposal.
 func planRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, retro config.Budget, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
+	repo string, agent config.AgentConfig, retro config.Budget, number int, db string, files sandboxFiles,
 ) (opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Planner, agent, number, db)
 	if err != nil {
@@ -70,6 +82,13 @@ func planRun(
 	}
 
 	s := newSession(d, j, scratch, nil)
+
+	if s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, repo, "", files, workflow.Planner, "", outPath,
+		[]string{retroPath(d.Settings.WorkRoot, number, workflow.Planner)}, network, proxyAddr,
+	); err != nil {
+		return opencode.Usage{}, err
+	}
 
 	res, err := s.agent(ctx, opencode.Run{
 		Role: workflow.Planner, Prompt: prompt.Planner(nil, repo, j.issue, comments, outPath),
