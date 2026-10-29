@@ -445,6 +445,33 @@ func StoredProposal(body string) (PlannerProposal, bool, error) {
 	return p, true, nil
 }
 
+// StoredSpec returns the spec of the latest stored proposal, when that proposal is a single. The
+// latest stored proposal wins: another shape keeps its spec where that shape puts it, not in the
+// final-round comment.
+func StoredSpec(comments []Item) (string, bool, error) {
+	var (
+		spec  string
+		final bool
+	)
+
+	for _, c := range comments {
+		if !FactoryAuthored(c.Author) {
+			continue
+		}
+
+		p, found, err := StoredProposal(c.Body)
+		if err != nil {
+			return "", false, err
+		}
+
+		if found {
+			spec, final = p.Spec, p.Shape == ShapeSingle
+		}
+	}
+
+	return spec, final, nil
+}
+
 // Approves reports whether a writer's reply is approval of the latest final round: "yes", or a
 // comment asking to build.
 func Approves(text string) bool {

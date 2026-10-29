@@ -945,10 +945,14 @@ func reviewTarget(
 	return pr, base, err
 }
 
-// writeSpec writes the issue where the Reviewer reads it, outside the clone, and returns the clone's
-// repository docs.
-func writeSpec(specPath, workdir string, issue workflow.Issue) ([]prompt.Doc, error) {
+// writeSpec writes the issue, followed by the spec a single proposal left in its final-round
+// comment, where the Reviewer reads it outside the clone. It returns the clone's repository docs.
+func writeSpec(specPath, workdir string, issue workflow.Issue, finalSpec string) ([]prompt.Doc, error) {
 	spec := fmt.Sprintf("# %s\n\n%s\n", issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars))
+	if strings.TrimSpace(finalSpec) != "" {
+		spec += "\n" + workflow.Truncate(finalSpec, workflow.BodyLimitChars) + "\n"
+	}
+
 	if err := os.WriteFile(specPath, []byte(spec), privateFileMode); err != nil {
 		return nil, fmt.Errorf("write spec: %w", err)
 	}

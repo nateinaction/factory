@@ -205,6 +205,63 @@ var _ = Describe("storing a final round's proposal", func() {
 	)
 })
 
+var _ = Describe("the spec a final round stores", func() {
+	// stored renders a factory comment carrying p's hidden proposal block.
+	stored := func(p workflow.PlannerProposal) workflow.Item {
+		GinkgoHelper()
+
+		block, err := workflow.ProposalBlock(p)
+		Expect(err).NotTo(HaveOccurred())
+
+		return workflow.Item{ID: 1, Author: "o-factory-planner[bot]", Body: "The round.\n\n" + block}
+	}
+
+	single := workflow.PlannerProposal{
+		Shape: workflow.ShapeSingle,
+		Spec:  "## The spec\n\nx\n\n## Domain changes\n\nNone.",
+	}
+
+	It("returns a single proposal's spec", func() {
+		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(Equal(single.Spec))
+	})
+
+	It("keeps another shape's spec out of the final-round comment", func() {
+		slices := workflow.PlannerProposal{
+			Shape: workflow.ShapeSlices, Spec: single.Spec,
+			Issues: []workflow.PlannedIssue{{Key: "first", Title: "First", Body: "A"}},
+		}
+
+		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("reads the latest stored proposal, not an earlier one", func() {
+		const newerSpec = "## The newer spec\n\ny\n\n## Domain changes\n\nNone."
+
+		older := stored(single)
+		newer := stored(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: newerSpec})
+		newer.ID = 2
+
+		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(Equal(newerSpec))
+	})
+
+	It("ignores a proposal another author forged", func() {
+		forged := stored(single)
+		forged.Author = "o"
+
+		_, found, err := workflow.StoredSpec([]workflow.Item{forged})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+})
+
 var _ = Describe("the human gate", func() {
 	DescribeTable("accepts a writer's approval",
 		func(text string) { Expect(workflow.Approves(text)).To(BeTrue()) },

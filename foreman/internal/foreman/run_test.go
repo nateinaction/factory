@@ -380,6 +380,36 @@ var _ = Describe("Run", func() {
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
+		It("reads the spec a single proposal stored in its final-round comment", func() {
+			h.reviewerGH(nil)
+
+			block, err := workflow.ProposalBlock(workflow.PlannerProposal{
+				Shape: workflow.ShapeSingle,
+				Spec:  "## Plan\n\nDo the thing.\n\n## Domain changes\n\nNone.\n",
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			h.comment(5, appLogin(workflow.Planner),
+				"The plan.\n\nIs this ready to build?\n\n"+block)
+			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+
+			var spec []byte
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) {
+					var readErr error
+
+					spec, readErr = os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
+					Expect(readErr).NotTo(HaveOccurred())
+				}
+
+				return base(c)
+			})
+			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
+			Expect(string(spec)).To(ContainSubstring("## Plan\n\nDo the thing.\n\n## Domain changes\n\nNone."))
+		})
+
 		It("asks the latest human writer to merge when the issue was authored by a bot", func() {
 			h.reviewerGH(nil)
 			h.comment(5, "o", "Let's take this one")
