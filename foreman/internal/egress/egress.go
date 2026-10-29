@@ -1,8 +1,9 @@
 // Package egress is the loopback proxy every run's traffic crosses. srt blocks direct egress and
 // points the run at this proxy; the proxy enforces the agent role's allowlist, refuses every
-// destination that is not publicly routable, forwards the traffic, and records every domain the run
-// asked for — the refused ones included — for the usage line. It also serves the run's OpenRouter
-// API path, so the model's base URL is reachable through the one port srt bridges on every OS.
+// destination that is not publicly routable, forwards the traffic, and records the domains it allowed
+// and, apart, the ones it refused, for the usage line. Each refusal also emits one security event
+// (internal/security) naming its outcome. It also serves the run's OpenRouter API path, so the
+// model's base URL is reachable through the one port srt bridges on every OS.
 package egress
 
 import (
@@ -22,6 +23,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proxy"
 	"github.com/nateinaction/factory/foreman/internal/proxyauth"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 )
 
 // The proxy's API surface and default address.
@@ -56,6 +58,7 @@ type Proxy struct {
 	apiProxy     *httputil.ReverseProxy
 	mu           sync.Mutex
 	domains      map[string]struct{}
+	refused      map[string]struct{}
 	tunnels      map[net.Conn]struct{}
 	open         int
 	log          *slog.Logger
@@ -107,7 +110,7 @@ func startProxy(
 
 	p := &Proxy{
 		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
-		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
+		domains: map[string]struct{}{}, refused: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
 	plainDial := (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext
 	// Both transports ignore the proxy environment variables, so traffic the run sends through this
@@ -175,14 +178,28 @@ func (p *Proxy) URL() string {
 	return "http://" + p.Address() + APIPrefix
 }
 
-// Domains is every host the proxy was asked for, sorted and without repeats. A host the policy or the
-// address check refused is recorded too: the usage line says what the run tried to reach.
+// Domains is every host the proxy allowed, sorted and without repeats. Refused hosts are listed apart,
+// by Refused.
 func (p *Proxy) Domains() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	out := make([]string, 0, len(p.domains))
-	for host := range p.domains {
+	return sortedHosts(p.domains)
+}
+
+// Refused is every host the proxy refused, for any reason, sorted and without repeats: the usage line
+// says what the run tried to reach and was denied.
+func (p *Proxy) Refused() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return sortedHosts(p.refused)
+}
+
+// sortedHosts is the keys of hosts, sorted. It is never nil.
+func sortedHosts(hosts map[string]struct{}) []string {
+	out := make([]string, 0, len(hosts))
+	for host := range hosts {
 		out = append(out, host)
 	}
 
@@ -229,7 +246,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// record notes one contacted domain, whether the policy allowed it or not.
+// record notes one domain the proxy allowed.
 func (p *Proxy) record(host string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -237,9 +254,19 @@ func (p *Proxy) record(host string) {
 	p.domains[strings.ToLower(host)] = struct{}{}
 }
 
-// refuse answers a destination the proxy will not reach, recording it either way.
-func (p *Proxy) refuse(w http.ResponseWriter, host string) {
-	p.record(host)
+// deny notes one refused domain and emits the request's security event, once. It never takes the
+// request, so no header or token can reach the event.
+func (p *Proxy) deny(host string, outcome security.Outcome) {
+	p.mu.Lock()
+	p.refused[strings.ToLower(host)] = struct{}{}
+	p.mu.Unlock()
+
+	security.Emit(p.log, security.EventEgressRefused, outcome, host)
+}
+
+// refuse answers a destination the proxy will not reach.
+func (p *Proxy) refuse(w http.ResponseWriter, host string, outcome security.Outcome) {
+	p.deny(host, outcome)
 	http.Error(w, "egress proxy: destination not allowed", http.StatusForbidden)
 }
 
@@ -247,11 +274,10 @@ func (p *Proxy) refuse(w http.ResponseWriter, host string) {
 // address, failure for every other cause.
 func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure string) {
 	if refused, ok := refusal(err); ok {
-		p.log.Warn(
-			"egress proxy: destination is not publicly routable",
-			"host", host, "address", refused.addr.String(),
-		)
-		p.refuse(w, host)
+		// The policy admitted the host before the dial, so it was noted as allowed; it was not reached.
+		p.unrecord(host)
+		p.log.Debug("egress proxy: destination is not publicly routable", "host", host, "address", refused.addr.String())
+		p.refuse(w, host, security.RefusedNotRoutable)
 
 		return
 	}
@@ -260,26 +286,32 @@ func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure st
 	http.Error(w, failure, http.StatusBadGateway)
 }
 
+// unrecord takes back record: the host was refused after all.
+func (p *Proxy) unrecord(host string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.domains, strings.ToLower(host))
+}
+
 // tunnel carries a CONNECT to its destination.
 func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
-		p.record(r.Host)
+		p.deny(r.Host, security.RefusedByPolicy)
 		http.Error(w, "egress proxy: malformed CONNECT destination", http.StatusBadRequest)
 
 		return
 	}
 
 	if !p.policy.Permits(host) {
-		p.refuse(w, host)
+		p.refuse(w, host, security.RefusedByPolicy)
 
 		return
 	}
 
-	p.record(host)
-
 	if !p.reserveTunnel() {
-		p.log.Warn("egress proxy: tunnel limit reached; refusing the tunnel", "host", host, "limit", MaxTunnels)
+		p.deny(host, security.RefusedTunnelLimit)
 		http.Error(w, "egress proxy: too many tunnels", http.StatusTooManyRequests)
 
 		return
@@ -287,6 +319,7 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 
 	defer p.releaseTunnel()
 
+	p.record(host)
 	p.relay(w, r, host, port)
 }
 
@@ -399,7 +432,7 @@ func (p *Proxy) copyTunnel(client, upstream net.Conn) {
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	host := r.URL.Hostname()
 	if !p.policy.Permits(host) {
-		p.refuse(w, host)
+		p.refuse(w, host, security.RefusedByPolicy)
 
 		return
 	}
@@ -413,19 +446,21 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 // refused too: the sandbox gets no general-purpose reverse proxy.
 func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
 	if !proxyauth.Authorized(r, p.token) {
+		p.deny(APIDomain, security.RefusedBadToken)
 		http.Error(w, "egress proxy: run token required", http.StatusUnauthorized)
 
 		return
 	}
 
 	if p.api == nil || !proxyauth.UnderPrefix(r.URL.Path, APIPrefix) {
+		p.deny(APIDomain, security.RefusedByPolicy)
 		http.Error(w, "egress proxy: only the OpenRouter API is served", http.StatusForbidden)
 
 		return
 	}
 
 	if !p.policy.Permits(APIDomain) {
-		p.refuse(w, APIDomain)
+		p.refuse(w, APIDomain, security.RefusedByPolicy)
 
 		return
 	}

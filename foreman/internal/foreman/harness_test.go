@@ -912,6 +912,7 @@ type fakeEgress struct {
 	url     string
 	address string
 	domains []string
+	refused []string
 	policy  sandbox.Network
 	closed  bool
 }
@@ -924,6 +925,9 @@ func (p *fakeEgress) Address() string { return p.address }
 
 // Domains is every domain the run contacted.
 func (p *fakeEgress) Domains() []string { return p.domains }
+
+// Refused is every domain the run was refused.
+func (p *fakeEgress) Refused() []string { return p.refused }
 
 // Close records that the run stopped the proxy.
 func (p *fakeEgress) Close() error {

@@ -245,7 +245,10 @@ var _ = Describe("the opencode adapter", func() {
 
 				return proxy, nil
 			}
-			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
+			egress := &fakeEgress{
+				url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"},
+				refused: []string{"blocked.example"},
+			}
 			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
@@ -262,6 +265,8 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
 			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
+			Expect(lines[0]).To(HaveKeyWithValue("refused_domains", []any{"blocked.example"}),
+				"refused domains are listed apart from allowed ones")
 		})
 
 		It("is one JSON line per run, summed over the run and its retro", func() {

@@ -257,7 +257,7 @@ var _ = Describe("Proxy", func() {
 		Expect(p.Domains()).To(ContainElement("127.0.0.1"))
 	})
 
-	It("refuses a denied CONNECT and still records the domain", func() {
+	It("refuses a denied CONNECT and lists the domain as refused", func() {
 		p := start(policy("api.example.com"), "")
 		DeferCleanup(p.Close)
 
@@ -267,7 +267,7 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-		Expect(p.Domains()).To(ContainElement("blocked.example"))
+		Expect(p.Refused()).To(ContainElement("blocked.example"))
 	})
 
 	It("forwards an absolute-form request through the same policy", func() {
@@ -504,7 +504,7 @@ var _ = Describe("Proxy", func() {
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		Expect(dials).To(BeEmpty(), "the proxy dialed a destination the allowlist refused")
-		Expect(p.Domains()).To(ContainElement("unlisted.example"))
+		Expect(p.Refused()).To(ContainElement("unlisted.example"))
 	})
 
 	It("refuses an origin-form path outside the API even with an API configured", func() {
@@ -581,7 +581,7 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
-		Expect(logged.String()).To(ContainSubstring("tunnel limit reached"))
+		Expect(logged.String()).To(ContainSubstring("refused_tunnel_limit"))
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
@@ -715,7 +715,7 @@ var _ = Describe("Proxy", func() {
 				_ = conn.Close()
 
 				Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
-				Expect(p.Domains()).To(ContainElement(host))
+				Expect(p.Refused()).To(ContainElement(host))
 			}
 		})
 
@@ -745,7 +745,7 @@ var _ = Describe("Proxy", func() {
 			_ = conn.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-			Expect(p.Domains()).To(ContainElement("internal.example"))
+			Expect(p.Refused()).To(ContainElement("internal.example"))
 
 			resp, conn = forward(p.Address(), "http://internal.example/thing")
 			// test cleanup: a close error changes no assertion
