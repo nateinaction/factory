@@ -139,13 +139,13 @@ var _ = Describe("the dashboard's writer commands", func() {
 		}
 	}
 
-	// seeded reports a group from a new issue authored by a writer, and returns the issue.
+	// seeded reports a group from a new issue authored by a factory App, and returns the issue.
 	seeded := func(group workflow.GroupID, severity workflow.Severity, claim string) int {
 		number := h.createAs("o", nil, "An issue")
 		body, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Implementer, "sha-a"),
 			[]workflow.RetroFinding{finding(group, severity, claim)})
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(workflow.Implementer), body)
 
 		return number
 	}
@@ -406,7 +406,8 @@ var _ = Describe("the dashboard's writer commands", func() {
 			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)
+		_, err = emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
+			nil, workflow.DashboardTitle, body)
 		Expect(err).NotTo(HaveOccurred())
 
 		dashboard := theDashboardOf("o/r")
@@ -431,7 +432,8 @@ var _ = Describe("the dashboard's writer commands", func() {
 			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)
+		_, err = emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
+			nil, workflow.DashboardTitle, body)
 		Expect(err).NotTo(HaveOccurred())
 
 		dashboard := theDashboardOf("o/r")

@@ -20,6 +20,9 @@ type dashboardIssue struct {
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	State  string `json:"state"`
+	User   struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 var _ = Describe("the retro dashboard", func() {
@@ -79,13 +82,34 @@ var _ = Describe("the retro dashboard", func() {
 		return h.gh.Bodies("PATCH", fmt.Sprintf("/repos/o/r/issues/%d", theDashboard().Number))
 	}
 
-	// seedRetro posts a retro comment on number as the repository's admin.
+	// seedRetro posts a retro comment on number as the agent role's App.
 	seedRetro := func(number int, role workflow.Role, key string, findings ...workflow.RetroFinding) {
 		GinkgoHelper()
 
 		body, err := workflow.RenderRetro(workflow.RetroMarker(number, role, key), findings)
 		Expect(err).NotTo(HaveOccurred())
-		h.comment(number, "o", body)
+		h.comment(number, appLogin(role), body)
+	}
+
+	// openAs opens an issue titled title with body as login, returning its number.
+	openAs := func(login, title, body string) int {
+		GinkgoHelper()
+
+		number, err := emulator.CreateIssueAs(context.Background(), "o/r", tokenFor(login), nil, title, body)
+		Expect(err).NotTo(HaveOccurred())
+
+		return number
+	}
+
+	// dashboardBody is a readable dashboard body with no reports.
+	dashboardBody := func() string {
+		GinkgoHelper()
+
+		body, err := workflow.RenderDashboard(
+			workflow.BuildDashboard(nil, workflow.DashboardState{}, time.Now()))
+		Expect(err).NotTo(HaveOccurred())
+
+		return body
 	}
 
 	// finding is one retro finding about the Implementer's skill.
@@ -109,6 +133,45 @@ var _ = Describe("the retro dashboard", func() {
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(dashboards()).To(HaveLen(1), "created a second dashboard")
+	})
+
+	It("ignores a Retro dashboard an outsider opened and draws its own", func() {
+		body := dashboardBody()
+		outsider := openAs("factory", workflow.DashboardTitle, body)
+
+		Expect(poll()).Error().NotTo(HaveOccurred())
+
+		theirs, err := emulator.Issue(context.Background(), "o/r", outsider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(theirs.Body).To(Equal(body), "an outsider's dashboard was rewritten")
+
+		factory := make([]dashboardIssue, 0, 1)
+
+		for _, issue := range dashboards() {
+			if workflow.FactoryAuthored(issue.User.Login) {
+				factory = append(factory, issue)
+			}
+		}
+
+		Expect(factory).To(HaveLen(1), "the factory's own dashboard")
+		Expect(factory[0].Number).NotTo(Equal(outsider))
+		Expect(factory[0].Body).To(ContainSubstring("## Ready to promote (0)"))
+	})
+
+	It("leaves retro reports an outsider wrote off the dashboard", func() {
+		issue := h.createAs("o", nil, "An issue")
+
+		body, err := workflow.RenderRetro(
+			workflow.RetroMarker(issue, workflow.Implementer, "sha-a"),
+			[]workflow.RetroFinding{finding(workflow.SeverityHigh, "an outsider's claim")})
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(issue, "factory", body)
+
+		Expect(poll()).Error().NotTo(HaveOccurred())
+
+		drawn := theDashboard().Body
+		Expect(drawn).To(ContainSubstring("## Ready to promote (0)"))
+		Expect(drawn).NotTo(ContainSubstring("an outsider's claim"))
 	})
 
 	It("redraws the body from the retro log, and writes only when it changes", func() {
@@ -207,7 +270,8 @@ var _ = Describe("the retro dashboard", func() {
 			workflow.BuildDashboard(nil, workflow.DashboardState{Actions: []workflow.DashboardAction{action}}, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = emulator.CreateIssue(context.Background(), "o/r", nil, workflow.DashboardTitle, body)
+		_, err = emulator.CreateIssueAs(context.Background(), "o/r", tokenFor(appLogin(workflow.Implementer)),
+			nil, workflow.DashboardTitle, body)
 		Expect(err).NotTo(HaveOccurred())
 
 		issue := h.createAs("o", nil, "An issue")
@@ -221,9 +285,8 @@ var _ = Describe("the retro dashboard", func() {
 	})
 
 	It("leaves a dashboard body it cannot read alone", func() {
-		_, err := emulator.CreateIssue(context.Background(), "o/r", nil, workflow.DashboardTitle,
+		openAs(appLogin(workflow.Implementer), workflow.DashboardTitle,
 			"a body a person rewrote by hand")
-		Expect(err).NotTo(HaveOccurred())
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(theDashboard().Body).To(Equal("a body a person rewrote by hand"))
