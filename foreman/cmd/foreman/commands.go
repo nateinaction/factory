@@ -38,6 +38,9 @@ func (e *exitError) Unwrap() error {
 // roleArgCount is how many positional arguments `start` and `run` take: role, repository, issue.
 const roleArgCount = 3
 
+// logsArgCount is how many positional arguments `logs` takes: repository, issue.
+const logsArgCount = 2
+
 // newRootCommand builds the CLI: one command per verb, and the settings flags on the root.
 func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, error) {
 	root := &cobra.Command{
@@ -48,7 +51,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(*cobra.Command, []string) error {
-			return errors.New("a command is required: poll, start or run")
+			return errors.New("a command is required: poll, start, run, status or logs")
 		},
 		PersistentPreRunE: func(*cobra.Command, []string) error {
 			s, err := config.SettingsFrom(settings)
@@ -70,7 +73,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		return nil, fmt.Errorf("bind settings flags: %w", err)
 	}
 
-	root.AddCommand(pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"))
+	root.AddCommand(pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d))
 
 	return root, nil
 }
@@ -154,6 +157,48 @@ func roleShort(verb string) string {
 	}
 
 	return "as factory: clone, run the model, push, post"
+}
+
+// statusCommand is `foreman status`: the read-only report a person runs.
+func statusCommand(d *foreman.Deps) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "show active runs, queues, roles with no host and recent usage",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			code, err := foreman.Status(cmd.Context(), *d)
+
+			return result(code, err)
+		},
+	}
+}
+
+// logsCommand is `foreman logs`: the latest dagu run log for one issue, optionally followed.
+func logsCommand(d *foreman.Deps) *cobra.Command {
+	var follow bool
+
+	cmd := &cobra.Command{
+		Use:   "logs <owner/repo> <issue>",
+		Short: "print the issue's latest dagu run log",
+		Args:  cobra.ExactArgs(logsArgCount),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := workflow.ValidateRepo(args[0]); err != nil {
+				return err
+			}
+
+			number, err := workflow.ParseIssueNumber(args[1])
+			if err != nil {
+				return err
+			}
+
+			code, err := foreman.Logs(cmd.Context(), *d, args[0], number, follow)
+
+			return result(code, err)
+		},
+	}
+	cmd.Flags().BoolVar(&follow, "follow", false, "keep printing new output until the run ends")
+
+	return cmd
 }
 
 // result carries a command's exit code through cobra. A failure without a code exits 1.

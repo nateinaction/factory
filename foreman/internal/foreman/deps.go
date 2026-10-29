@@ -62,6 +62,8 @@ type Deps struct {
 	Host string
 	// Sleep waits between model retries; nil waits on the clock.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
+	Now func() time.Time
 }
 
 // client returns a GitHub client for token.
@@ -113,6 +115,15 @@ func (d Deps) sleep(ctx context.Context, wait time.Duration) error {
 	case <-ctx.Done():
 		return fmt.Errorf("sleep: %w", ctx.Err())
 	}
+}
+
+// now reads the clock. Tests replace it through Deps.Now, so elapsed times are deterministic.
+func (d Deps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+
+	return time.Now()
 }
 
 // GitAuthEnv gives git its credentials through the environment, so they never appear in argv.

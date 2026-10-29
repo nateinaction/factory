@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Role is an agent role. Only the known set parses; anything else fails closed.
@@ -42,6 +43,39 @@ const (
 	// MaxReviewRounds is how many distinct commits are reviewed before a person is called.
 	MaxReviewRounds = 3
 )
+
+// Each agent role's wall-clock deadline, from the spec's limits table. The scheduling slice moves
+// them into group_vars; `foreman status` compares a run's elapsed time against them until then.
+const (
+	// PlannerDeadline bounds a Planner run.
+	PlannerDeadline = 20 * time.Minute
+	// ResearcherDeadline bounds a Researcher run.
+	ResearcherDeadline = 45 * time.Minute
+	// ImplementerDeadline bounds an Implementer run.
+	ImplementerDeadline = 90 * time.Minute
+	// ReviewerDeadline bounds a Reviewer run.
+	ReviewerDeadline = 30 * time.Minute
+	// CuratorDeadline bounds a Curator run.
+	CuratorDeadline = 30 * time.Minute
+)
+
+// Deadline is the agent role's wall-clock deadline. An unknown role has none.
+func Deadline(role Role) time.Duration {
+	switch role {
+	case Planner:
+		return PlannerDeadline
+	case Researcher:
+		return ResearcherDeadline
+	case Implementer:
+		return ImplementerDeadline
+	case Reviewer:
+		return ReviewerDeadline
+	case Curator:
+		return CuratorDeadline
+	}
+
+	return 0
+}
 
 // Exit codes of `run reviewer`, read by `start reviewer`.
 const (
