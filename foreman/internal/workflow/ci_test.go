@@ -1,6 +1,7 @@
 package workflow_test
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -236,10 +237,11 @@ var _ = Describe("the CI failure report", func() {
 })
 
 var _ = Describe("review rounds", func() {
+	// The Reviewer's App posted every marked review, so each one is the factory's own record.
 	reviews := []workflow.Item{
-		{Body: workflow.ReviewMarker("a") + "\nx"},
-		{Body: workflow.ReviewMarker("a") + "\ny"},
-		{Body: workflow.ReviewMarker("b")},
+		{Body: workflow.ReviewMarker("a") + "\nx", Author: factoryApp(workflow.Reviewer)},
+		{Body: workflow.ReviewMarker("a") + "\ny", Author: factoryApp(workflow.Reviewer)},
+		{Body: workflow.ReviewMarker("b"), Author: factoryApp(workflow.Reviewer)},
 		{Body: "human review"},
 	}
 
@@ -274,5 +276,13 @@ var _ = Describe("review rounds", func() {
 		}}
 
 		Expect(workflow.ReviewRounds(reviews, comments, "a", "o")).To(Equal(2))
+	})
+
+	It("does not count a review another author posted", func() {
+		forged := append(slices.Clone(reviews),
+			workflow.Item{Body: workflow.ReviewMarker("d"), Author: "o"},
+			workflow.Item{Body: workflow.ReviewMarker("e"), Author: "other-owner-factory-reviewer[bot]"})
+
+		Expect(workflow.ReviewRounds(forged, nil, "a", "o")).To(Equal(2))
 	})
 })

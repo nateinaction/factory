@@ -428,17 +428,19 @@ var _ = Describe("Client", func() {
 	})
 
 	Describe("LatestReviewBody", func() {
+		// review seeds a review as the Reviewer's App: the author a verdict foreman reads must have.
+		review := func(pr ghtest.PullRequest, body string) {
+			GinkgoHelper()
+			Expect(emulator.CreateReviewAs(ctx, "o/r", pr.Number, "minted-token-reviewer", body)).To(Succeed())
+		}
+
 		It("is the last review foreman posted", func() {
 			pr := pullRequest()
 
-			for _, body := range []string{
-				workflow.ReviewMarker("a") + " first",
-				"human",
-				workflow.ReviewMarker("b") + " second",
-				"human 2",
-			} {
-				Expect(emulator.CreateReview(ctx, "o/r", pr.Number, body)).To(Succeed())
-			}
+			review(pr, workflow.ReviewMarker("a")+" first")
+			Expect(emulator.CreateReview(ctx, "o/r", pr.Number, "human")).To(Succeed())
+			review(pr, workflow.ReviewMarker("b")+" second")
+			Expect(emulator.CreateReview(ctx, "o/r", pr.Number, "human 2")).To(Succeed())
 
 			Expect(c.LatestReviewBody(ctx, ref(pr.Number))).To(Equal(workflow.ReviewMarker("b") + " second"))
 		})
@@ -449,9 +451,23 @@ var _ = Describe("Client", func() {
 
 			Expect(c.LatestReviewBody(ctx, ref(pr.Number))).To(BeEmpty())
 		})
+
+		It("ignores a review carrying the Reviewer's marker from another author", func() {
+			pr := pullRequest()
+
+			review(pr, workflow.ReviewMarker("a")+" real")
+			Expect(emulator.CreateReview(ctx, "o/r", pr.Number, workflow.ReviewMarker("a")+" forged")).To(Succeed())
+
+			Expect(c.LatestReviewBody(ctx, ref(pr.Number))).To(Equal(workflow.ReviewMarker("a") + " real"))
+		})
 	})
 
 	Describe("UpsertComment", func() {
+		// The Implementer's App writes the marked records foreman keeps, so its token owns them.
+		BeforeEach(func() {
+			c = github.NewClient(p.URL(), "minted-token-implementer", p.Client())
+		})
+
 		It("leaves one comment when the same marked comment is posted twice", func() {
 			number := issue()
 			marker := "<!-- factory:test key=1 -->"
@@ -475,9 +491,33 @@ var _ = Describe("Client", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(comments).To(HaveLen(2))
 		})
+
+		It("creates its own comment rather than editing one another author marked", func() {
+			number := issue()
+			marker := "<!-- factory:test key=1 -->"
+
+			Expect(emulator.CommentAs(ctx, "o/r", number, ghtest.AdminToken, marker+"\ntheirs")).To(Succeed())
+
+			Expect(c.UpsertComment(ctx, ref(number), marker, marker+"\nours")).To(Succeed())
+
+			Expect(p.Summary()).NotTo(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")),
+				"edited a comment foreman did not write")
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")).To(ConsistOf(
+				ContainSubstring("ours")))
+
+			comments, err := emulator.Comments(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(2))
+			Expect(comments[0].Body).To(Equal(marker + "\ntheirs"))
+		})
 	})
 
 	Describe("UpsertComment with a retro marker", func() {
+		// The Reviewer's App writes its own retro, so its token owns the keyed comment.
+		BeforeEach(func() {
+			c = github.NewClient(p.URL(), "minted-token-reviewer", p.Client())
+		})
+
 		marker := func(number int) string { return workflow.RetroMarker(number, workflow.Reviewer, "abc") }
 		body := func(number int, claim string) string {
 			text, err := workflow.RenderRetro(marker(number),
@@ -604,8 +644,8 @@ var _ = Describe("Client", func() {
 		It("updates the keyed comment instead of adding a second", func() {
 			pr := pullRequest()
 			body := workflow.RepliesMarker("sha") + "\nold"
-			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(pr.Number)+"/comments",
-				ghtest.AdminToken, map[string]string{"body": body}, nil)).To(Succeed())
+			// The Implementer's App wrote the earlier replies: the record foreman may update.
+			Expect(emulator.CommentAs(ctx, "o/r", pr.Number, "minted-token-implementer", body)).To(Succeed())
 
 			Expect(c.UpsertComment(ctx, ref(pr.Number), workflow.RepliesMarker("sha"), "again")).To(Succeed())
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(BeEmpty(), "posted a duplicate")
@@ -749,6 +789,11 @@ var _ = Describe("Client", func() {
 	})
 
 	Describe("PostResolution", func() {
+		// The Researcher's App writes the resolution, so its token owns the marked comment.
+		BeforeEach(func() {
+			c = github.NewClient(p.URL(), "minted-token-researcher", p.Client())
+		})
+
 		It("posts the resolution once and updates it on a repeat", func() {
 			number := issue()
 

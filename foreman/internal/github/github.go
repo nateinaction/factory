@@ -535,14 +535,16 @@ func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Iss
 }
 
 // UpsertComment writes text as the one comment on ref that starts with marker: it edits that comment
-// when one exists and creates it otherwise, so writing the same marked comment again changes nothing.
+// when a factory App wrote it and creates its own otherwise, so writing the same marked comment again
+// changes nothing while another author's marker is never taken over. It fails closed when authorship
+// cannot be read: an unreadable list never counts as a comment of foreman's to edit.
 func (c Client) UpsertComment(ctx context.Context, ref workflow.IssueRef, marker, text string) error {
 	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return err
 	}
 
-	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+	if mine := workflow.FactoryStartsWith(comments, marker, ref.Repo.Owner()); len(mine) > 0 {
 		return c.Call(ctx, http.MethodPatch, commentPath(ref.Repo, mine[0].ID), bodyRequest{Body: text}, nil)
 	}
 
@@ -830,14 +832,15 @@ func (c Client) Reviews(ctx context.Context, ref workflow.IssueRef) ([]workflow.
 	return Paged[workflow.Item](ctx, c, pullPath(ref, "reviews"))
 }
 
-// LatestReviewBody is the body of the last review foreman posted, or empty.
+// LatestReviewBody is the body of the last review foreman posted, or empty. Another author's marker
+// is not foreman's verdict, so it is never what the next run reads.
 func (c Client) LatestReviewBody(ctx context.Context, ref workflow.IssueRef) (string, error) {
 	reviews, err := c.Reviews(ctx, ref)
 	if err != nil {
 		return "", err
 	}
 
-	ours := workflow.StartsWith(reviews, workflow.ReviewMarkerPrefix)
+	ours := workflow.FactoryStartsWith(reviews, workflow.ReviewMarkerPrefix, ref.Repo.Owner())
 	if len(ours) == 0 {
 		return "", nil
 	}
