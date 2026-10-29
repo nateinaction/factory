@@ -74,14 +74,14 @@ func applyGateReply(
 
 	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
-		d.log().Warn("cannot mint the Planner's token; leaving the gate's proposal unapplied",
+		d.log().Warn("cannot mint the Planner's token; leaving the proposal unapplied",
 			"repo", repo, "issue", issue.Number, "error", err)
 
 		return false, nil
 	}
 
-	d.log().Info("applying a proposal a writer opened the gate on", "repo", repo, "issue", issue.Number,
-		"shape", proposal.Shape)
+	d.log().Info("a writer opened the human gate; applying the Planner's proposal",
+		"repo", repo, "issue", issue.Number, "shape", proposal.Shape)
 
 	return true, applyProposal(ctx, d, d.client(token), repo, issue.Number, latest.ID, proposal)
 }
@@ -143,8 +143,8 @@ func lastWriterComment(
 	return last, ok
 }
 
-// applyProposal makes a proposal the gate opened on true. Every step is idempotent: applying the same
-// proposal again reuses the issues it created and adds only what is missing.
+// applyProposal carries out a proposal the writer approved at the human gate. Every step is idempotent:
+// applying the same proposal again reuses the issues it created and adds only what is missing.
 func applyProposal(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, from int, specComment int64,
 	p workflow.PlannerProposal,
@@ -216,7 +216,7 @@ func applySlices(
 	return finishSlices(ctx, c, repo, from, runID, refs)
 }
 
-// applyMap rewrites a map the gate opened on in the wayfinder layout, routes its tickets under it and
+// applyMap rewrites an approved map in the wayfinder layout, routes its tickets under it and
 // moves the issue to factory:done. A repeat reuses every issue, link and comment it made.
 func applyMap(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string, p workflow.PlannerProposal,
@@ -291,7 +291,7 @@ func isMapBody(issue workflow.Issue) bool {
 	return workflow.HasLabel(issue, workflow.LabelMap) || strings.Contains(issue.Body, "## Original request")
 }
 
-// applyResolution records a decision ticket the gate opened on: its tickets go under the ticket's map, its
+// applyResolution records an approved decision ticket: its tickets go under the ticket's map, its
 // decision line joins the map's Decisions so far, and the ticket is closed. Every step is keyed, so
 // applying the same resolution again changes nothing.
 func applyResolution(

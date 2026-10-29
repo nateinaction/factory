@@ -258,7 +258,12 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		return runResult{}, err
 	}
 
-	sec, err := readSecrets(r.d, r.role)
+	tokenPath, err := r.d.tokenPath(r.role)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	sec, err := readSecrets(tokenPath, r.d.Settings.KeyFile)
 	if err != nil {
 		return runResult{}, err
 	}

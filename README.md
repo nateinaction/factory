@@ -157,8 +157,8 @@ no code path that merges.
    of numbered questions or a final round with a proposal (one issue, slices,
    a wayfinder map or a ticket resolution). Foreman posts the round, hides a
    proposal in its comment, and the issue waits in `factory:waiting` for a
-   writer. A writer's reply wakes the Planner for another round; approval of the
-   final round applies the proposal.
+   writer. A writer's reply wakes the Planner for another round; a writer opening
+   the human gate on the final round applies the proposal.
 4. Research (`run`): clones the repo, runs `opencode run` with the `research`
    skill, commits the findings under `docs/research/`, and pushes them to
    `research/<name>`. It never opens a PR: the branch is a record, never merged.
