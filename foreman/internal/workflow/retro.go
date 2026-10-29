@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -374,39 +373,53 @@ type RetroGroup struct {
 	Claim string
 }
 
-// RetroGroups collects the existing groups the agent role reported on this issue, one per target and
-// key, in a stable order. exceptKey is the current run, whose own earlier attempt is not "existing".
-// Another agent role's groups are left out: the Reviewer's context never contains the Implementer's
-// retro.
-func RetroGroups(comments []Item, role Role, exceptKey string) ([]RetroGroup, error) {
-	seen := map[string]RetroGroup{}
+// RetroGroups collects the repository's existing groups the agent role reported, across every issue,
+// one per target and key, in a stable order. reports is the repository's retro log, so a group a retro
+// on another issue made is one this retro can pick and the dashboard can count. exceptKey is the
+// current run, whose own earlier attempt is not "existing". Another agent role's groups are left out:
+// the Reviewer's context never contains the Implementer's retro.
+func RetroGroups(reports []DashboardReport, role Role, exceptKey string) []RetroGroup {
+	oldest := map[string]DashboardReport{}
 
-	for _, c := range comments {
-		rc, ok, err := ParseRetroComment(c.Body)
-		if err != nil {
-			return nil, err
-		}
-
-		if !ok || rc.Role != role || rc.Key == exceptKey {
+	for _, report := range reports {
+		if report.Role != role || report.Key == exceptKey {
 			continue
 		}
 
-		for _, f := range rc.Findings {
-			key := f.Target.String() + "\x00" + f.Group
-			if _, ok := seen[key]; ok {
-				continue
-			}
+		key := report.Target.String() + "\x00" + report.Group
 
-			seen[key] = RetroGroup{Target: f.Target, Key: f.Group, Claim: f.Claim}
+		seen, ok := oldest[key]
+		if !ok || reportEarlier(report, seen) {
+			oldest[key] = report
 		}
 	}
 
-	groups := slices.SortedFunc(maps.Values(seen), func(a, b RetroGroup) int {
+	groups := make([]RetroGroup, 0, len(oldest))
+
+	for _, report := range oldest {
+		groups = append(groups, RetroGroup{Target: report.Target, Key: report.Group, Claim: report.Claim})
+	}
+
+	slices.SortFunc(groups, func(a, b RetroGroup) int {
 		return cmp.Or(cmp.Compare(a.Target.String(), b.Target.String()), cmp.Compare(a.Key, b.Key))
 	})
+
 	if len(groups) > MaxRetroGroups {
 		groups = groups[:MaxRetroGroups]
 	}
 
-	return groups, nil
+	return groups
+}
+
+// reportEarlier reports whether a's claim is the one its group carries instead of b's: the oldest
+// report wins, and the issue, agent role, run key and claim break a tie, so the groups read the same
+// whatever order the log arrives in.
+func reportEarlier(a, b DashboardReport) bool {
+	return cmp.Or(
+		a.At.Compare(b.At),
+		cmp.Compare(a.Issue, b.Issue),
+		cmp.Compare(a.Role, b.Role),
+		cmp.Compare(a.Key, b.Key),
+		cmp.Compare(a.Claim, b.Claim),
+	) < 0
 }

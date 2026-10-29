@@ -68,9 +68,11 @@ step cap and deadline (`factory_agent_limits.<role>.retro`), and the same state
 database, so it sees the run as it happened.
 
 - The model writes `retro.json`; `workflow.ParseRetro` validates it strictly, all or nothing.
-- The prompt carries only the existing group keys and one-line claims for the reporting agent role
-  on that issue, never another retro's evidence. Another agent role's retros are left out, so the
-  Reviewer's context never contains the Implementer's.
+- The prompt carries only the existing group keys and one-line claims for the reporting agent role,
+  across every issue of the repository, never another retro's evidence. A group a retro on another
+  issue made is one this retro can pick, so two issues reporting one target share a group and the
+  dashboard can count it ready. Another agent role's retros are left out, so the Reviewer's context
+  never contains the Implementer's.
 - foreman posts the retro whole as a marker comment on the issue, keyed by issue, agent role and
   run key (the Implementer's commit SHA, the Reviewer's PR head SHA). A repeat updates that comment.
 - A failed run gets a retro too, except a context overflow, running out of credits or an unknown
