@@ -40,10 +40,16 @@ func (e refusedDestination) Error() string {
 const maxResolvedAddresses = 8
 
 // nonPublicPrefixes are ranges a routability test alone admits but the proxy must not reach:
-// RFC 6598's shared space, where a tailnet lives, and 0.0.0.0/8, which a host reads as itself.
+// RFC 6598's shared space, where a tailnet lives, 0.0.0.0/8, which a host reads as itself, class E,
+// and the NAT64 and 6to4 translation ranges.
 var nonPublicPrefixes = []netip.Prefix{ //nolint:gochecknoglobals // a read-only set
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("0.0.0.0/8"),
+	// 240.0.0.0/4 is reserved class E space, which Go counts as global unicast.
+	netip.MustParsePrefix("240.0.0.0/4"),
+	// NAT64 and 6to4 embed an IPv4 address the check never sees, so they can reach a private one.
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("2002::/16"),
 }
 
 // publiclyRoutable reports whether addr is one the proxy may dial: a valid global unicast address

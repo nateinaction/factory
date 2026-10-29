@@ -164,6 +164,7 @@ var _ = Describe("Network", func() {
 		Expect(n.Permits("other.example.com")).To(BeFalse())
 		Expect(n.Permits("cdn.npmjs.org")).To(BeTrue())
 		Expect(n.Permits("npmjs.org")).To(BeFalse(), "a wildcard matches strict subdomains")
+		Expect(n.Permits("evilnpmjs.org")).To(BeFalse(), "a wildcard needs the dot before its suffix")
 	})
 
 	DescribeTable("refuses an entry that would not mean what it says",
