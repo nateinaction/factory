@@ -9,6 +9,8 @@ import (
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nateinaction/factory/foreman/internal/opencode"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -55,6 +57,122 @@ func int64Gauge(m metric.Meter, name, description string) metric.Int64Gauge {
 	}
 
 	return gauge
+}
+
+// float64Counter builds a counter, falling back to a no-op instrument the meter refuses it.
+func float64Counter(m metric.Meter, name, description string) metric.Float64Counter {
+	counter, err := m.Float64Counter(name, metric.WithDescription(description))
+	if err != nil {
+		counter, _ = metricnoop.NewMeterProvider().Meter("").Float64Counter(name)
+
+		return counter
+	}
+
+	return counter
+}
+
+// alertInstruments are the measurements the alert rules read. Every instrument is safe on a no-op
+// meter, so recording one never fails or delays a run. An issue number is never a label: the issue is
+// a span attribute, and an alert's trace link carries the operator to it.
+type alertInstruments struct {
+	security metric.Int64Counter
+	outcomes metric.Int64Counter
+	cost     metric.Float64Counter
+	reaped   metric.Int64Counter
+}
+
+// newAlertInstruments builds the alert rules' instruments.
+func newAlertInstruments(d Deps) alertInstruments {
+	m := d.meter()
+
+	return alertInstruments{
+		security: int64Counter(m, telemetry.MetricSecurityEvents,
+			"Security events by agent role, repository, event and outcome."),
+		outcomes: int64Counter(m, telemetry.MetricRunOutcomes,
+			"Finished runs by agent role, repository and outcome."),
+		cost: float64Counter(m, telemetry.MetricRunCost,
+			"Model cost in US dollars by agent role, repository and model."),
+		reaped: int64Counter(m, telemetry.MetricRunsReaped,
+			"Dead runs a poll called failed by agent role and repository."),
+	}
+}
+
+// securityEvent records one security event. Its issue is a span attribute, so it is not a label.
+func (a alertInstruments) securityEvent(
+	ctx context.Context, role workflow.Role, repo workflow.Repo, event string, outcome security.Outcome,
+) {
+	a.securityEvents(ctx, role, repo, event, outcome, 1)
+}
+
+// securityEvents records n refused requests of one event and outcome.
+func (a alertInstruments) securityEvents(
+	ctx context.Context, role workflow.Role, repo workflow.Repo, event string, outcome security.Outcome, n int64,
+) {
+	if n <= 0 {
+		return
+	}
+
+	a.security.Add(ctx, n, metric.WithAttributes(
+		attribute.String(telemetry.AttrAgentRole, string(role)),
+		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.String(telemetry.AttrEvent, event),
+		attribute.String(telemetry.AttrOutcome, string(outcome)),
+	))
+}
+
+// runOutcome records how one run ended.
+func (a alertInstruments) runOutcome(
+	ctx context.Context, role workflow.Role, repo workflow.Repo, outcome opencode.Outcome,
+) {
+	a.outcomes.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(telemetry.AttrAgentRole, string(role)),
+		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.String(telemetry.AttrOutcome, string(outcome)),
+	))
+}
+
+// runCost records what the run's model calls cost. A cost no response reported records nothing.
+func (a alertInstruments) runCost(
+	ctx context.Context, role workflow.Role, repo workflow.Repo, model string, cost *float64,
+) {
+	if cost == nil || *cost <= 0 {
+		return
+	}
+
+	a.cost.Add(ctx, *cost, metric.WithAttributes(
+		attribute.String(telemetry.AttrAgentRole, string(role)),
+		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.String(telemetry.AttrModel, model),
+	))
+}
+
+// runReaped records one dead run a poll called failed.
+func (a alertInstruments) runReaped(ctx context.Context, role workflow.Role, repo workflow.Repo) {
+	a.reaped.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(telemetry.AttrAgentRole, string(role)),
+		attribute.String(telemetry.AttrRepo, repo.String()),
+	))
+}
+
+// recordAlerts records what the alert rules read for one finished run: its outcome and cost, and
+// every request its two proxies refused, by event and outcome. The run's issue stays a span
+// attribute, so an alert reaches it through the run's trace.
+func (r run) recordAlerts(
+	ctx context.Context, st opencode.RunStats, usage opencode.Usage,
+	egress, key map[security.Outcome]int,
+) {
+	alerts := newAlertInstruments(r.d)
+
+	alerts.runOutcome(ctx, r.role, r.spec.ref.Repo, st.Outcome)
+	alerts.runCost(ctx, r.role, r.spec.ref.Repo, r.spec.agent.Model, usage.Cost)
+
+	for outcome, n := range egress {
+		alerts.securityEvents(ctx, r.role, r.spec.ref.Repo, security.EventEgressRefused, outcome, int64(n))
+	}
+
+	for outcome, n := range key {
+		alerts.securityEvents(ctx, r.role, r.spec.ref.Repo, security.EventKeyProxyRefused, outcome, int64(n))
+	}
 }
 
 // issuesInState records how many open issues one repository has in a factory state. Issue numbers,

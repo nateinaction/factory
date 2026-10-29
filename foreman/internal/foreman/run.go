@@ -395,7 +395,7 @@ func startCode(err error, code int) int {
 
 // emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
 // and is never retried, so the run is worth recording on its own.
-func emitStepCap(d Deps, role workflow.Role, repo workflow.Repo, number int, err error) {
+func emitStepCap(ctx context.Context, d Deps, role workflow.Role, repo workflow.Repo, number int, err error) {
 	if opencode.KindOf(err) != opencode.FailStepCap {
 		return
 	}
@@ -404,6 +404,7 @@ func emitStepCap(d Deps, role workflow.Role, repo workflow.Repo, number int, err
 		security.Scope(d.log(), string(role), repo.String(), number),
 		security.EventRunCapped, security.RunStepCap, "",
 	)
+	newAlertInstruments(d).securityEvent(ctx, role, repo, security.EventRunCapped, security.RunStepCap)
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -545,6 +546,9 @@ func rejectOutput(
 	security.Emit(
 		security.Scope(d.log(), string(role), repo.String(), number),
 		security.EventOutputRejected, outputOutcome(rejected.Problem), "",
+	)
+	newAlertInstruments(d).securityEvent(
+		ctx, role, repo, security.EventOutputRejected, outputOutcome(rejected.Problem),
 	)
 
 	lines := []string{

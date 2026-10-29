@@ -22,6 +22,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -58,6 +59,8 @@ type Forwarder interface {
 	URL() string
 	// Usage is what the forwarded responses reported.
 	Usage() openrouter.Usage
+	// Refusals counts the requests the proxy refused, by outcome.
+	Refusals() map[security.Outcome]int
 	// Close stops the proxy.
 	Close() error
 }
@@ -72,6 +75,8 @@ type EgressProxy interface {
 	Domains() []string
 	// Refused is every host the proxy refused, listed apart from the allowed ones.
 	Refused() []string
+	// Refusals counts the requests the proxy refused, by outcome.
+	Refusals() map[security.Outcome]int
 	// Close stops the proxy.
 	Close() error
 }

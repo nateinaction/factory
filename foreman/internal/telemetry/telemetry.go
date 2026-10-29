@@ -56,6 +56,8 @@ const (
 	AttrWorkerHost = "factory.worker_host"
 	// AttrOutcome is how a run ended.
 	AttrOutcome = "factory.outcome"
+	// AttrEvent is the security event a measurement counts.
+	AttrEvent = "factory.event"
 	// AttrFailureKind is why a failed run, or a failed stage of one, failed.
 	AttrFailureKind = "factory.failure_kind"
 	// AttrAttempt is the 1-based number of one model attempt.
@@ -105,6 +107,16 @@ const (
 	MetricPollClaims = "factory.poll.claims"
 	// MetricPollCapacity is the run capacity left for an agent role after the poll's claims.
 	MetricPollCapacity = "factory.poll.capacity_left"
+	// MetricSecurityEvents counts the security events of each agent role and repository, by event and
+	// outcome. It is the metric an alert reads; the event's issue stays a span attribute.
+	MetricSecurityEvents = "factory.security.events"
+	// MetricRunOutcomes counts finished runs by agent role, repository and outcome. A failed run's
+	// share of the total is the agent role's failure rate.
+	MetricRunOutcomes = "factory.run.outcomes"
+	// MetricRunCost is what model calls cost, in US dollars, by agent role, repository and model.
+	MetricRunCost = "factory.run.cost"
+	// MetricRunsReaped counts dead runs a poll called failed.
+	MetricRunsReaped = "factory.runs.reaped"
 )
 
 // Run span names. Each stage span is a child of the process root span, which names the run verb.

@@ -116,6 +116,9 @@ func (r *commandRun) onComment(
 			security.Scope(r.d.log(), string(r.role), r.repo.String(), number),
 			security.EventDashboardCommandRefused, outcome, "",
 		)
+		newAlertInstruments(r.d).securityEvent(
+			ctx, r.role, r.repo, security.EventDashboardCommandRefused, outcome,
+		)
 
 		r.d.log().Info("a non-writer's dashboard command is minimized and takes no action",
 			"repo", r.repo, "comment", comment.ID, "by", comment.Author, "command", cmd.Kind)

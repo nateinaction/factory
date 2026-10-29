@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# What the telemetry role renders to: one Prometheus alert rule per signal that needs a human, each
+# naming the agent role and repository and linking to the run's trace. Every threshold and the cost
+# budget are group_vars. Each alert is fired from a synthetic event with promtool, so a rule that no
+# longer matches its event fails here. Run against the real group_vars; no host needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+}
+
+# rules <python>: runs the assertions with the rendered rules `rules` and the group_vars `v` in scope.
+rules() {
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+rules, v = [rule for group in d["groups"] for rule in group["rules"]], d["v"]
+exec(sys.argv[2])
+' "$out/rules.json" "$1"
+}
+
+if ! ansible-playbook "$root/tests/alerts.yml" >"$out/.log" 2>&1; then
+  cat "$out/.log" >&2
+  echo "FAIL render playbook" >&2
+  exit 1
+fi
+
+# --- every signal has a rule, and it loads ---
+check "the rules load" promtool check rules "$out/alerts.yaml"
+check "every signal that needs a human has an alert" rules '
+want = {
+    "ForemanEgressNotRoutable",
+    "ForemanProxyBadToken",
+    "ForemanOutputFactoryMarker",
+    "ForemanAgentRoleFailureRate",
+    "ForemanDailyModelCost",
+    "ForemanDeadRunReaped",
+}
+assert {r["alert"] for r in rules} == want, {r["alert"] for r in rules}
+'
+check "each alert fires from its synthetic event" bash -c "
+  python3 -I '$root/tests/alerts_promtool.py' '$out/rules.json' '$out/promtool.json' &&
+  promtool test rules '$out/promtool.json'"
+
+# --- every alert names the run and links to it ---
+check "each alert names the agent role and repository" rules '
+for r in rules:
+    text = " ".join(r["annotations"].values())
+    assert "{{ $labels.factory_agent_role }}" in text, r["alert"]
+    assert "{{ $labels.factory_repo }}" in text, r["alert"]
+'
+check "each alert links to the run's trace in Grafana" rules '
+for r in rules:
+    trace = r["annotations"]["trace"]
+    assert trace.startswith(v["factory_alerts_grafana_url"] + "/explore?left="), r["alert"]
+    assert "span.factory.agent_role" in trace and "span.factory.repo" in trace, r["alert"]
+'
+check "each alert links to the repository's issues" rules '
+for r in rules:
+    assert r["annotations"]["issue"].startswith("https://github.com/{{ $labels.factory_repo }}/issues"), r["alert"]
+'
+
+# --- thresholds and the budget are settings, not constants ---
+check "the security alerts use the configured security window" rules '
+for r in rules:
+    if r["alert"] in ("ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker"):
+        assert "[" + v["factory_alerts_security_window"] + "]" in r["expr"], r["alert"]
+'
+check "the failure-rate alert uses the configured threshold and window" rules '
+r = next(r for r in rules if r["alert"] == "ForemanAgentRoleFailureRate")
+assert v["factory_alerts_failure_rate_window"] in r["expr"]
+assert "> " + str(v["factory_alerts_failure_rate_threshold"]) in r["expr"]
+assert str(v["factory_alerts_failure_rate_min_runs"]) in r["expr"]
+'
+check "the cost alert uses the configured budget and window" rules '
+r = next(r for r in rules if r["alert"] == "ForemanDailyModelCost")
+assert v["factory_alerts_cost_window"] in r["expr"]
+assert "> " + str(v["factory_alerts_daily_cost_budget_usd"]) in r["expr"]
+'
+check "the dead-run alert uses the configured window" rules '
+r = next(r for r in rules if r["alert"] == "ForemanDeadRunReaped")
+assert "[" + v["factory_alerts_dead_run_window"] + "]" in r["expr"]
+'
+
+# --- prometheus is told to load them ---
+check "prometheus loads the rules" grep -Fq -- 'rule_files:' "$root/roles/telemetry/tasks/main.yml"
+
+[ "$failures" -eq 0 ]

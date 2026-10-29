@@ -9,6 +9,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -261,16 +262,17 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	// failure anywhere below leaves nothing behind.
 	defer func() { err = errors.Join(err, files.remove()) }()
 
-	// The domains the egress proxy saw are the run's, and are read in the defer below.
+	// The domains and the refusals each proxy counted are the run's, read in the defer below.
 	var domains, refused []string
 
-	// The run's one usage line is logged even when the run failed, once the proxies have added what
-	// they read: that merge happens in the defer below, which runs first.
+	var egressRefusals, keyRefusals map[security.Outcome]int
+
 	started := r.d.now()
 
 	defer func() {
 		st := r.stats(result, err, r.d.now().Sub(started))
 		r.annotateRun(ctx, st, result.usage)
+		r.recordAlerts(ctx, st, result.usage, egressRefusals, keyRefusals)
 		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
 			WithDomains(domains, refused))
 	}()
@@ -280,45 +282,68 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		return runResult{}, err
 	}
 
-	tokenPath, err := r.d.tokenPath(r.role)
+	px, err := r.startProxies(ctx, network)
 	if err != nil {
 		return runResult{}, err
-	}
-
-	sec, err := readSecrets(tokenPath, r.d.Settings.KeyFile)
-	if err != nil {
-		return runResult{}, err
-	}
-
-	token, err := r.d.token()
-	if err != nil {
-		return runResult{}, err
-	}
-
-	p, err := r.bindProxy(ctx, sec.openrouterKey, token)
-	if err != nil {
-		return runResult{}, err
-	}
-
-	e, err := r.d.egress(ctx, r.role, r.spec.ref, network, p.URL(), token)
-	if err != nil {
-		// A failure to stop the key proxy is part of the run's outcome, not a diagnostic to drop.
-		return runResult{}, errors.Join(err, p.Close())
 	}
 	// The usage the key proxy read and the domains the egress proxy saw are the run's. Both are read
 	// before the proxies stop: a response still being relayed when the model exits cannot be counted,
 	// and Close is what ends it.
 	defer func() {
-		result.usage = result.usage.Use(reported(p.Usage()))
-		domains, refused = e.Domains(), e.Refused()
-		err = errors.Join(err, e.Close(), p.Close())
+		result.usage = result.usage.Use(reported(px.key.Usage()))
+		domains, refused = px.egress.Domains(), px.egress.Refused()
+		egressRefusals, keyRefusals = px.egress.Refusals(), px.key.Refusals()
+		err = errors.Join(err, px.egress.Close(), px.key.Close())
 	}()
 
 	env := runEnv{
-		sec: sec, baseURL: e.URL(), token: token, egressPort: proxyPort(e.Address()), network: network,
+		sec: px.sec, baseURL: px.egress.URL(), token: px.token,
+		egressPort: proxyPort(px.egress.Address()), network: network,
 	}
 
 	return r.work(ctx, env, files)
+}
+
+// proxies are the run's two loopback proxies and what started them: the secret they read at the edge
+// and the token they answer.
+type proxies struct {
+	key    Forwarder
+	egress EgressProxy
+	sec    secrets
+	token  string
+}
+
+// startProxies starts the run's key proxy and the egress proxy in front of it. A failure to bind
+// either fails the run: the model has no other way to reach a model, and there is never an
+// unsandboxed fallback. A failure to stop the key proxy after the egress proxy failed is part of the
+// run's outcome, not a diagnostic to drop.
+func (r run) startProxies(ctx context.Context, network sandbox.Network) (proxies, error) {
+	tokenPath, err := r.d.tokenPath(r.role)
+	if err != nil {
+		return proxies{}, err
+	}
+
+	sec, err := readSecrets(tokenPath, r.d.Settings.KeyFile)
+	if err != nil {
+		return proxies{}, err
+	}
+
+	token, err := r.d.token()
+	if err != nil {
+		return proxies{}, err
+	}
+
+	key, err := r.bindProxy(ctx, sec.openrouterKey, token)
+	if err != nil {
+		return proxies{}, err
+	}
+
+	e, err := r.d.egress(ctx, r.role, r.spec.ref, network, key.URL(), token)
+	if err != nil {
+		return proxies{}, errors.Join(err, key.Close())
+	}
+
+	return proxies{key: key, egress: e, sec: sec, token: token}, nil
 }
 
 // work is the run's work, top to bottom: the job it reads, the clone its agent role prepares, the
@@ -358,7 +383,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 	if err != nil {
 		// A model that failed is the run's failure too, but the run still settles and still gets the
 		// retro its agent role keeps for a failed run.
-		emitStepCap(r.d, r.role, r.spec.ref.Repo, r.spec.ref.Number, err)
+		emitStepCap(ctx, r.d, r.role, r.spec.ref.Repo, r.spec.ref.Number, err)
 		r.settle(ctx, 1, err)
 
 		return runResult{usage: res.Usage.Add(failedRetro(ctx, rc, s, prep, res, err)), attempts: res.Attempts}, err

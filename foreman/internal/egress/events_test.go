@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 )
 
 // headerSecret is a request header's value the event must never carry.
@@ -133,6 +134,7 @@ var _ = Describe("security events", func() {
 
 		Expect(p.Domains()).To(BeEmpty())
 		Expect(p.Refused()).To(Equal([]string{"10.1.2.3"}))
+		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedNotRoutable: 2}))
 	})
 
 	It("reports a tunnel refused at the limit, and lists the host as refused", func() {
