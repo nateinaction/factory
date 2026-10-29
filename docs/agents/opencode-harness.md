@@ -10,7 +10,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Skills: only the factory's own, exactly the role's list | `agent.<role>.permission.skill` allows the role's skills and denies the rest; `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
 | Permissions: deny by default, never `ask` | `permission.*` in `opencode.json`, rendered per agent role from `group_vars` |
 | No repository config | `OPENCODE_DISABLE_PROJECT_CONFIG=1` |
-| Fresh state, deleted after the run and its retro | `OPENCODE_DB` in the run's state directory, so the retro can resume the run's session by id and the state goes with the run directory |
+| Fresh state, shared with the retro, deleted with the run | `OPENCODE_DB` points at an on-disk database in the run's own state directory, so the retro can resume the run's session by id and the state is removed with the run directory |
 | Step cap and deadline per agent role | `agent.<role>.steps` from `factory_agent_limits`, and foreman's own count and timeout; see below |
 | Retro in the run's session | `--session <id>` from the run's JSON stream, never `--continue` |
 | The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's egress proxy, which forwards `/api/v1` to the loopback key proxy that adds `Authorization` |
@@ -18,6 +18,14 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Every model process runs under srt | `opencode run` is wrapped by `srt --settings <run>/srt-settings.json`; see `foreman/docs/sandbox.md` |
 | Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
 | No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
+
+### Where the Reviewer's state lives
+
+Every agent role, the Reviewer included, keeps its opencode state in an on-disk database in the
+run's own state directory (`OPENCODE_DB`). The run's retro shares that database so it can resume the
+session by id, and the database is deleted with the run directory. This supersedes the spec line
+"The Reviewer's state is in memory only.": the Reviewer is started fresh for every review and shares
+its state with nothing except its own retro, but that state is on disk for the run's lifetime.
 
 ## The OpenRouter key proxy
 
