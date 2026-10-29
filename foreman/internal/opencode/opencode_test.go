@@ -1,6 +1,8 @@
 package opencode
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -44,7 +46,8 @@ var _ = Describe("ParseStream", func() {
 			`"tokens":{"input":10,"output":2,"cache":{"read":4}}}}` + "\n" +
 			`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":5,"output":1}}}` + "\n"
 
-		s := ParseStream(out)
+		s, err := ParseStream(out)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(s.Steps).To(Equal(2))
 		Expect(s.Usage).To(Equal(Usage{
 			Input: new(15), Output: new(3), Cached: new(4), PeakContext: new(14), Cost: new(0.25),
@@ -52,9 +55,22 @@ var _ = Describe("ParseStream", func() {
 	})
 
 	It("reports a field no step mentioned as missing, never zero", func() {
-		s := ParseStream(`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":7}}}`)
+		s, err := ParseStream(`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":7}}}`)
 
+		Expect(err).NotTo(HaveOccurred())
 		Expect(s.Steps).To(Equal(1))
 		Expect(s.Usage).To(Equal(Usage{Input: new(7), PeakContext: new(7)}))
+	})
+
+	It("fails on a line over the line limit rather than ending the stream silently", func() {
+		// The oversized line is followed by a step the parser never reads: reporting the error is the
+		// only way its usage is not silently missing.
+		out := `{"type":"text","sessionID":"ses_1","part":{"text":"` + strings.Repeat("x", maxStreamLine) +
+			`"}}` + "\n" +
+			`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":7}}}` + "\n"
+
+		s, err := ParseStream(out)
+		Expect(err).To(MatchError(ContainSubstring("line over")))
+		Expect(s.Steps).To(BeZero(), "the parser read past the oversized line")
 	})
 })
