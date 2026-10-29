@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nateinaction/factory/foreman/internal/boundedfile"
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/github"
@@ -103,17 +105,46 @@ func freshPath(root, name string) (string, error) {
 	return path, nil
 }
 
-// readScratch reads a file the model wrote to a scratch path. The model controls what is there, so the
-// read goes through os.Root: a symlink out of the scratch directory is refused, not followed.
+// maxScratchBytes bounds what foreman reads from a file the model wrote. Every output foreman parses
+// is far smaller: the largest thing it renders is one comment, capped well below this. A file over
+// the limit is refused rather than read whole, so a model cannot exhaust the host's memory with it.
+const maxScratchBytes = 8 << 20
+
+// readScratch reads a file the model wrote to a scratch path, through maxScratchBytes. The model
+// controls what is there, so the read goes through os.Root, opens only a regular file and stops at
+// the limit: a symlink out of the scratch directory is refused, not followed, and an output file is
+// always a file the model wrote there, never a link or a device.
 func readScratch(path string) ([]byte, error) {
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return nil, fmt.Errorf("open scratch: %w", err)
 	}
 
-	raw, err := root.ReadFile(filepath.Base(path))
+	raw, err := readBounded(root, filepath.Base(path), maxScratchBytes)
 
-	return raw, errors.Join(wrapErr("read scratch", err), wrapErr("close scratch", root.Close()))
+	return raw, errors.Join(err, wrapErr("close scratch", root.Close()))
+}
+
+// readBounded reads a regular file under root whole, refusing one over limit bytes instead of
+// returning its first limit bytes: a caller that parses an output asks for all of it or none.
+func readBounded(root *os.Root, name string, limit int64) ([]byte, error) {
+	f, err := boundedfile.Open(root, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// One byte over the limit tells a file at the limit from one over it.
+	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
+
+	if err := errors.Join(err, f.Close()); err != nil {
+		return nil, wrapErr("read scratch", err)
+	}
+
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("the file is over the %d-byte read limit", limit)
+	}
+
+	return raw, nil
 }
 
 // wrapErr wraps err with what was being done, and keeps nil as nil.
@@ -447,9 +478,10 @@ func scratchDir(root, name string) (string, error) {
 	return path, nil
 }
 
-// outputProblem turns an unreadable output file into the error a rejected one returns.
+// outputProblem turns an unreadable output file into the error a rejected one returns. The problem
+// names the file, so the one comment it becomes says which file the run could not read.
 func outputProblem(file string, err error) error {
-	return &workflow.OutputError{File: file, Problems: []string{"cannot be read: " + err.Error()}}
+	return &workflow.OutputError{File: file, Problems: []string{file + " cannot be read: " + err.Error()}}
 }
 
 // rejectOutput posts every problem with a rejected output file in one comment, then returns the

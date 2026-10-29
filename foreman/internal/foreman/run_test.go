@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -838,6 +839,51 @@ var _ = Describe("Run", func() {
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
 		})
+
+		It("refuses an output file over the read limit instead of reading it whole", func() {
+			h.reviewerGH(nil)
+			h.roleWrites(workflow.Reviewer, 5, cleanReview+strings.Repeat(" ", maxScratchBytes))
+
+			code, err := run(workflow.Reviewer)
+			Expect(code).NotTo(Equal(workflow.ReviewClean))
+			Expect(err).To(MatchError(SatisfyAll(
+				ContainSubstring("cannot be read"), ContainSubstring("read limit"))))
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty(), "read a file over the limit")
+			Expect(h.reportComments()).To(ConsistOf(And(
+				ContainSubstring(workflow.ReviewerOutputFile), ContainSubstring("read limit"))))
+		})
+
+		DescribeTable("refuses an output that is not a regular file",
+			func(mkFile func(out string)) {
+				h.reviewerGH(nil)
+
+				h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+					if isModel(c) && strings.Contains(joined(c), "code-review") {
+						mkFile(h.rolePaths(workflow.Reviewer, 5).out)
+					}
+
+					return base(c)
+				})
+
+				code, err := run(workflow.Reviewer)
+				Expect(code).NotTo(Equal(workflow.ReviewClean))
+				Expect(err).To(MatchError(And(
+					ContainSubstring("cannot be read"), ContainSubstring("not a regular file"))))
+				Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
+			},
+			Entry("a symlink that stays in the scratch directory", func(out string) {
+				Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+				target := filepath.Join(filepath.Dir(out), "real.json")
+				Expect(os.WriteFile(target, []byte(cleanReview), 0o600)).To(Succeed())
+				Expect(os.Symlink(filepath.Base(target), out)).To(Succeed())
+			}),
+			// A FIFO would block a read until a writer appeared: statting it first is what keeps the
+			// run from hanging.
+			Entry("a fifo", func(out string) {
+				Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+				Expect(syscall.Mkfifo(out, 0o600)).To(Succeed())
+			}),
+		)
 
 		It("fails without an open pull request", func() {
 			h.ensureIssue(5)
