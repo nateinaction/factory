@@ -42,7 +42,7 @@ func applyPlannerRound(
 // to build opens the gate. It returns false when the latest round is not a waiting Planner round or
 // the reply does not approve, so the ordinary wake rule runs instead.
 func approvePending(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	thread []workflow.Item, latest workflow.Marker,
 ) (bool, error) {
 	if latest.Role != workflow.Planner || latest.To != workflow.Waiting {
@@ -72,7 +72,7 @@ func approvePending(
 		return false, nil
 	}
 
-	token, err := d.mintToken(ctx, workflow.Planner, repo)
+	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the Planner's token; leaving the approved proposal unapplied",
 			"repo", repo, "issue", issue.Number, "error", err)
@@ -90,7 +90,7 @@ func approvePending(
 // pending. It uses the Planner's token, which owns the transition, and is keyed by the applied
 // marker, so a repeated poll moves nothing twice.
 func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue) (bool, error) {
-	token, err := d.mintToken(ctx, workflow.Planner, repo)
+	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the Planner's token; leaving the gate closed",
 			"repo", repo, "issue", issue.Number, "error", err)
@@ -125,7 +125,7 @@ func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Is
 
 // lastWriterComment is the latest comment by a writer after marker, which the human gate reads.
 func lastWriterComment(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo,
 	thread []workflow.Item, marker workflow.Marker,
 ) (workflow.Item, bool) {
 	var (

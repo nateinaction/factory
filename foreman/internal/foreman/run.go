@@ -272,7 +272,7 @@ func loadJob(
 		return job{}, err
 	}
 
-	readOnly, err := d.mintReadOnlyToken(ctx, role, repo)
+	readOnly, err := d.mint(ctx, role, repo, readOnlyToken)
 	if err != nil {
 		return job{}, err
 	}
