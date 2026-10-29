@@ -91,6 +91,19 @@ var _ = Describe("Start", func() {
 			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
 			Expect(h.logs.String()).To(ContainSubstring("sudo missing"))
 		})
+
+		It("fails the issue without describing the output twice when the factory half already did", func() {
+			h.acceptWrites()
+			h.sudoExit(workflow.ExitReported)
+
+			Expect(start(workflow.Implementer)).To(Equal(1))
+
+			labels, comments := h.outcome()
+			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
+			Expect(comments).To(HaveLen(1), "a second comment described the reported errors again")
+			Expect(comments[0]).To(ContainSubstring("to=factory:failed"))
+			Expect(comments[0]).NotTo(ContainSubstring("Check the dagu run log"))
+		})
 	})
 
 	DescribeTable("the Reviewer routes the issue by the factory half's exit code",
