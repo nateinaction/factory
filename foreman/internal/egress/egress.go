@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -42,6 +43,9 @@ const (
 	headerTimeout = 60 * time.Second
 	// idleTimeout bounds a kept-alive connection between requests.
 	idleTimeout = 90 * time.Second
+	// MaxTunnels bounds how many tunnels one run's proxy carries at once. A run that asks for more is
+	// refused rather than growing the proxy without limit.
+	MaxTunnels = 64
 )
 
 // Proxy is a running egress proxy.
@@ -54,6 +58,8 @@ type Proxy struct {
 	mu        sync.Mutex
 	domains   map[string]struct{}
 	tunnels   map[net.Conn]struct{}
+	open      int
+	log       *slog.Logger
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -62,6 +68,14 @@ type Proxy struct {
 // calls are forwarded to; empty refuses them. addr must be loopback. Any bind or parse failure is an
 // error: the run has no egress without its proxy.
 func Start(ctx context.Context, policy sandbox.Network, apiURL, addr string) (*Proxy, error) {
+	return StartWithLogger(ctx, policy, apiURL, addr, nil)
+}
+
+// StartWithLogger is Start with a logger for traffic the proxy refuses. A nil logger discards those
+// diagnostics.
+func StartWithLogger(
+	ctx context.Context, policy sandbox.Network, apiURL, addr string, logger *slog.Logger,
+) (*Proxy, error) {
 	if err := loopback(addr); err != nil {
 		return nil, err
 	}
@@ -76,8 +90,12 @@ func Start(ctx context.Context, policy sandbox.Network, apiURL, addr string) (*P
 		return nil, fmt.Errorf("bind egress proxy: %w", err)
 	}
 
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
 	p := &Proxy{
-		policy: policy, api: api, listener: ln,
+		policy: policy, api: api, listener: ln, log: logger,
 		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
 	p.client = &http.Client{Transport: transport()}
@@ -232,6 +250,20 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 
 	p.record(host)
 
+	if !p.reserveTunnel() {
+		p.log.Warn("egress proxy: tunnel limit reached; refusing the tunnel", "host", host, "limit", MaxTunnels)
+		http.Error(w, "egress proxy: too many tunnels", http.StatusTooManyRequests)
+
+		return
+	}
+
+	defer p.releaseTunnel()
+
+	p.relay(w, r, host, port)
+}
+
+// relay reaches the tunnel's destination, hijacks the client connection and pipes both ways.
+func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string) {
 	upstream, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(r.Context(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		http.Error(w, "egress proxy: upstream unavailable", http.StatusBadGateway)
@@ -269,6 +301,28 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.copyTunnel(client, upstream)
+}
+
+// reserveTunnel takes one tunnel slot, reporting false when MaxTunnels are already open.
+func (p *Proxy) reserveTunnel() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.open >= MaxTunnels {
+		return false
+	}
+
+	p.open++
+
+	return true
+}
+
+// releaseTunnel frees the slot reserveTunnel took.
+func (p *Proxy) releaseTunnel() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.open--
 }
 
 // copyTunnel pipes both directions until each side ends, tracking the pair so Close can end it.
