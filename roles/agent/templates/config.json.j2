@@ -6,4 +6,4 @@
 {%- set limits = factory_agent_limits[role] -%}
 {%- set _ = agents.update({role: {'model': m.model, 'context_cap': m.context_cap | default(factory_context_cap) | int, 'compaction': m.compaction, 'steps': limits.steps | int, 'deadline_minutes': limits.deadline_minutes | int}}) -%}
 {%- endfor -%}
-{{ {'roles': github_apps | list | sort, 'agents': agents, 'retro': {'steps': factory_retro_steps | int, 'deadline_minutes': factory_retro_deadline_minutes | int}, 'dead_run_margin_minutes': factory_dead_run_margin_minutes | int} | to_nice_json }}
+{{ {'roles': github_apps | list | sort, 'agents': agents, 'retro': {'steps': factory_retro_steps | int, 'deadline_minutes': factory_retro_deadline_minutes | int}, 'dead_run_margin_minutes': factory_dead_run_margin_minutes | int, 'factory_repo': factory_repo} | to_nice_json }}

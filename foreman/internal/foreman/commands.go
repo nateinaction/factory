@@ -200,7 +200,7 @@ func prepareRepo(
 
 	// The dashboard is best effort: an issue cannot be handed off without the work below it, but a
 	// retro dashboard that cannot be drawn is retried on the next poll.
-	if err := redrawDashboard(ctx, d, c, repo); err != nil {
+	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, role); err != nil {
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 

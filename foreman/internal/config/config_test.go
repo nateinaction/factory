@@ -153,6 +153,24 @@ var _ = Describe("Load", func() {
 		Expect(err).To(MatchError(ContainSubstring("dead-run margin")))
 	})
 
+	It("reads the factory repo, and rejects one that is not owner/name", func() {
+		load := func(repo string) error {
+			raw, err := json.Marshal(map[string]any{
+				"roles": []workflow.Role{workflow.Implementer}, "agents": every(), "retro": retro,
+				"dead_run_margin_minutes": 10, "factory_repo": repo,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = config.Load(writeConfig(raw))
+
+			return err
+		}
+
+		Expect(load("nateinaction/factory")).To(Succeed())
+		Expect(load("")).To(Succeed(), "an unset factory repo is allowed, and promotes nothing out")
+		Expect(load("../nope")).To(MatchError(ContainSubstring("factory repo")))
+	})
+
 	It("reads the dead-run margin as a duration", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),

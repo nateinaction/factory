@@ -169,3 +169,7 @@ factory_retro_deadline_minutes: 15
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
 # moves the issue to factory:failed. Nothing retries a dead run automatically.
 factory_dead_run_margin_minutes: 10
+# The factory's own repository. A public repository's ready skill or factory retro group is promoted to
+# an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
+# fail those promotions closed.
+factory_repo: nateinaction/factory

@@ -4,20 +4,25 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// redrawDashboard gives a repository its retro dashboard, creating it when it is missing, and rewrites
-// the body from the retro log only when the rendered body differs. It never comments on the dashboard,
-// and the poll never routes it: an issue titled DashboardTitle is never routed.
-func redrawDashboard(ctx context.Context, d Deps, c github.Client, repo string) error {
+// redrawDashboard gives a repository its retro dashboard, applies the writer commands on it and on its
+// promoted issues, and rewrites the body from the retro log only when the rendered body differs. It
+// never comments on the dashboard, and the poll never routes it: an issue titled DashboardTitle is never
+// routed.
+func redrawDashboard(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	repo string, role workflow.Role,
+) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
 		return fmt.Errorf("list the dashboard's issues: %w", err)
 	}
 
-	reports, err := retroLog(ctx, d, c, repo, issues)
+	reports, threads, err := retroLog(ctx, d, c, repo, issues)
 	if err != nil {
 		return err
 	}
@@ -27,11 +32,57 @@ func redrawDashboard(ctx context.Context, d Deps, c github.Client, repo string) 
 		return err
 	}
 
-	text, err := drawnDashboard(d, reports, body, found)
+	state, err := dashboardState(body, found)
 	if err != nil {
 		return err
 	}
 
+	run := &commandRun{
+		d: d, cfg: cfg, c: c, perms: perms, repo: repo, role: role,
+		issues: issues, threads: threads, reports: reports,
+	}
+	state, settle := run.run(ctx, state, number, found)
+
+	text, err := workflow.RenderDashboard(workflow.BuildDashboard(reports, state, d.now()))
+	if err != nil {
+		return fmt.Errorf("draw the dashboard: %w", err)
+	}
+
+	if err := writeDashboard(ctx, d, c, repo, number, body, text, found); err != nil {
+		return err
+	}
+
+	for _, comment := range settle {
+		if err := settleCommand(ctx, d, c, repo, comment); err != nil {
+			// The action is recorded and the comment is marked dealt with, so a command gone quiet is
+			// not acted on twice; the comment only stays visible.
+			d.log().Warn("cannot minimize or delete a dashboard command", "repo", repo,
+				"comment", comment.ID, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// dashboardState reads the state an existing body holds. A body foreman cannot read whole is never
+// overwritten: its state would be lost.
+func dashboardState(body string, found bool) (workflow.DashboardState, error) {
+	if !found {
+		return workflow.DashboardState{}, nil
+	}
+
+	state, err := workflow.ParseDashboard(body)
+	if err != nil {
+		return workflow.DashboardState{}, fmt.Errorf("read the dashboard body: %w", err)
+	}
+
+	return state, nil
+}
+
+// writeDashboard creates the dashboard when it is missing, and otherwise writes only a changed body.
+func writeDashboard(
+	ctx context.Context, d Deps, c github.Client, repo string, number int, body, text string, found bool,
+) error {
 	switch {
 	case !found:
 		if _, err := c.CreateIssue(ctx, repo, workflow.DashboardTitle, text, nil); err != nil {
@@ -73,33 +124,24 @@ func findDashboardIssue(
 	return number, body, found, nil
 }
 
-// drawnDashboard renders the body from the log, replaying the state an existing body holds. A body
-// foreman cannot read whole is never overwritten: its state would be lost.
-func drawnDashboard(d Deps, reports []workflow.DashboardReport, body string, found bool) (string, error) {
-	state := workflow.DashboardState{}
-
-	if found {
-		var err error
-		if state, err = workflow.ParseDashboard(body); err != nil {
-			return "", fmt.Errorf("read the dashboard body: %w", err)
-		}
-	}
-
-	text, err := workflow.RenderDashboard(workflow.BuildDashboard(reports, state, d.now()))
-	if err != nil {
-		return "", fmt.Errorf("draw the dashboard: %w", err)
-	}
-
-	return text, nil
+// promotedThread is a promoted issue's comments and the group it was promoted as.
+type promotedThread struct {
+	// group is the group the issue came from.
+	group workflow.GroupID
+	// comments are the issue's comments, oldest first.
+	comments []workflow.Item
 }
 
-// retroLog reads every retro marker comment on the repository's issues. An unreadable issue fails the
-// whole read, so a body is never drawn from a partial log. A comment that does not parse is logged
-// and skipped: the log is append-only, and one bad comment must not freeze the dashboard.
+// retroLog reads every retro marker comment on the repository's issues, and the threads of the issues a
+// retro group was promoted as. An unreadable issue fails the whole read, so a body is never drawn from a
+// partial log. A comment that does not parse is logged and skipped: the log is append-only, and one bad
+// comment must not freeze the dashboard.
 func retroLog(
 	ctx context.Context, d Deps, c github.Client, repo string, issues []workflow.Issue,
-) ([]workflow.DashboardReport, error) {
+) ([]workflow.DashboardReport, map[int]promotedThread, error) {
 	var reports []workflow.DashboardReport
+
+	threads := map[int]promotedThread{}
 
 	for _, issue := range issues {
 		if issue.IsPullRequest || issue.Comments == 0 {
@@ -108,13 +150,20 @@ func retroLog(
 
 		comments, err := c.ListComments(ctx, repo, issue.Number)
 		if err != nil {
-			return nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
+			return nil, nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
 		}
 
 		reports = append(reports, retroReports(d, issue.Number, comments)...)
+
+		group, promoted, err := workflow.ParsePromoted(issue.Body)
+		if err != nil {
+			d.log().Warn("skipping a promoted issue whose marker is unreadable", "issue", issue.Number, "error", err)
+		} else if promoted {
+			threads[issue.Number] = promotedThread{group: group, comments: comments}
+		}
 	}
 
-	return reports, nil
+	return reports, threads, nil
 }
 
 // retroReports reads one issue's retro comments as dashboard reports.
@@ -137,7 +186,7 @@ func retroReports(d Deps, number int, comments []workflow.Item) []workflow.Dashb
 			reports = append(reports, workflow.DashboardReport{
 				Issue: number, Role: rc.Role, Key: rc.Key, At: comment.UpdatedAt,
 				Target: finding.Target, Group: finding.Group, Severity: finding.Severity,
-				Claim: finding.Claim,
+				Claim: finding.Claim, Evidence: finding.Evidence,
 			})
 		}
 	}

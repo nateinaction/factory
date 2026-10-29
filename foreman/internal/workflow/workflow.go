@@ -305,6 +305,7 @@ type Issue struct {
 	Body          string
 	State         string
 	Author        string
+	HTMLURL       string
 	Labels        []string
 	Comments      int
 	IsPullRequest bool
@@ -318,6 +319,7 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 		Title    string `json:"title"`
 		Body     string `json:"body"`
 		State    string `json:"state"`
+		HTMLURL  string `json:"html_url"`
 		Comments int    `json:"comments"`
 		User     *struct {
 			Login string `json:"login"`
@@ -343,7 +345,7 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 
 	*i = Issue{
 		ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
-		Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
+		HTMLURL: raw.HTMLURL, Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
 	}
 
 	return nil
@@ -456,6 +458,10 @@ type Item struct {
 	ID     int64  `json:"id"`
 	Body   string `json:"body"`
 	Author string `json:"-"`
+	// NodeID is GitHub's GraphQL id, which minimizing a comment names.
+	NodeID string `json:"-"`
+	// HTMLURL is the advertised web URL.
+	HTMLURL string `json:"-"`
 	// UpdatedAt is when the comment or review was last written; zero when the answer has no date.
 	UpdatedAt time.Time `json:"-"`
 }
@@ -464,6 +470,8 @@ type Item struct {
 func (i *Item) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		ID        int64  `json:"id"`
+		NodeID    string `json:"node_id"`
+		HTMLURL   string `json:"html_url"`
 		Body      string `json:"body"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
@@ -490,7 +498,10 @@ func (i *Item) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode comment: %w", err)
 	}
 
-	*i = Item{ID: raw.ID, Body: raw.Body, Author: author, UpdatedAt: updated}
+	*i = Item{
+		ID: raw.ID, Body: raw.Body, Author: author, NodeID: raw.NodeID, HTMLURL: raw.HTMLURL,
+		UpdatedAt: updated,
+	}
 
 	return nil
 }

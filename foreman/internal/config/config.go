@@ -114,6 +114,9 @@ type Config struct {
 	// DeadRunMarginMinutes is how far past an agent role's deadline its running label may age before
 	// a poll calls the run dead.
 	DeadRunMarginMinutes int `json:"dead_run_margin_minutes" mapstructure:"dead_run_margin_minutes"`
+	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
+	// Empty means no repository is configured, so such a promotion fails closed.
+	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
 }
 
 // DeadRunMargin is how long past an agent role's deadline a run keeps its claim before a poll calls
@@ -167,7 +170,24 @@ func validate(path string, c Config) error {
 		return err
 	}
 
+	if err := validateFactoryRepo(path, c.FactoryRepo); err != nil {
+		return err
+	}
+
 	return validateDeadRun(path, c.DeadRunMarginMinutes)
+}
+
+// validateFactoryRepo checks the configured factory repository, when there is one, is owner/name.
+func validateFactoryRepo(path, repo string) error {
+	if repo == "" {
+		return nil
+	}
+
+	if err := workflow.ValidateRepo(repo); err != nil {
+		return fmt.Errorf("config %s: factory repo: %w", path, err)
+	}
+
+	return nil
 }
 
 // validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.

@@ -682,12 +682,29 @@ func (c Client) CreatePR(ctx context.Context, repo, title, head, base, body stri
 	return pr, err
 }
 
+// Repository is the part of a repository foreman reads.
+type Repository struct {
+	// Private is whether only its collaborators can see it.
+	Private bool `json:"private"`
+	// DefaultBranch is the branch a clone starts from.
+	DefaultBranch string `json:"default_branch"`
+}
+
+// Repository reads a repository's visibility and default branch.
+func (c Client) Repository(ctx context.Context, repo string) (Repository, error) {
+	var r Repository
+
+	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
+		return Repository{}, err
+	}
+
+	return r, nil
+}
+
 // DefaultBranch reads the repository's default branch.
 func (c Client) DefaultBranch(ctx context.Context, repo string) (string, error) {
-	var r struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := c.Call(ctx, http.MethodGet, "/repos/"+repo, nil, &r); err != nil {
+	r, err := c.Repository(ctx, repo)
+	if err != nil {
 		return "", err
 	}
 
