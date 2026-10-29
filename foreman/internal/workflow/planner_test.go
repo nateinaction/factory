@@ -277,6 +277,14 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "build it"),
 		Entry(nil, "go ahead and build it"),
 		Entry(nil, "let's build it"),
+		Entry(nil, "LGTM, ready to build"),
+		Entry(nil, "lgtm - ready to build!"),
+		Entry(nil, "looks good, ready to build"),
+		Entry(nil, "ship it, ready to build"),
+		Entry(nil, "approved, ready to build"),
+		Entry(nil, "go, ready to build"),
+		Entry(nil, "yes, ready to build"),
+		Entry(nil, "ok, ready to build"),
 	)
 
 	DescribeTable("does not accept anything else",
@@ -293,6 +301,8 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "don't build it"),
 		Entry(nil, "do not build"),
 		Entry(nil, "no changes, ready to build"),
+		Entry(nil, "if you change the title, ready to build"),
+		Entry(nil, "ship it after you fix the bug, ready to build"),
 		Entry(nil, "ready to build, but split the storage change"),
 		Entry(nil, "yes, no changes needed"),
 		Entry(nil, "ready to build?"),
@@ -311,6 +321,8 @@ var _ = Describe("the human gate", func() {
 		Entry(nil, "go ahead and build it"),
 		Entry(nil, "let's build it"),
 		Entry(nil, "please build it"),
+		Entry(nil, "LGTM, ready to build"),
+		Entry(nil, "approved, ready to build"),
 	)
 
 	DescribeTable("does not take a plain answer as a request to build",
