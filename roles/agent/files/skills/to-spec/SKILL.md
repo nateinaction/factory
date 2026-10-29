@@ -16,7 +16,7 @@ The repository's `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.m
 
 2. Sketch out the seams at which you're going to test the feature. Existing seams should be preferred to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can. The fewer seams across the codebase, the better - the ideal number is one.
 
-State the seams in the spec's Testing Decisions, each with a one-line note on what it catches and what it misses. There is no writer in the loop to check them with: the writer's "yes" to the final round approves them.
+State the seams in the spec's Testing Decisions, each with a one-line note on what it catches and what it misses. There is no writer in the loop to check them with: the writer's "yes" to the final round confirms them.
 
 3. Write the spec using the template below, then write it into the Planner's final-round proposal as the run's prompt describes. Add a "Domain changes" section listing any glossary terms or ADRs the work should commit.
 

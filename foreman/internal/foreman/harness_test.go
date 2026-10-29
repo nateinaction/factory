@@ -179,11 +179,11 @@ func testRetro() config.Budget { return config.Budget{Steps: 20, DeadlineMinutes
 // testConfig is a config file's worth of agent roles.
 func testConfig() config.Config {
 	agents := map[string]config.AgentConfig{}
-	capacity := map[string]int{}
+	capacity := map[workflow.Role]int{}
 
 	for _, r := range workflow.KnownRoles() {
 		agents[string(r)] = testAgent()
-		capacity[string(r)] = 1
+		capacity[r] = 1
 	}
 
 	return config.Config{

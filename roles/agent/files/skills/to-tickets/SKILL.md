@@ -53,7 +53,7 @@ Revise until the breakdown holds, then put any remaining judgement back to the w
 
 ### 5. Write the tickets into the proposal
 
-Write the approved tickets as the Planner's `slices` proposal: each slice's title, what it delivers, its acceptance criteria and its `blocked_by` slugs (you supply the slugs; `#N` names an issue that already exists). foreman publishes them in dependency order, so each blocking edge can reference a real identifier.
+Write the tickets you propose as the Planner's `slices` proposal: each slice's title, what it delivers, its acceptance criteria and its `blocked_by` slugs (you supply the slugs; `#N` names an issue that already exists). foreman publishes them in dependency order, so each blocking edge can reference a real identifier.
 
 The template is below. Use it per slice; never combine slices into one. Avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
 

@@ -531,10 +531,11 @@ func wakeIssue(
 		return false, err
 	}
 
-	// A writer's approval of the latest final round applies the stored proposal with no model run.
-	approved, err := approvePending(ctx, d, perms, c, repo, issue, thread, latest)
-	if err != nil || approved {
-		return approved, err
+	// A writer's reply that opens the gate on the latest final round applies the stored proposal with
+	// no model run.
+	applied, err := applyGateReply(ctx, d, perms, c, repo, issue, thread, latest)
+	if err != nil || applied {
+		return applied, err
 	}
 
 	state, ok := workflow.WakeState(latest.Transition, true, written(ctx, d, perms, c, repo, thread, latest))
@@ -1066,12 +1067,12 @@ func claimAndEnqueue(
 
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
 func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) (int, error) {
-	ar, ok := agentRoleFor(role)
+	entry, ok := dispatchEntryFor(role)
 	if !ok {
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	r := ar.route(cfg.ReviewRoundLimit, ref, factoryExit(ctx, d, cfg, role, ref))
+	r := entry.route(cfg.ReviewRoundLimit, ref, factoryExit(ctx, d, cfg, role, ref))
 
 	switch {
 	case r.err != nil:

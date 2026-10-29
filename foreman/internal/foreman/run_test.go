@@ -563,7 +563,7 @@ var _ = Describe("Run", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(code).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
-			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask to review and merge"))
 		})
 
 		It("does not ask an author without write access to review", func() {
@@ -578,7 +578,7 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty(),
 				"an outsider was asked to merge")
-			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask to review and merge"))
 		})
 
 		It("asks the latest human writer when the issue's author cannot write", func() {
