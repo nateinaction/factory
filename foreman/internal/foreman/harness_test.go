@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -535,6 +538,66 @@ func (h *harness) opencodeWrites(marker, path, text string) {
 
 		return base(c)
 	})
+}
+
+// baseURL is the OpenRouter base URL one opencode process was given.
+func baseURL(c proc.Cmd) string {
+	var cfg struct {
+		Provider struct {
+			Openrouter struct {
+				Options struct {
+					BaseURL string `json:"baseURL"`
+				} `json:"options"`
+			} `json:"openrouter"`
+		} `json:"provider"`
+	}
+	Expect(json.Unmarshal([]byte(c.Env["OPENCODE_CONFIG_CONTENT"]), &cfg)).To(Succeed())
+
+	return cfg.Provider.Openrouter.Options.BaseURL
+}
+
+// fakeProxy is a stand-in for the run's OpenRouter proxy.
+type fakeProxy struct {
+	url    string
+	usage  openrouter.Usage
+	key    string
+	closed bool
+}
+
+// URL is the base URL the model is told to call.
+func (p *fakeProxy) URL() string { return p.url }
+
+// Usage is what the proxy read.
+func (p *fakeProxy) Usage() openrouter.Usage { return p.usage }
+
+// Close records that the run stopped the proxy.
+func (p *fakeProxy) Close() error {
+	p.closed = true
+
+	return nil
+}
+
+// expectNoSecretInFiles fails the spec when a file under root contains secret.
+func (h *harness) expectNoSecretInFiles(root, secret string) {
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return
+	}
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+
+		Expect(string(raw)).NotTo(ContainSubstring(secret), path)
+
+		return nil
+	})
+	Expect(err).NotTo(HaveOccurred())
 }
 
 // okStream is what `opencode run --format json` prints for a run that finished: one step.

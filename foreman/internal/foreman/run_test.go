@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,9 @@ var _ = Describe("Run", func() {
 			oc := h.runner.find("opencode run --agent implementer --format json Use the `implement` skill")
 			Expect(oc).To(HaveLen(1))
 			Expect(oc[0].Dir).To(Equal(work))
-			Expect(oc[0].Env).To(HaveKeyWithValue("OPENROUTER_API_KEY", "or-key"))
+			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
+			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			h.expectNoSecretInFiles(work, "or-key")
 			Expect(oc[0].Timeout).To(beNear(AgentTimeout))
 			Expect(joined(oc[0])).NotTo(ContainSubstring("Review:"), "first run carries review feedback")
 
@@ -110,6 +113,20 @@ var _ = Describe("Run", func() {
 			Expect(h.retroNumber()).To(BeZero(), "created a retro ticket")
 		})
 
+		It("fails closed when the proxy cannot bind", func() {
+			taken, err := net.Listen("tcp", "127.0.0.1:0")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(taken.Close)
+
+			h.deps.ProxyAddr = taken.Addr().String()
+
+			code, err := run(workflow.Implementer)
+			Expect(err).To(MatchError(ContainSubstring("bind")))
+			Expect(code).NotTo(BeZero())
+			Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran without its proxy")
+			Expect(h.gh.Calls()).To(BeEmpty(), "the run touched GitHub after failing closed")
+		})
+
 		It("clears stale scratch from an earlier run", func() {
 			Expect(os.MkdirAll(h.deps.Settings.WorkRoot, 0o700)).To(Succeed())
 			Expect(os.WriteFile(retroOut(), []byte("stale retro"), 0o600)).To(Succeed())
@@ -157,7 +174,9 @@ var _ = Describe("Run", func() {
 			Expect(oc).To(HaveLen(1))
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Timeout).To(beNear(ReviewTimeout))
-			Expect(oc[0].Env).To(HaveKeyWithValue("OPENROUTER_API_KEY", "or-key"))
+			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
+			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			h.expectNoSecretInFiles(work, "or-key")
 
 			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "review-5.spec.md"))
 			Expect(err).NotTo(HaveOccurred())
