@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Role is an agent role. Only the known set parses; anything else fails closed.
@@ -439,19 +440,23 @@ func BlockedBy(body string) []int {
 	return out
 }
 
-// Item is a comment or review: an id, a body and its author.
+// Item is a comment or review: an id, a body, its author and when it was last written.
 type Item struct {
 	ID     int64  `json:"id"`
 	Body   string `json:"body"`
 	Author string `json:"-"`
+	// UpdatedAt is when the comment or review was last written; zero when the answer has no date.
+	UpdatedAt time.Time `json:"-"`
 }
 
 // UnmarshalJSON reads a comment or review, whose author is nested under user.login.
 func (i *Item) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID   int64  `json:"id"`
-		Body string `json:"body"`
-		User *struct {
+		ID        int64  `json:"id"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		User      *struct {
 			Login string `json:"login"`
 		} `json:"user"`
 	}
@@ -464,9 +469,33 @@ func (i *Item) UnmarshalJSON(data []byte) error {
 		author = raw.User.Login
 	}
 
-	*i = Item{ID: raw.ID, Body: raw.Body, Author: author}
+	when := raw.UpdatedAt
+	if when == "" {
+		when = raw.CreatedAt
+	}
+
+	updated, err := parseOptionalTime(when)
+	if err != nil {
+		return fmt.Errorf("decode comment: %w", err)
+	}
+
+	*i = Item{ID: raw.ID, Body: raw.Body, Author: author, UpdatedAt: updated}
 
 	return nil
+}
+
+// parseOptionalTime reads an API timestamp, leaving an absent one zero.
+func parseOptionalTime(text string) (time.Time, error) {
+	if text == "" {
+		return time.Time{}, nil
+	}
+
+	at, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse time %q: %w", text, err)
+	}
+
+	return at, nil
 }
 
 // MarkerPrefix starts every marker comment foreman posts, and never appears in a model's text.

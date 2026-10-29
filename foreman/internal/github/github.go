@@ -35,8 +35,20 @@ const (
 	apiVersion = "2022-11-28"
 	// stateOpen is the query value that lists open issues only.
 	stateOpen = "open"
+	// StateAll is the query value that lists issues in any state.
+	StateAll = "all"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
+	// sortParam is the query parameter that picks the sort field.
+	sortParam = "sort"
+	// directionParam is the query parameter that picks the sort direction.
+	directionParam = "direction"
+	// sortCreated sorts by creation time.
+	sortCreated = "created"
+	// ascending is the oldest-first sort direction.
+	ascending = "asc"
+	// descending is the newest-first sort direction.
+	descending = "desc"
 )
 
 // Client calls GitHub's REST API with one token.
@@ -143,6 +155,11 @@ type (
 	bodyRequest struct {
 		Body string `json:"body"`
 	}
+	// issueRequest opens an issue.
+	issueRequest struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
 	// labelsRequest adds labels to an issue.
 	labelsRequest struct {
 		Labels []string `json:"labels"`
@@ -204,8 +221,8 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 // ListLabeled lists the oldest open issues carrying label.
 func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
-		stateParam: {stateOpen}, "labels": {label}, "sort": {"created"},
-		"direction": {"asc"}, "per_page": {fmt.Sprint(IssuesPerPage)},
+		stateParam: {stateOpen}, "labels": {label}, sortParam: {sortCreated},
+		directionParam: {ascending}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
 
 	var issues []workflow.Issue
@@ -218,9 +235,44 @@ func (c Client) ListLabeled(ctx context.Context, repo, label string) ([]workflow
 // ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
 // the caller skips them.
 func (c Client) ListOpenIssues(ctx context.Context, repo string) ([]workflow.Issue, error) {
-	q := url.Values{stateParam: {stateOpen}, "sort": {"created"}, "direction": {"asc"}}
+	q := url.Values{stateParam: {stateOpen}, sortParam: {sortCreated}, directionParam: {ascending}}
 
 	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// ListIssues lists a repository's issues in state ("open", "closed" or StateAll), newest first. Pull
+// requests are included in the answer and the caller skips them.
+func (c Client) ListIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {descending}}
+
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// ListOldestIssues lists a repository's issues in state, oldest first, so an issue that has been there
+// since the repository was assigned is still found on a repository with more issues than one scan
+// holds.
+func (c Client) ListOldestIssues(ctx context.Context, repo, state string) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {ascending}}
+
+	return Paged[workflow.Issue](ctx, c, "/repos/"+repo+"/issues?"+q.Encode())
+}
+
+// CreateIssue opens an issue and returns its number.
+func (c Client) CreateIssue(ctx context.Context, repo, title, body string) (int, error) {
+	var created struct {
+		Number int `json:"number"`
+	}
+
+	err := c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues",
+		issueRequest{Title: title, Body: body}, &created)
+
+	return created.Number, err
+}
+
+// UpdateIssueBody replaces an issue's body, leaving its title, labels and state alone.
+func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, body string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		bodyRequest{Body: body}, nil)
 }
 
 // Label is the part of a repository label foreman reads.
