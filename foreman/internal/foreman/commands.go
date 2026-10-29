@@ -664,10 +664,17 @@ func issueComments(
 	return c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 }
 
-// permissions caches, for one poll, whether each login may write to the repository, keyed by
-// "repo\x00login". A permission it cannot read is cached as not-a-writer, so every decision fails
-// closed. It is a map so every reader of one poll's cache shares the one cache.
-type permissions map[string]bool
+// permissionState is what one poll read about a login: whether it may write, and whether the read
+// succeeded at all, so a failed-closed check is never mistaken for a plain non-writer.
+type permissionState struct {
+	writer   bool
+	readable bool
+}
+
+// permissions caches, for one poll, whether each login may write to the repository and whether that
+// could be read, keyed by "repo\x00login". A permission it cannot read is cached as not-a-writer, so
+// every decision fails closed. It is a map so every reader of one poll's cache shares the one cache.
+type permissions map[string]permissionState
 
 // newPermissions starts an empty permission cache.
 func newPermissions() permissions {
@@ -676,13 +683,21 @@ func newPermissions() permissions {
 
 // isWriter reports whether login has write access. An unreadable permission is not write access.
 func (p permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string) bool {
+	return p.check(ctx, d, c, repo, login).writer
+}
+
+// check reports whether login has write access and whether the permission could be read at all. An
+// unreadable permission is cached as not-a-writer, so every decision fails closed.
+func (p permissions) check(
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string,
+) permissionState {
 	if login == "" {
-		return false
+		return permissionState{}
 	}
 
 	key := repo.String() + "\x00" + login
-	if writer, ok := p[key]; ok {
-		return writer
+	if state, ok := p[key]; ok {
+		return state
 	}
 
 	permission, err := c.CollaboratorPermission(ctx, repo, login)
@@ -690,12 +705,12 @@ func (p permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo
 		d.log().Warn("cannot read a collaborator's permission; failing closed",
 			"repo", repo, "login", login, "error", err)
 
-		p[key] = false
+		p[key] = permissionState{writer: false, readable: false}
 
-		return false
+		return p[key]
 	}
 
-	p[key] = workflow.WriterPermission(permission)
+	p[key] = permissionState{writer: workflow.WriterPermission(permission), readable: true}
 
 	return p[key]
 }

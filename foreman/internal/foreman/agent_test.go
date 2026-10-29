@@ -148,6 +148,12 @@ var _ = Describe("the opencode adapter", func() {
 		_, err := h.runImpl(agent)
 		Expect(err).To(MatchError(ContainSubstring("step cap")))
 		Expect(h.runCalls()).To(HaveLen(1), "a step cap is not retried")
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "run_capped"),
+			HaveKeyWithValue("outcome", "step_cap"),
+			HaveKeyWithValue("agent_role", "implementer"),
+			HaveKeyWithValue("issue", "5"),
+		)))
 	})
 
 	It("keeps a run that stays below its step cap", func() {

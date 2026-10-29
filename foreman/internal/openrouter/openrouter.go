@@ -17,6 +17,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/proxy"
 	"github.com/nateinaction/factory/foreman/internal/proxyauth"
+	"github.com/nateinaction/factory/foreman/internal/security"
 )
 
 // The proxy's fixed destination and default address.
@@ -41,21 +42,25 @@ type Proxy struct {
 	server    *http.Server
 	transport *http.Transport
 	reverse   *httputil.ReverseProxy
+	log       *slog.Logger
 	mu        sync.Mutex
 	usage     Usage
 }
 
-// Start binds a proxy holding key on addr, forwarding only to OpenRouter's API. The proxy answers
-// only a request carrying token, the random value minted for this run, so no other local caller can
-// spend the key. addr must be a loopback address. A bind or parse failure is an error: the run has no
-// other way to reach a model.
-func Start(key, token, addr string) (*Proxy, error) {
-	return start(key, token, addr, Upstream)
+// StartWithLogger binds a proxy holding key on addr, forwarding only to OpenRouter's API. The proxy
+// answers only a request carrying token, the random value minted for this run, so no other local
+// caller can spend the key. addr must be a loopback address. A bind or parse failure is an error: the
+// run has no other way to reach a model. A request without the run token is refused and emits one
+// security event (internal/security); logger nil discards those diagnostics.
+func StartWithLogger(ctx context.Context, key, token, addr string, logger *slog.Logger) (*Proxy, error) {
+	return startAt(ctx, key, token, addr, Upstream, logger)
 }
 
-// start is Start with the destination named. Only Start's OpenRouter destination is trusted; tests
-// name a stand-in so no spec reaches the network.
-func start(key, token, addr, upstream string) (*Proxy, error) {
+// startAt is StartWithLogger with the destination named. Only StartWithLogger's OpenRouter
+// destination is trusted; specs name a stand-in so none reaches the network.
+func startAt(
+	ctx context.Context, key, token, addr, upstream string, logger *slog.Logger,
+) (*Proxy, error) {
 	if token == "" {
 		return nil, fmt.Errorf("openrouter proxy: a per-run token is required")
 	}
@@ -69,12 +74,18 @@ func start(key, token, addr, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("parse upstream: %w", err)
 	}
 
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("bind openrouter proxy: %w", err)
 	}
 
-	p := &Proxy{key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+
+	p := &Proxy{
+		key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest, log: logger,
+	}
 	// The transport ignores the proxy environment variables, so the key can never be sent anywhere
 	// but OpenRouter.
 	p.transport = proxy.Transport((&net.Dialer{Timeout: proxy.DialTimeout}).DialContext, tlsTimeout)
@@ -144,6 +155,10 @@ func (p *Proxy) Close() error {
 // API.
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	if !proxyauth.Authorized(r, p.token) {
+		// A call to the key proxy without the run token is a security event: it is what a model that
+		// tries to spend the key outside its run looks like. The event carries the destination and
+		// outcome, never the token or a header.
+		security.Emit(p.log, security.EventKeyProxyRefused, security.RefusedBadToken, p.upstream.Hostname())
 		http.Error(w, "openrouter proxy: run token required", http.StatusUnauthorized)
 
 		return

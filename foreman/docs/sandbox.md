@@ -136,24 +136,42 @@ decision is recorded in `docs/adr/0001-egress-proxy-in-front-of-srt.md`.
 
 ### Security events
 
-The proxy emits one structured **security event** (a `slog` record at warn level, defined in
-`foreman/internal/security`) for every request it does not allow, on the `CONNECT`, plain-HTTP and API
-paths. An allowed request emits none. Later tickets reuse this shape.
+A **security event** is one structured `slog` record at warn level, defined in
+`foreman/internal/security`: `msg` is always `security event`, so one filter finds them all. Later
+tickets reuse this shape.
 
 | Field        | Meaning                                                                          |
 | ------------ | -------------------------------------------------------------------------------- |
 | `msg`        | always `security event`, so one filter finds them all                            |
-| `event`      | stable event name; `egress_refused` for a refused proxy request                  |
-| `outcome`    | why: `refused_by_policy`, `refused_not_routable`, `refused_tunnel_limit`, `refused_bad_token` |
-| `host`       | the destination asked for (`openrouter.ai` for an API-path refusal)              |
+| `event`      | stable event name, naming what was detected                                      |
+| `outcome`    | why, stable and alertable                                                        |
+| `host`       | the destination asked for (`openrouter.ai` for an API-path refusal); empty when the detection concerns no destination |
 | `agent_role` | the run's agent role                                                             |
 | `repository` | the run's repository, `owner/name`                                               |
 | `issue`      | the run's issue number                                                           |
 
-`refused_by_policy` covers a host the allowlist leaves out, a path the proxy does not serve and a
-malformed `CONNECT` destination; `refused_not_routable` an address that is not publicly routable;
-`refused_tunnel_limit` a tunnel past `MaxTunnels`; `refused_bad_token` a missing or wrong run token.
-The event carries only these fields: never the run token, the key or a request header.
+The egress proxy emits one for every request it does not allow, on the `CONNECT`, plain-HTTP and API
+paths. An allowed request emits none.
+
+| `event`                    | `outcome`                | What it records                                                        |
+| -------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `egress_refused`           | `refused_by_policy`      | a host the allowlist leaves out, a path the proxy does not serve, or a malformed `CONNECT` destination |
+| `egress_refused`           | `refused_not_routable`   | a destination whose address is not publicly routable                   |
+| `egress_refused`           | `refused_tunnel_limit`   | a tunnel past `MaxTunnels`                                             |
+| `egress_refused`           | `refused_bad_token`      | a missing or wrong run token                                           |
+| `key_proxy_refused`        | `refused_bad_token`      | a call to the OpenRouter key proxy without the run token               |
+| `output_rejected`          | `factory_marker`         | a model output file carrying a factory marker, an attempt to forge a transition |
+| `output_rejected`          | `invalid_output`         | an output file that is readable but does not fit its shape             |
+| `output_rejected`          | `unreadable_output`      | an output file foreman could not read at all                           |
+| `dashboard_command_refused`| `unauthorized_author`    | a non-writer's command on the retro dashboard                          |
+| `dashboard_command_refused`| `permission_unreadable`  | a command settled with no action because the permission check failed closed |
+| `run_capped`               | `step_cap`               | a run that reached its step cap                                        |
+
+A rejected output still posts its comment and applies nothing, a non-writer's command is still
+minimized with no action, an unreadable permission still fails closed, and a step cap still fails the
+run: the event only records what already happened. The event carries only these fields: never the run
+token, the key, a request header, or the model's file text.
+
 
 ## Fail closed
 

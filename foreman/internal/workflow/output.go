@@ -24,6 +24,21 @@ const (
 	ReviewerOutputFile = "reviewer-output.json"
 )
 
+// OutputProblem is the class of problem an output file was rejected for, named for the security event
+// the rejection emits.
+type OutputProblem string
+
+// The classes of problem an output file can carry. A file with a marker is refused for that, whatever
+// else is wrong with it: forging a transition is the security-relevant part.
+const (
+	// OutputUnreadable is a file foreman could not read at all.
+	OutputUnreadable OutputProblem = "unreadable"
+	// OutputFactoryMarker is a file that carries a factory marker.
+	OutputFactoryMarker OutputProblem = "factory_marker"
+	// OutputInvalid is a file that is readable but does not fit its shape.
+	OutputInvalid OutputProblem = "invalid"
+)
+
 // OutputError is an output file foreman rejected. Nothing in the file is applied, and the issue is
 // failed with every problem listed in one comment.
 type OutputError struct {
@@ -31,6 +46,8 @@ type OutputError struct {
 	File string
 	// Problems is every reason the file was rejected.
 	Problems []string
+	// Problem is the class of problem the file carried.
+	Problem OutputProblem
 }
 
 // Error names the file and lists every problem.
@@ -406,17 +423,27 @@ func validText(field, text string, oneLine bool) error {
 func parseOutput[D, O any](text, file string, check func(D) (O, []string)) (O, error) {
 	var decoded D
 
-	problems := decodeStrict(text, &decoded)
+	problems, forged := decodeStrict(text, &decoded)
 	out, more := check(decoded)
 	problems = append(problems, more...)
 
 	if len(problems) > 0 {
 		var none O
 
-		return none, &OutputError{File: file, Problems: problems}
+		return none, &OutputError{File: file, Problems: problems, Problem: problemClass(forged)}
 	}
 
 	return out, nil
+}
+
+// problemClass is the class of problem a rejected file carried. A file with a marker is refused for
+// that, whatever else is wrong with it.
+func problemClass(forged bool) OutputProblem {
+	if forged {
+		return OutputFactoryMarker
+	}
+
+	return OutputInvalid
 }
 
 // decodeStrict checks what every output file shares, then decodes it into out with unknown members
@@ -425,43 +452,44 @@ func parseOutput[D, O any](text, file string, check func(D) (O, []string)) (O, e
 // encoding/json/v2 refuses a repeated member and trailing data itself. It stops at the first error
 // it finds, where the walker this replaced named every repeated key at once: rejecting the file is
 // what matters, and naming one place to start is enough to fix it.
-func decodeStrict(text string, out any) []string {
-	problems, object := sharedProblems(text)
+func decodeStrict(text string, out any) ([]string, bool) {
+	problems, forged, object := sharedProblems(text)
 	if !object {
-		return problems
+		return problems, forged
 	}
 
 	if err := json.Unmarshal([]byte(text), out, json.RejectUnknownMembers(true)); err != nil {
-		return append(problems, decodeProblem(err))
+		return append(problems, decodeProblem(err)), forged
 	}
 
-	return problems
+	return problems, forged
 }
 
-// sharedProblems checks the version and model text of every output file. object is false when the
-// text is empty, not JSON, or not a JSON object, so a typed decode would only repeat the failure.
-func sharedProblems(text string) ([]string, bool) {
+// sharedProblems checks the version and model text of every output file. forged is true when the text
+// carries a factory marker; object is false when the text is empty, not JSON, or not a JSON object, so
+// a typed decode would only repeat the failure.
+func sharedProblems(text string) (problems []string, forged, object bool) {
 	if strings.TrimSpace(text) == "" {
-		return []string{"is empty"}, false
+		return []string{"is empty"}, false, false
 	}
 
 	var raw any
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return []string{syntaxProblem(err)}, false
+		return []string{syntaxProblem(err)}, false, false
 	}
 
-	object, ok := raw.(map[string]any)
+	obj, ok := raw.(map[string]any)
 	if !ok {
-		return []string{"must be a JSON object"}, false
+		return []string{"must be a JSON object"}, false, false
 	}
 
-	var problems []string
-
-	if version, ok := object["version"].(float64); !ok || version != OutputFileVersion {
+	if version, ok := obj["version"].(float64); !ok || version != OutputFileVersion {
 		problems = append(problems, fmt.Sprintf("version must be %d", OutputFileVersion))
 	}
 
-	return append(problems, markerProblems(raw, "")...), true
+	markers := markerProblems(raw, "")
+
+	return append(problems, markers...), len(markers) > 0, true
 }
 
 // syntaxProblem names why the text is not one JSON object foreman can read. A repeated member is

@@ -102,7 +102,17 @@ func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
 
 // Handle records r and its attributes.
 func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	return c.handle(nil, r)
+}
+
+// handle records r with base attrs first, so a record's own attr wins over a derived logger's.
+func (c *logCapture) handle(base []slog.Attr, r slog.Record) error {
 	e := logEntry{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+
+	for _, a := range base {
+		e.attrs[a.Key] = a.Value.String()
+	}
+
 	r.Attrs(func(a slog.Attr) bool {
 		e.attrs[a.Key] = a.Value.String()
 
@@ -117,8 +127,34 @@ func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs returns the same handler: the harness never logs through a derived logger.
-func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+// attrHandler is a derived logger's handler: every record it handles carries attrs too.
+type attrHandler struct {
+	capture *logCapture
+	attrs   []slog.Attr
+}
+
+// Enabled accepts every level, as the capture does.
+func (h *attrHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.capture.Enabled(ctx, l)
+}
+
+// Handle records r with the derived logger's attrs.
+func (h *attrHandler) Handle(_ context.Context, r slog.Record) error {
+	return h.capture.handle(h.attrs, r)
+}
+
+// WithAttrs derives one more level, keeping the attrs already added.
+func (h *attrHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &attrHandler{capture: h.capture, attrs: append(slices.Clone(h.attrs), attrs...)}
+}
+
+// WithGroup ignores groups: the harness never opens one.
+func (h *attrHandler) WithGroup(string) slog.Handler { return h }
+
+// WithAttrs returns a handler that adds attrs to every record the capture keeps.
+func (c *logCapture) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &attrHandler{capture: c, attrs: attrs}
+}
 
 // WithGroup returns the same handler: the harness never logs through a derived logger.
 func (c *logCapture) WithGroup(string) slog.Handler { return c }
@@ -445,6 +481,25 @@ func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
 	}
 
 	return "minted-token-" + appOf(c) + "\n", nil
+}
+
+// securityEvents is every security event the harness captured, as its attributes.
+func (h *harness) securityEvents() []map[string]string {
+	GinkgoHelper()
+
+	h.logs.mu.Lock()
+	entries := slices.Clone(h.logs.entries)
+	h.logs.mu.Unlock()
+
+	var events []map[string]string
+
+	for _, e := range entries {
+		if e.msg == "security event" {
+			events = append(events, e.attrs)
+		}
+	}
+
+	return events
 }
 
 // expectLeakFree fails the spec when a secret appears in any argv.

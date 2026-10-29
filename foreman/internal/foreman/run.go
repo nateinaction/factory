@@ -309,13 +309,16 @@ func proxyPort(addr string) int {
 }
 
 // proxy starts the run's OpenRouter proxy with key on the loopback address. A proxy that cannot start
-// fails the run: the model has no other way to reach OpenRouter.
-func (d Deps) proxy(key, token string) (Forwarder, error) {
+// fails the run: the model has no other way to reach OpenRouter. Its security events carry the run
+// they belong to.
+func (d Deps) proxy(
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string,
+) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
-		start = func(key, token, addr string) (Forwarder, error) {
-			return openrouter.Start(key, token, addr)
-		}
+		log := security.Scope(d.log(), string(role), ref.Repo.String(), ref.Number)
+
+		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log)
 	}
 
 	return start(key, token, openrouter.Loopback)
@@ -378,6 +381,19 @@ func startCode(err error, code int) int {
 	}
 
 	return code
+}
+
+// emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
+// and is never retried, so the run is worth recording on its own.
+func emitStepCap(d Deps, role workflow.Role, repo workflow.Repo, number int, err error) {
+	if opencode.KindOf(err) != opencode.FailStepCap {
+		return
+	}
+
+	security.Emit(
+		security.Scope(d.log(), string(role), repo.String(), number),
+		security.EventRunCapped, security.RunStepCap, "",
+	)
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -485,18 +501,41 @@ func scratchDir(root, name string) (string, error) {
 // outputProblem turns an unreadable output file into the error a rejected one returns. The error
 // carries the file's name, which the comment shows once, so the problem does not repeat it.
 func outputProblem(file string, err error) error {
-	return &workflow.OutputError{File: file, Problems: []string{"cannot be read: " + err.Error()}}
+	return &workflow.OutputError{
+		File: file, Problems: []string{"cannot be read: " + err.Error()}, Problem: workflow.OutputUnreadable,
+	}
 }
 
-// rejectOutput posts every problem with a rejected output file in one comment, then returns the
-// failure the run reports. Nothing in the file is applied: the issue goes to failed instead.
+// outputOutcome names the class of problem a rejected output file carried, for its security event.
+func outputOutcome(problem workflow.OutputProblem) security.Outcome {
+	switch problem {
+	case workflow.OutputFactoryMarker:
+		return security.OutputFactoryMarker
+	case workflow.OutputUnreadable:
+		return security.OutputUnreadable
+	case workflow.OutputInvalid:
+		return security.OutputInvalid
+	}
+
+	return security.OutputInvalid
+}
+
+// rejectOutput posts every problem with a rejected output file in one comment, emits the rejection's
+// security event, then returns the failure the run reports. Nothing in the file is applied: the issue
+// goes to failed instead.
 func rejectOutput(
-	ctx context.Context, c github.Client, repo workflow.Repo, number int, role workflow.Role, err error,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, number int, role workflow.Role, err error,
 ) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
 		return err
 	}
+
+	// The event carries the run and the class of problem, never the file's text: it is the model's.
+	security.Emit(
+		security.Scope(d.log(), string(role), repo.String(), number),
+		security.EventOutputRejected, outputOutcome(rejected.Problem), "",
+	)
 
 	lines := []string{
 		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
