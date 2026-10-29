@@ -102,7 +102,11 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 		s.d.log().Info("agent output", "text", s.redact(out))
 	}
 
-	return opencode.ParseStream(out), err
+	stream, parseErr := opencode.ParseStream(out)
+	// A stream foreman could not read to its end is a failure of the attempt in its own right: the
+	// steps, the usage and any failure event after the unreadable line are missing, so the run is
+	// never read as a success.
+	return stream, errors.Join(err, parseErr)
 }
 
 // redact removes the run's key and proxy token from text bound for a log.
