@@ -123,13 +123,20 @@ func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c *logCapture) WithGroup(string) slog.Handler { return c }
 
 // String renders the captured records as "LEVEL message key=value ..." lines, for matching.
-func (c *logCapture) String() string {
+func (c *logCapture) String() string { return c.StringFrom(slog.LevelDebug) }
+
+// StringFrom renders only the records at level or above: what a logger set to level would write.
+func (c *logCapture) StringFrom(level slog.Level) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var b strings.Builder
 
 	for _, e := range c.entries {
+		if e.level < level {
+			continue
+		}
+
 		fmt.Fprintf(&b, "%s %s", e.level, e.msg)
 
 		for _, key := range slices.Sorted(maps.Keys(e.attrs)) {

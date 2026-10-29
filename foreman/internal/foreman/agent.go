@@ -87,8 +87,9 @@ func (s session) afterAttempt(
 }
 
 // attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to
-// the dagu log with the OpenRouter key removed. A session without a backend or settings refuses to
-// start the model: there is no unsandboxed fallback.
+// the log at debug level, not info, with the OpenRouter key removed: the transcript carries private
+// repository code and issue text, so it stays out of the default diagnostics. A session without a
+// backend or settings refuses to start the model: there is no unsandboxed fallback.
 func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Duration) (opencode.Stream, error) {
 	argv := sandbox.Argv(s.srt, s.settings, opencode.Argv(r))
 	if argv == nil {
@@ -99,7 +100,7 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 		Argv: argv, Dir: s.workdir, Env: s.agentEnv, ReplaceEnv: true, Timeout: timeout, Capture: true,
 	})
 	if out != "" {
-		s.d.log().Info("agent output", "text", s.redact(out))
+		s.d.log().Debug("agent output", "text", s.redact(out))
 	}
 
 	stream, parseErr := opencode.ParseStream(out)
