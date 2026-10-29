@@ -411,9 +411,7 @@ func prepareIssue(
 	}
 
 	if state, repair := workflow.Repair(issue, latest.Transition, found); repair {
-		d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state)
-
-		if err := c.AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state)); err != nil {
+		if err := repairIssue(ctx, d, repo, issue, latest.Transition, state); err != nil {
 			return err
 		}
 
@@ -439,6 +437,26 @@ func prepareIssue(
 	}
 
 	return nil
+}
+
+// repairIssue re-applies the state the latest marker names with the token of the agent role that
+// made the transition. The polling App's token never stands in for it: an issue whose owning role
+// cannot mint stays stranded for the next poll.
+func repairIssue(
+	ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue, t workflow.Transition, state workflow.State,
+) error {
+	if t.Role == "" {
+		return fmt.Errorf("repair #%d: the marker names no agent role", issue.Number)
+	}
+
+	token, err := d.mintToken(ctx, t.Role, repo)
+	if err != nil {
+		return fmt.Errorf("repair #%d as %s: %w", issue.Number, t.Role, err)
+	}
+
+	d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state, "role", t.Role)
+
+	return d.client(token).AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state))
 }
 
 // wakeIssue moves an issue a writer has commented on out of the state that was waiting for them: a

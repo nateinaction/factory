@@ -1027,14 +1027,22 @@ func postVerdict(
 	return workflow.ReviewFindings, nil
 }
 
-// approvalReviewer is the human writer an approval asks to merge: the issue's author when a human
+// approvalReviewer is the human writer an approval asks to merge: the issue's author when a writer
 // wrote it, otherwise the latest human writer who commented. Empty means no human writer was found.
 func approvalReviewer(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item,
 ) (string, error) {
 	if issue.Author != "" && !workflow.BotAuthored(issue.Author) {
-		return issue.Author, nil
+		permission, err := c.CollaboratorPermission(ctx, repo, issue.Author)
+		if err != nil {
+			// Fail closed: without a readable permission, the author's write access is unknown.
+			return "", fmt.Errorf("read %s's permission: %w", issue.Author, err)
+		}
+
+		if workflow.WriterPermission(permission) {
+			return issue.Author, nil
+		}
 	}
 
 	for _, comment := range slices.Backward(comments) {
