@@ -904,8 +904,9 @@ func postVerdict(
 		return 1, err
 	}
 
-	// A repeat of this commit's review posts nothing: the same head SHA is reviewed once.
-	if len(workflow.StartsWith(reviews, workflow.ReviewMarker(sha))) == 0 {
+	// A repeat of this commit's review posts nothing: the same head SHA is reviewed once. Only the
+	// factory's own review counts, so another author's marker cannot suppress the verdict.
+	if len(workflow.FactoryStartsWith(reviews, workflow.ReviewMarker(sha), repo.Owner())) == 0 {
 		body := workflow.RenderReview(sha, out)
 		if err := c.PostReview(ctx, workflow.IssueRef{Repo: repo, Number: pr}, sha, body, out.Verdict); err != nil {
 			return 1, err

@@ -719,7 +719,8 @@ func (h *harness) sudoExit(code int) *factoryHalf {
 	return seen
 }
 
-// implementerGH creates the GitHub side of an Implementer run on issue 5; pr is the existing PR or nil.
+// implementerGH creates the GitHub side of an Implementer run on issue 5; pr is the existing PR or
+// nil, and reviews are earlier rounds the Reviewer's App posted.
 func (h *harness) implementerGH(pr map[string]any, reviews []workflow.Item) {
 	GinkgoHelper()
 
@@ -736,8 +737,11 @@ func (h *harness) implementerGH(pr map[string]any, reviews []workflow.Item) {
 
 	h.pr, h.prURL = created.Number, created.HTMLURL
 
+	// Earlier rounds were the Reviewer's App's reviews, the only author foreman reads them from. A
+	// spec that seeds another author's marker posts it itself.
 	for _, review := range reviews {
-		Expect(emulator.CreateReview(context.Background(), "o/r", h.pr, review.Body)).To(Succeed())
+		Expect(emulator.CreateReviewAs(context.Background(), "o/r", h.pr, tokenFor(appLogin(workflow.Reviewer)),
+			review.Body)).To(Succeed())
 	}
 }
 

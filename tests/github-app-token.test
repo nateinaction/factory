@@ -10,8 +10,9 @@ work="$(mktemp -d)"
 server=""
 trap '[ -z "$server" ] || kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
 
-# Two Apps with their own keys. "implementer" is App 1 and "reviewer" is App 2; "planner" has no credentials.
-for pair in implementer:1 reviewer:2; do
+# Apps with their own keys. "implementer" is App 1 and "reviewer" is App 2; "planner" has no
+# credentials. "paged", "wide" and "crowded" stand past a ceiling of the listing the tool reads.
+for pair in implementer:1 reviewer:2 paged:3 wide:4 crowded:5; do
   app="${pair%%:*}"
   mkdir -p "$work/conf/$app"
   echo "${pair##*:}" >"$work/conf/$app/app-id"
@@ -103,5 +104,13 @@ expect_error "a conflicting --read-only on repositories is refused" \
 expect_error "a conflicting --read-only value on token is refused" \
   "ignored explicit argument 'x'" token --app implementer --repo o/r --read-only=x
 expect_error "a flag with no value is refused" "--repo" token --app implementer --repo
+
+# A listing that reaches its ceiling is a failure, never a truncated answer.
+expect_error "an App whose installation listing is full on its last page lists nothing" \
+  "longer than 10 pages" repositories --app paged
+expect_error "an App whose repository listing is full on its last page lists nothing" \
+  "longer than 10 pages" repositories --app wide
+expect_error "an App installed past the installation cap lists nothing" \
+  "over the 50" repositories --app crowded
 
 [ "$failures" -eq 0 ]

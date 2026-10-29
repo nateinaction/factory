@@ -411,12 +411,19 @@ func (e *Emulate) CreatePR(ctx context.Context, repo, head, title, text string) 
 	return created, nil
 }
 
-// CreateReview adds a comment review to pr, for seeding earlier rounds.
+// CreateReview adds a comment review to pr as the admin, for seeding a review by someone other than
+// a factory App.
 func (e *Emulate) CreateReview(ctx context.Context, repo string, pr int, text string) error {
+	return e.CreateReviewAs(ctx, repo, pr, AdminToken, text)
+}
+
+// CreateReviewAs adds a comment review to pr as the user behind token, for seeding the factory's own
+// reviews and another author's forged ones.
+func (e *Emulate) CreateReviewAs(ctx context.Context, repo string, pr int, token, text string) error {
 	in := map[string]any{bodyField: text, "event": "COMMENT"}
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr)
 
-	return e.Do(ctx, http.MethodPost, path, AdminToken, in, nil)
+	return e.Do(ctx, http.MethodPost, path, token, in, nil)
 }
 
 // repoName is the final path element of owner/name.
