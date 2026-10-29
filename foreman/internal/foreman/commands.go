@@ -925,13 +925,9 @@ func ciFailureBack(
 
 // claimed reports whether the issue already carries a running label: a run is happening.
 func claimed(issue workflow.Issue) bool {
-	for _, q := range workflow.Queues() {
-		if workflow.HasLabel(issue, string(q.Running)) {
-			return true
-		}
-	}
+	_, _, running := workflow.RunningState(issue)
 
-	return false
+	return running
 }
 
 // headSHA is the commit the issue's open pull request is at, or empty before one exists.

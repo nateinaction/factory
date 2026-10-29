@@ -48,9 +48,10 @@ type prepared struct {
 type outcome struct {
 	// code is the verdict code a successful run returns.
 	code int
-	// retro asks for the retro epilogue, keyed by key. The retro never changes the run's outcome.
+	// retro asks for the retro epilogue. The retro never changes the run's outcome.
 	retro bool
-	key   string
+	// retroKey is the key the retro comment is filed under.
+	retroKey string
 	// err is the run's failure, if any.
 	err error
 }
@@ -66,12 +67,15 @@ type roleRun struct {
 }
 
 // agentRole is everything dispatch knows about an agent role, so a new role is one entry in
-// agentRoleFor: how `run` runs it, and how `start` routes its exit code.
+// the agentRoles table: how `run` runs it, how `start` routes its exit code, and what its run
+// paths are called.
 type agentRole struct {
 	// run is the pipeline `foreman run` executes.
 	run roleRun
 	// route is what `start` records for the exit code of the role's run.
 	route func(cfg config.Config, ref workflow.IssueRef, code int) route
+	// names are the names the role's run directories and output file carry.
+	names roleNames
 }
 
 // route is what `start` does with a run's exit code.
@@ -88,26 +92,40 @@ type route struct {
 
 // agentRoleFor is the one lookup by agent role that both `run` and `start` dispatch through.
 func agentRoleFor(role workflow.Role) (agentRole, bool) {
-	switch role {
-	case workflow.Planner:
-		return agentRole{run: roleRun{retro: true, prepare: preparePlanner}, route: routePlanner}, true
-	case workflow.Implementer:
-		return agentRole{
+	ar, ok := agentRoles()[role]
+
+	return ar, ok
+}
+
+// agentRoles is the table of agent roles: a new role is one entry here.
+func agentRoles() map[workflow.Role]agentRole {
+	return map[workflow.Role]agentRole{
+		workflow.Planner: {
+			run:   roleRun{retro: true, prepare: preparePlanner},
+			route: routePlanner,
+			names: roleNames{"plan", "planner", workflow.PlannerOutputFile},
+		},
+		workflow.Implementer: {
 			run:   roleRun{identity: committerIdentity(), retro: true, prepare: prepareImplementer},
 			route: routeImplementer,
-		}, true
-	case workflow.Researcher:
-		return agentRole{
+			names: roleNames{"issue", "implementer", workflow.ImplementerOutputFile},
+		},
+		workflow.Researcher: {
 			run:   roleRun{identity: committerIdentity(), retro: true, prepare: prepareResearcher},
 			route: routeResearcher,
-		}, true
-	case workflow.Reviewer:
-		return agentRole{run: roleRun{retro: true, prepare: prepareReviewer}, route: routeReviewer}, true
-	case workflow.Curator:
-		return agentRole{run: roleRun{prepare: prepareCurator}, route: routeCurator}, true
+			names: roleNames{"research", "researcher", workflow.ResearcherOutputFile},
+		},
+		workflow.Reviewer: {
+			run:   roleRun{retro: true, prepare: prepareReviewer},
+			route: routeReviewer,
+			names: roleNames{"review", "reviewer", workflow.ReviewerOutputFile},
+		},
+		workflow.Curator: {
+			run:   roleRun{prepare: prepareCurator},
+			route: routeCurator,
+			names: roleNames{"curator", "curator-out", workflow.CuratorOutputFile},
+		},
 	}
-
-	return agentRole{}, false
 }
 
 // failed is the route of a run that failed: the issue moves to failed with the role's message.
@@ -239,7 +257,7 @@ func pipeline(
 
 	if oc.retro {
 		usage = usage.Add(s.retroEpilogue(
-			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.key, oc.err, spec.retro,
+			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.retroKey, oc.err, spec.retro,
 		))
 	}
 
@@ -289,10 +307,12 @@ type runPaths struct {
 
 // newRunPaths clears and returns the paths of the role's run for an issue.
 func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) {
-	names, ok := pathNames(role)
+	ar, ok := agentRoleFor(role)
 	if !ok {
 		return runPaths{}, fmt.Errorf("no run paths for agent role %q", role)
 	}
+
+	names := ar.names
 
 	workdir, err := freshPath(root, fmt.Sprintf("%s-%d", names.workdir, number))
 	if err != nil {
@@ -310,22 +330,4 @@ func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) 
 // roleNames are the names a role's run directories and output file carry.
 type roleNames struct {
 	workdir, scratch, file string
-}
-
-// pathNames is how a role's run paths are named.
-func pathNames(role workflow.Role) (roleNames, bool) {
-	switch role {
-	case workflow.Planner:
-		return roleNames{"plan", "planner", workflow.PlannerOutputFile}, true
-	case workflow.Implementer:
-		return roleNames{"issue", "implementer", workflow.ImplementerOutputFile}, true
-	case workflow.Researcher:
-		return roleNames{"research", "researcher", workflow.ResearcherOutputFile}, true
-	case workflow.Reviewer:
-		return roleNames{"review", "reviewer", workflow.ReviewerOutputFile}, true
-	case workflow.Curator:
-		return roleNames{"curator", "curator-out", workflow.CuratorOutputFile}, true
-	}
-
-	return roleNames{}, false
 }

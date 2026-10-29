@@ -188,13 +188,21 @@ func Queued(role Role) (State, bool) {
 
 // RoleOf names the agent role that owns a handoff state.
 func RoleOf(state State) (Role, bool) {
+	q, ok := queuesByState()[state]
+
+	return q.Role, ok
+}
+
+// queuesByState indexes the queues by both of their labels, so a state finds the queue that owns it.
+func queuesByState() map[State]Queue {
+	out := make(map[State]Queue)
+
 	for _, q := range Queues() {
-		if q.State == state || q.Running == state {
-			return q.Role, true
-		}
+		out[q.State] = q
+		out[q.Running] = q
 	}
 
-	return "", false
+	return out
 }
 
 // FactoryLabels lists every label foreman creates, idempotently, for an assigned repository. A closed
