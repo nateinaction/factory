@@ -17,6 +17,7 @@
         mode: "0644"
       loop:
         - prometheus.service
+        - prometheus.yaml
         - tempo.service
         - loki.service
         - grafana.service
@@ -45,3 +46,5 @@
           factory_telemetry_memory_budget_mib: "{{ factory_telemetry_memory_budget_mib }}"
           factory_telemetry_memory_max_mib: "{{ factory_telemetry_memory_max_mib }}"
           factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port }}"
+          factory_telemetry_grafana_admin_user: "{{ factory_telemetry_grafana_admin_user }}"
+          factory_telemetry_grafana_admin_password: "{{ factory_telemetry_grafana_admin_password }}"

@@ -64,10 +64,15 @@ assert any("host.name" in statement for statement in resource["statements"]), re
 processors = c["service"]["pipelines"]["metrics"]["processors"]
 assert processors.index("transform/host") < processors.index("redaction"), processors
 '
-check "the health metric attributes survive redaction" conf '
+check "the health metric attributes survive redaction under the factory namespace" conf '
 allowed = c["processors"]["redaction"]["allowed_keys"]
-for key in ("host.name", "factory.worker_host", "mountpoint", "fstype", "device", "kind", "state"):
+for key in ("host.name", "factory.worker_host", "factory.host_health.mountpoint",
+            "factory.host_health.fstype", "factory.host_health.device",
+            "factory.host_health.kind", "factory.host_health.state"):
     assert key in allowed, key
+# The bare Prometheus names are not admitted for every signal: transform/host renames them first.
+for key in ("mountpoint", "fstype", "device", "kind", "state"):
+    assert key not in allowed, key
 '
 
 # --- the health reporter's two metrics ---

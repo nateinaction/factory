@@ -20,7 +20,12 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/otelcol
+ReadWritePaths={{ factory_collector_state_dir }}
+# dagu writes each run's step logs 0600. The filelog receiver reads foreman's diagnostics from a run's
+# standard error, and this one capability lifts the file mode for reading only: the collector stays
+# unprivileged and can write nothing outside its state directory.
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 
 [Install]
 WantedBy=multi-user.target

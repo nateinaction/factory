@@ -38,12 +38,8 @@
 # Prometheus scrapes nothing: every host's collector pushes OTLP to it. It evaluates the alert rules
 # below on its own clock and lists what is firing at /alerts.
 - name: Configure Prometheus
-  ansible.builtin.copy:
-    content: |
-      # {{ ansible_managed }}
-      global: {}
-      rule_files:
-        - /etc/prometheus/alerts.yaml
+  ansible.builtin.template:
+    src: prometheus.yaml.j2
     dest: /etc/prometheus/prometheus.yml
     owner: root
     group: root

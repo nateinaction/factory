@@ -197,3 +197,24 @@ var _ = Describe("LogHandler", func() {
 		Expect(m).NotTo(HaveKey("span_id"))
 	})
 })
+
+var _ = Describe("ExportEnv", func() {
+	It("keeps only the export variables that are set", func() {
+		env := telemetry.ExportEnv(func(name string) string {
+			return map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+				"OTEL_SERVICE_NAME":           "foreman",
+				"FACTORY_WORK_ROOT":           "/somewhere",
+			}[name]
+		})
+
+		Expect(env).To(Equal(map[string]string{
+			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+			"OTEL_SERVICE_NAME":           "foreman",
+		}), "a setting other than telemetry's own must not cross sudo")
+	})
+
+	It("names every variable the sudoers rule keeps", func() {
+		Expect(telemetry.EnvNames).To(ConsistOf("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"))
+	})
+})

@@ -60,6 +60,9 @@
             pkgs.govulncheck
             # The sandbox backend every model run is wrapped in; also runs the acceptance test.
             pkgs.sandbox-runtime
+            # The pinned collector the hosts install, so the collector role's rendered config is
+            # validated and exercised by the real binary.
+            pkgs.opentelemetry-collector-contrib
             # Pinned to 4.7.0 by the locked nixpkgs revision (see flake.lock).
             pkgs.pre-commit
             # foreman's tests run the GitHub emulator for their state.

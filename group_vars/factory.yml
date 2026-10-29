@@ -259,11 +259,25 @@ factory_collector_user: otelcol
 factory_collector_host: 127.0.0.1
 factory_collector_grpc_port: 4317
 factory_collector_http_port: 4318
+# Where the collector keeps its local spool: the filelog receiver's read positions and, while a
+# backend is unreachable, the bounded export queue. StateDirectory makes the parent.
+factory_collector_state_dir: /var/lib/otelcol
+# Where dagu writes each DAG run's step logs. The collector tails the factory DAGs' standard error,
+# which carries foreman's JSON diagnostics and security events, and forwards them to Loki. dagu's
+# defaults resolve to $HOME/.local/share/dagu/logs, and its unit sets HOME to dagu_home.
+factory_dagu_logs_dir: "{{ dagu_home }}/.local/share/dagu/logs"
+# Where foreman exports its OTLP. The host's own collector, on loopback, is the only endpoint: an
+# empty value means no export, and foreman then guesses nothing. The dagu unit exports both values for
+# `start`, and start hands them to the factory half by name across sudo.
+factory_foreman_otlp_endpoint: >-
+  {{ ('http://' ~ factory_collector_host ~ ':' ~ factory_collector_http_port) if factory_collector | bool else '' }}
+factory_foreman_otel_service_name: foreman
 # The host whose telemetry backend this collector forwards to (traces, metrics and logs, each to its
 # own port). Empty means no backend: the collector keeps receiving and deriving metrics, and exports nothing.
 factory_collector_backend_host: "{{ factory_telemetry_host if factory_telemetry | bool else '' }}"
 # Attributes (span, resource and metric) that may leave the host. Everything else is redacted, so a
-# new attribute is dropped until someone adds it here. The first four are spanmetrics' own dimensions.
+# new attribute is dropped until someone adds it here. The first group is spanmetrics' own dimensions
+# and the standard resource attributes.
 factory_collector_allowed_attributes:
   - service.name
   - span.name
@@ -271,21 +285,40 @@ factory_collector_allowed_attributes:
   - status.code
   - service.version
   - host.name
+  # A run's dimensions. factory.issue and factory.trace_id are the one exception to "an issue is never
+  # a metric label": the security-event metric carries them so a per-event alert can name the issue
+  # and link straight to the trace that raised it (#132). Every other metric keeps the issue out.
   - factory.agent_role
-  - factory.outcome
-  # The alert rules' own dimensions: the security event a measurement counts, and the repository and
-  # model a run belongs to. An issue number never leaves the host as a metric label.
-  - factory.event
   - factory.repo
-  - factory.model
+  - factory.issue
+  - factory.trace_id
+  - factory.outcome
+  - factory.state
+  - factory.failure_kind
+  - factory.event
   - factory.worker_host
-  # Host health's metric attributes: the disk's mountpoint, device and filesystem type, and the
-  # throttling bit's kind and state (now or since boot).
-  - mountpoint
-  - fstype
-  - device
-  - kind
-  - state
+  - factory.run_id
+  # The run's root span carries its usage, which `foreman status` reads from the backend when one is
+  # configured. Where a GenAI convention names a figure, its key is used.
+  - factory.attempts
+  - factory.peak_context
+  - factory.cost
+  - gen_ai.request.model
+  - gen_ai.usage.input_tokens
+  - gen_ai.usage.output_tokens
+  - gen_ai.usage.cache_read.input_tokens
+  # Foreman's diagnostics carry the trace's ids as log attributes as well as the record's own trace
+  # context, so Loki's derived field finds them from a Grafana log line.
+  - trace_id
+  - span_id
+  # Host health's metric attributes, renamed into the factory namespace by the collector's
+  # transform/host processor. The bare Prometheus names (mountpoint, kind, state) are deliberately
+  # absent: a generic key would admit an unrelated new attribute of the same name.
+  - factory.host_health.kind
+  - factory.host_health.state
+  - factory.host_health.mountpoint
+  - factory.host_health.device
+  - factory.host_health.fstype
 # Fixed bounds. While the backend is unreachable the queue holds at most this many batches, each of at
 # most factory_collector_batch_size spans or data points; memory is capped separately.
 factory_collector_queue_size: 1000
@@ -324,6 +357,11 @@ factory_telemetry_tempo_grpc_port: 9097
 factory_telemetry_loki_port: 3100 # OTLP logs at /otlp/v1/logs
 factory_telemetry_loki_grpc_port: 9096
 factory_telemetry_grafana_port: 3000 # tailnet HTTPS port; Grafana's login is its own
+# Grafana's admin login. The play writes these into grafana.ini, so there is no reliance on Grafana's
+# own admin/admin default: override the password in group_vars or an ansible-vault file, and change it
+# in Grafana after the first provisioning. The README says the same.
+factory_telemetry_grafana_admin_user: admin
+factory_telemetry_grafana_admin_password: admin # CHANGE THIS before provisioning
 # Every store is bounded, so the Pi's disk cannot fill. Tempo has no size cap, so it is bounded by age.
 factory_telemetry_prometheus_retention_time: 15d
 factory_telemetry_prometheus_retention_size: 2GB
@@ -338,11 +376,13 @@ factory_telemetry_memory_max_mib:
   loki: 192
   grafana: 160
 # Alerts: the signals that need a human. The rules live in the telemetry role; every threshold, window
-# and the cost budget is set here, never written into a rule. Each alert names the agent role and
-# repository from its metric's labels and links to the run's trace, which carries the issue number:
-# an issue is a span attribute, never a metric label.
+# and the cost budget is set here, never written into a rule. A per-event alert names the agent role,
+# repository and issue from its metric's labels and links straight to the trace that raised it: the
+# security-event metric is the one that carries the issue and trace id (see
+# factory_collector_allowed_attributes). An aggregate alert names the agent role and repository and
+# links to a search for their offending traces and their failed issues.
 # Where an alert's trace link points: the tailnet HTTPS address Grafana is served at.
-factory_alerts_grafana_url: "https://{{ inventory_hostname }}:{{ factory_telemetry_grafana_port }}"
+factory_alerts_grafana_url: "https://{{ factory_telemetry_host }}:{{ factory_telemetry_grafana_port }}"
 # How far back the security alerts look for a refused request or a rejected output.
 factory_alerts_security_window: 15m
 # A dead run a poll reaped is rare; any one in this window is worth a look.

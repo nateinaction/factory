@@ -48,6 +48,16 @@ assert s["http_listen_address"] == "127.0.0.1" and s["grpc_listen_address"] == "
 check "grafana listens on loopback only" grep -Fxq 'http_addr = 127.0.0.1' "$out/grafana.ini"
 check "prometheus listens on loopback only" \
   grep -Fq -- '--web.listen-address=127.0.0.1:' "$out/prometheus.service"
+check "prometheus loads its alert rules from a template" bash -c "
+  grep -Fq -- 'rule_files:' '$out/prometheus.yaml' &&
+  grep -Fq -- '/etc/prometheus/alerts.yaml' '$out/prometheus.yaml'"
+check "grafana's admin login comes from group_vars, not its built-in default" python3 -I -c '
+import json, sys
+v = json.load(open(sys.argv[1]))["v"]
+text = open(sys.argv[2]).read()
+assert "admin_user = " + v["factory_telemetry_grafana_admin_user"] in text, text
+assert "admin_password = " + v["factory_telemetry_grafana_admin_password"] in text, text
+' "$out/config.json" "$out/grafana.ini"
 check "prometheus accepts OTLP and stores exemplars" bash -c "
   grep -Fq -- '--web.enable-otlp-receiver' '$out/prometheus.service' &&
   grep -Fq -- 'exemplar-storage' '$out/prometheus.service'"

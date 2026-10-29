@@ -16,7 +16,8 @@ SAMPLES = {
     "ForemanEgressNotRoutable": {
         "series": [
             'factory_security_events_total{event="egress_refused",outcome="refused_not_routable",'
-            'factory_agent_role="implementer",factory_repo="o/r"}',
+            'factory_agent_role="implementer",factory_repo="o/r",factory_issue="5",'
+            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -24,7 +25,8 @@ SAMPLES = {
     "ForemanProxyBadToken": {
         "series": [
             'factory_security_events_total{event="key_proxy_refused",outcome="refused_bad_token",'
-            'factory_agent_role="implementer",factory_repo="o/r"}',
+            'factory_agent_role="implementer",factory_repo="o/r",factory_issue="5",'
+            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -32,7 +34,8 @@ SAMPLES = {
     "ForemanOutputFactoryMarker": {
         "series": [
             'factory_security_events_total{event="output_rejected",outcome="factory_marker",'
-            'factory_agent_role="implementer",factory_repo="o/r"}',
+            'factory_agent_role="implementer",factory_repo="o/r",factory_issue="5",'
+            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -47,7 +50,7 @@ SAMPLES = {
     },
     "ForemanDailyModelCost": {
         "series": [
-            'factory_run_cost_total{factory_agent_role="implementer",factory_repo="o/r",factory_model="m"}',
+            'factory_run_cost_total{factory_agent_role="implementer",factory_repo="o/r",gen_ai_request_model="m"}',
         ],
         "values": "0+1x10",
         "eval": "10m",
@@ -62,7 +65,12 @@ SAMPLES = {
 }
 
 # What the synthetic series' labels put where a rule templates a label.
-SAMPLE_LABELS = {"factory_agent_role": "implementer", "factory_repo": "o/r"}
+SAMPLE_LABELS = {
+    "factory_agent_role": "implementer",
+    "factory_repo": "o/r",
+    "factory_issue": "5",
+    "factory_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+}
 
 PLACEHOLDER = re.compile(r"\{\{\s*\$labels\.(\w+)\s*\}\}")
 

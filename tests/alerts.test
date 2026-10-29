@@ -57,15 +57,38 @@ for r in rules:
     assert "{{ $labels.factory_agent_role }}" in text, r["alert"]
     assert "{{ $labels.factory_repo }}" in text, r["alert"]
 '
-check "each alert links to the run's trace in Grafana" rules '
+check "each security alert names the issue it was raised on" rules '
+security = {"ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker"}
 for r in rules:
+    if r["alert"] not in security:
+        continue
+    assert "#{{ $labels.factory_issue }}" in r["annotations"]["summary"], r["alert"]
+    assert r["annotations"]["issue"].endswith("/issues/{{ $labels.factory_issue }}"), r["alert"]
+'
+check "each security alert links to the exact trace that raised it" rules '
+security = {"ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker"}
+for r in rules:
+    if r["alert"] not in security:
+        continue
+    trace = r["annotations"]["trace"]
+    assert trace.startswith(v["factory_alerts_grafana_url"] + "/explore?left="), r["alert"]
+    assert "traceId" in trace and "{{ $labels.factory_trace_id }}" in trace, r["alert"]
+'
+check "each aggregate alert links to the role and repository's traces" rules '
+aggregate = {"ForemanAgentRoleFailureRate", "ForemanDailyModelCost", "ForemanDeadRunReaped"}
+for r in rules:
+    if r["alert"] not in aggregate:
+        continue
     trace = r["annotations"]["trace"]
     assert trace.startswith(v["factory_alerts_grafana_url"] + "/explore?left="), r["alert"]
     assert "span.factory.agent_role" in trace and "span.factory.repo" in trace, r["alert"]
 '
-check "each alert links to the repository's issues" rules '
+check "each aggregate alert links to the repository's failed issues" rules '
+aggregate = {"ForemanAgentRoleFailureRate", "ForemanDailyModelCost", "ForemanDeadRunReaped"}
 for r in rules:
-    assert r["annotations"]["issue"].startswith("https://github.com/{{ $labels.factory_repo }}/issues"), r["alert"]
+    if r["alert"] in aggregate:
+        assert r["annotations"]["issue"] == \
+            "https://github.com/{{ $labels.factory_repo }}/issues?q=label%3Afactory%3Afailed", r["alert"]
 '
 
 # --- thresholds and the budget are settings, not constants ---
@@ -91,6 +114,6 @@ assert "[" + v["factory_alerts_dead_run_window"] + "]" in r["expr"]
 '
 
 # --- prometheus is told to load them ---
-check "prometheus loads the rules" grep -Fq -- 'rule_files:' "$root/roles/telemetry/tasks/main.yml"
+check "prometheus loads the rules" grep -Fq -- 'rule_files:' "$root/roles/telemetry/templates/prometheus.yaml.j2"
 
 [ "$failures" -eq 0 ]
