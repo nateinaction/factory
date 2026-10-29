@@ -15,7 +15,21 @@ dagu_port: 8080
 dagu_mode: "{{ 'worker' if inventory_hostname in groups['dagu_worker'] else 'server' }}"
 dagu_coordinator_port: 50055
 dagu_coordinator_address: "{{ groups['dagu_server'][0] }}:{{ dagu_coordinator_port }}"
-dagu_worker_labels: runner=agent
+# A worker host takes the agent roles its host_vars lists in factory_worker_agent_roles; unset takes
+# every role. The list becomes dagu worker labels, and each agent role's DAG selects its own label,
+# so a host never executes a role it does not take. runner=agent stays as a plain capability label.
+factory_worker_agent_roles: "{{ factory_agent_roles }}"
+dagu_worker_labels: "runner=agent{% for agent_role in factory_worker_agent_roles %},{{ agent_role }}=true{% endfor %}"
+# The union across worker hosts is what the poll compares against when it warns about an agent role
+# with no host. An unset factory_worker_agent_roles takes all roles, so the union is all of them.
+factory_agent_hosted_roles: >-
+  {%- set hosted = [] -%}
+  {%- for host in groups['dagu_worker'] | default([]) -%}
+  {%- set roles = hostvars[host]['factory_worker_agent_roles'] | default(factory_worker_agent_roles) -%}
+  {%- set _ = hosted.extend(roles) -%}
+  {%- endfor -%}
+  {{ hosted | unique | list }}
+factory_agent_unhosted_roles: "{{ factory_agent_roles | difference(factory_agent_hosted_roles) }}"
 # Proxy the UI to the tailnet over HTTPS via `tailscale serve`. dagu itself
 # stays on localhost. Anyone on the tailnet can then run workflows: restrict with ACLs.
 dagu_tailscale_serve: true
@@ -35,9 +49,15 @@ poe_fan_trip_points_mc: [75000, 77000, 78000, 79000]
 # Issue-driven agent (runs on the dagu worker). Works every repository that one of the factory's
 # GitHub Apps is installed on (see secrets/github_app.yml); there is no repository list to keep.
 factory_agent: true
-# One dagu DAG per agent role, all in one single-slot queue until the run cap lands.
+# One dagu DAG and one dagu queue per agent role.
 factory_agent_roles: [planner, researcher, implementer, reviewer, curator]
-factory_agent_queue: factory-agents
+# How many sandboxed agent runs one worker host may execute at once. It is the worker's
+# --worker.max-active-runs; the sandbox isolates concurrent runs, so it can be raised. Each role's
+# dagu queue capacity is this cap times the number of worker hosts.
+factory_agent_run_cap: 1
+factory_agent_queue_capacity: >-
+  {{ [factory_agent_run_cap | int,
+      (factory_agent_run_cap | int) * (groups['dagu_worker'] | default([]) | length)] | max }}
 # One entry per agent role, rendered into that role's opencode agent and into foreman's config. A
 # repository cannot override any of it. Model ids name a specific model, never a router or a floating
 # alias; the Reviewer's family always differs from the Implementer's. compaction is whether opencode

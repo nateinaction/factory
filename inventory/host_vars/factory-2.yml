@@ -1,0 +1,5 @@
+---
+# The agent roles this worker host takes, rendered into dagu worker labels. Unset means every agent
+# role. Uncomment and edit to narrow the host; a role listed nowhere stays queued and the poll warns.
+#
+# factory_worker_agent_roles: [reviewer, implementer]

@@ -187,6 +187,34 @@ var _ = Describe("Load", func() {
 		Expect(cfg.DeadRunMargin()).To(Equal(10 * time.Minute))
 	})
 
+	It("reads the agent roles no worker host takes", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"retro": retro, "dead_run_margin_minutes": 10,
+			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"unhosted_roles": []workflow.Role{workflow.Curator},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg, err := config.Load(writeConfig(raw))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Unhosted(workflow.Curator)).To(BeTrue())
+		Expect(cfg.Unhosted(workflow.Implementer)).To(BeFalse())
+	})
+
+	It("rejects an unhosted agent role it does not know", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"retro": retro, "dead_run_margin_minutes": 10,
+			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+			"unhosted_roles": []string{"janitor"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = config.Load(writeConfig(raw))
+		Expect(err).To(MatchError(ContainSubstring("unhosted")))
+	})
+
 	DescribeTable("rejects a malformed config",
 		func(raw string) {
 			_, err := config.Load(writeConfig([]byte(raw)))

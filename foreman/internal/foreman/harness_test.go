@@ -233,6 +233,14 @@ func newHarness() *harness {
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
+	// dagu answers an empty active-run history, so a poll sees every agent role idle.
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if len(c.Argv) > 1 && c.Argv[1] == "history" {
+			return "[]\n", nil
+		}
+
+		return base(c)
+	})
 	h.gh.Handle("GET /repos/o/r/commits/", h.serveCI)
 	h.deps = Deps{
 		Settings: config.Settings{

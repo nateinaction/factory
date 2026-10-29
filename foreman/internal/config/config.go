@@ -142,9 +142,17 @@ type Config struct {
 	ReviewRoundLimit int `json:"review_round_limit" mapstructure:"review_round_limit"`
 	// CIPendingDeadlineMinutes is how long an issue waits in factory:review with pending CI before it fails.
 	CIPendingDeadlineMinutes int `json:"ci_pending_deadline_minutes" mapstructure:"ci_pending_deadline_minutes"`
+	// UnhostedRoles are the agent roles no worker host takes, rendered by Ansible from the worker
+	// hosts' role labels. Empty means every agent role has a host.
+	UnhostedRoles []workflow.Role `json:"unhosted_roles" mapstructure:"unhosted_roles"`
 	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
 	// Empty means no repository is configured, so such a promotion fails closed.
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
+}
+
+// Unhosted reports whether no worker host takes role. Its issues stay queued.
+func (c Config) Unhosted(role workflow.Role) bool {
+	return slices.Contains(c.UnhostedRoles, role)
 }
 
 // CIPendingDeadline is how long pending CI may keep an issue queued before it fails.
@@ -215,7 +223,22 @@ func validate(path string, c Config) error {
 		return err
 	}
 
+	if err := validateUnhosted(path, c.UnhostedRoles); err != nil {
+		return err
+	}
+
 	return validateFactoryRepo(path, c.FactoryRepo)
+}
+
+// validateUnhosted rejects an unhosted role the workflow does not know.
+func validateUnhosted(path string, roles []workflow.Role) error {
+	for _, r := range roles {
+		if _, err := workflow.ParseRole(string(r)); err != nil {
+			return fmt.Errorf("config %s: unhosted roles: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 // validateFactoryRepo checks the configured factory repository, when there is one, is owner/name.

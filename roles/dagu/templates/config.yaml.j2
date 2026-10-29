@@ -1,0 +1,11 @@
+# dagu's queue capacity, one queue per agent role. A worker host's
+# --worker.max-active-runs (factory_agent_run_cap, default 1) is the per-host run cap; this is the
+# cluster total across every worker host, so one host raising its cap to run concurrent sandboxed
+# runs does not have to wait for a queue slot. A queue that is not listed here would default to 1.
+queues:
+  enabled: true
+  config:
+{% for agent_role in factory_agent_roles %}
+    - name: factory-{{ agent_role }}
+      max_concurrency: {{ factory_agent_queue_capacity | int }}
+{% endfor %}
