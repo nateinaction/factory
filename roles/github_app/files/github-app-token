@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """Mint GitHub App installation tokens, one App per agent role.
 
-  github-app-token token --app A --repo OWNER/NAME
-        print a fresh, uncached token of App A, limited to that repository and
-        carrying the permissions the App was granted
-  github-app-token token --app A --repo OWNER/NAME --read-only
-        the same token, restricted to read Contents, Issues, Pull requests and
-        Metadata: what the model inside a run gets as GH_TOKEN, so it can read
-        the issue and the pull request but never write
-  github-app-token repositories --app A
-        print OWNER/NAME for every repository App A is installed on
+`token` prints a fresh, uncached token of an App, limited to one repository and
+carrying the permissions the App was granted; with --read-only it is restricted
+to read Contents, Issues, Pull requests and Metadata: what the model inside a run
+gets as GH_TOKEN, so it can read the issue and the pull request but never write.
+
+`repositories` prints OWNER/NAME for every repository the App is installed on.
 
 Config dir (default /etc/github-app, override with GITHUB_APP_DIR) holds one
 directory per App, named for its agent role:
@@ -18,6 +15,7 @@ An App never uses another App's directory: a missing credential, an App that
 is not installed on the repository, or any other failure exits non-zero and
 prints nothing on stdout.
 """
+import argparse
 import base64
 import json
 import os
@@ -44,33 +42,55 @@ READ_ONLY = {
 }
 
 
-def usage():
-    sys.exit(__doc__)
+class Once(argparse.Action):
+    """Store a value flag, refusing a repeat instead of letting the last one win."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest) is not None:
+            raise argparse.ArgumentError(self, f"{option_string} given more than once")
+        setattr(namespace, self.dest, values)
+
+
+class OnceSwitch(argparse.Action):
+    """Set a switch, refusing a repeat for the same reason as Once."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, const=True, default=False, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest):
+            raise argparse.ArgumentError(self, f"{option_string} given more than once")
+        setattr(namespace, self.dest, self.const)
+
+
+def build_parser():
+    """The command line; argparse owns help, missing flags and flags a command does not take."""
+    p = argparse.ArgumentParser(
+        prog="github-app-token", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False,
+    )
+    cmds = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    token = cmds.add_parser(
+        "token", help="print a token for one repository", allow_abbrev=False,
+        description="Print a fresh, uncached token of an App, limited to one repository.",
+    )
+    token.add_argument("--app", action=Once, required=True, metavar="A",
+                       help="the agent role whose App mints the token")
+    token.add_argument("--repo", action=Once, required=True, metavar="OWNER/NAME",
+                       help="the only repository the token may touch")
+    token.add_argument("--read-only", action=OnceSwitch,
+                       help="restrict the token to read Contents, Issues, Pull requests and Metadata")
+    repositories = cmds.add_parser(
+        "repositories", help="list where the App is installed", allow_abbrev=False,
+        description="Print OWNER/NAME for every repository an App is installed on.",
+    )
+    repositories.add_argument("--app", action=Once, required=True, metavar="A",
+                              help="the agent role whose App is listed")
+    return p
 
 
 def b64(b):
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-
-
-def parse(argv):
-    """Return (command, {flag: value}) for `cmd --flag value ...`; anything else is a usage error."""
-    if not argv:
-        usage()
-    cmd, rest, flags, i = argv[0], argv[1:], {}, 0
-    while i < len(rest):
-        flag = rest[i]
-        if not flag.startswith("--") or flag[2:] in flags:
-            usage()
-        # --read-only is a switch, so it carries no value.
-        if flag == "--read-only":
-            flags["read-only"] = "1"
-            i += 1
-            continue
-        if i + 1 >= len(rest):
-            usage()
-        flags[flag[2:]] = rest[i + 1]
-        i += 2
-    return cmd, flags
 
 
 def app_dir(app):
@@ -147,19 +167,17 @@ def installation_repositories(token):
     return names
 
 
-def main():
-    cmd, flags = parse(sys.argv[1:])
-    if cmd == "token" and set(flags) <= {"app", "repo", "read-only"} and {"app", "repo"} <= set(flags):
-        print(repo_token(flags["app"], flags["repo"], "read-only" in flags))
-    elif cmd == "repositories" and set(flags) == {"app"}:
-        for name in installed_repositories(flags["app"]):
-            print(name)
+def main(argv):
+    args = build_parser().parse_args(argv)
+    if args.command == "token":
+        print(repo_token(args.app, args.repo, args.read_only))
     else:
-        usage()
+        for name in installed_repositories(args.app):
+            print(name)
 
 
 try:
-    main()
+    main(sys.argv[1:])
 except urllib.error.HTTPError as e:  # fail closed; GitHub's error body says why and holds no secret
     sys.exit(f"github-app-token: HTTPError {e.code}: {e.read().decode(errors='replace')[:500]}")
 except Exception as e:  # fail closed: no credential rather than a wrong one
