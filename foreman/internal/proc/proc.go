@@ -15,6 +15,10 @@ import (
 // DefaultTimeout bounds a process whose Cmd sets no timeout.
 const DefaultTimeout = 300 * time.Second
 
+// DefaultWaitDelay bounds the wait after a cancelled process: how long a process outside the killed
+// group may still hold the output pipe before the pipe is closed under it.
+const DefaultWaitDelay = 5 * time.Second
+
 // Cmd is one process to run: never through a shell, always with a ceiling.
 type Cmd struct {
 	// Argv is the program and its arguments.
@@ -47,9 +51,13 @@ func (e *ExitError) Error() string {
 type ExecRunner struct {
 	Stdout io.Writer
 	Stderr io.Writer
+	// WaitDelay bounds the wait for a process that escaped the killed group but still holds the
+	// output pipe. Zero is replaced by DefaultWaitDelay.
+	WaitDelay time.Duration
 }
 
-// Run starts the process and waits for it, under c.Timeout. A non-zero exit is an *ExitError.
+// Run starts the process and waits for it, under c.Timeout, killing the whole process tree it
+// leads when the deadline passes. A non-zero exit is an *ExitError.
 func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	if len(c.Argv) == 0 {
 		return "", errors.New("empty command")
@@ -66,6 +74,8 @@ func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	// An argument array, never a shell: no argument is ever parsed as a command line.
 	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...) //nolint:gosec // see above
 	cmd.Dir = c.Dir
+	cmd.WaitDelay = r.waitDelay()
+	isolate(cmd)
 
 	if c.ReplaceEnv {
 		cmd.Env = []string{}
@@ -87,15 +97,37 @@ func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	cmd.Stderr = r.Stderr
 	err := cmd.Run()
 
+	return waitResult(c.Argv[0], captured.String(), ctx.Err(), err)
+}
+
+// waitResult classifies what ended the wait: success, the deadline, the child's own non-zero exit,
+// or another failure. Only success and a non-zero exit keep the captured output.
+func waitResult(program, out string, ctxErr, waitErr error) (string, error) {
 	var ee *exec.ExitError
+
 	switch {
-	case err == nil:
-		return captured.String(), nil
-	case ctx.Err() != nil:
-		return "", fmt.Errorf("%s: %w", c.Argv[0], ctx.Err())
-	case errors.As(err, &ee):
-		return captured.String(), &ExitError{Program: c.Argv[0], Code: ee.ExitCode()}
+	case waitErr == nil:
+		return out, nil
+	case ctxErr != nil && errors.As(waitErr, &ee):
+		// The deadline killed the process: report the deadline, not the signal that delivered it.
+		return "", fmt.Errorf("%s: %w", program, ctxErr)
+	case errors.As(waitErr, &ee):
+		return out, &ExitError{Program: program, Code: ee.ExitCode()}
+	case ctxErr != nil:
+		// The deadline passed and the wait failed too, as when the cancel could not kill the
+		// process group or the wait delay ran out. Keep both: a leaked process tree is not a
+		// plain deadline.
+		return "", fmt.Errorf("%s: %w", program, errors.Join(ctxErr, waitErr))
 	default:
-		return "", fmt.Errorf("%s: %w", c.Argv[0], err)
+		return "", fmt.Errorf("%s: %w", program, waitErr)
 	}
+}
+
+// waitDelay is WaitDelay, or the production default when it is unset.
+func (r ExecRunner) waitDelay() time.Duration {
+	if r.WaitDelay > 0 {
+		return r.WaitDelay
+	}
+
+	return DefaultWaitDelay
 }
