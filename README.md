@@ -216,7 +216,9 @@ Things to know:
 - foreman writes diagnostics to stderr as `log/slog` JSON records, one object per line (`time`, `level`, `msg`, plus
   the record's attributes as further keys). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
-  output, never diagnostics.
+  output, never diagnostics. The model's transcript (private repository code,
+  issue text) is logged only at `debug`, with every secret the run holds redacted;
+  at the default level the run log carries no transcript.
 - `foreman --help` lists the verbs (`poll`, `start`, `run`, `status`, `logs`). Settings default to
   the host layout and can be overridden by `FACTORY_*` environment variables or
   by the matching flag (`--work-root`, `--config`, ...); a flag wins over the

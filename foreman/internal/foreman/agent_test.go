@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -199,10 +200,19 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.sleeps).To(HaveLen(2))
 	})
 
-	It("shows a permission denial in the log", func() {
+	It("logs a permission denial at debug, where an operator can find it", func() {
 		h.answerOpencode(`{"type":"permission","sessionID":"ses_1","permission":"bash","action":"deny"}` + "\n")
 		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
-		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`), "a denial must reach the dagu run log")
+		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`))
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring(`"action":"deny"`),
+			"a denial is transcript, so it stays below the default level")
+	})
+
+	It("keeps the transcript out of the default info-level diagnostics", func() {
+		h.answerOpencode(`{"type":"text","part":{"text":"private repository code"}}` + "\n")
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+		Expect(h.logs.String()).To(ContainSubstring("private repository code"), "the transcript is still logged")
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring("private repository code"))
 	})
 
 	It("removes the key from what it echoes to the log", func() {
