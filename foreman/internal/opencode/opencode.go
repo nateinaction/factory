@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/sum"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -112,20 +113,6 @@ type Usage struct {
 	Cost *float64
 }
 
-// addInt sums two optional ints: missing only when both are.
-func addInt(a, b *int) *int {
-	switch {
-	case a == nil:
-		return b
-	case b == nil:
-		return a
-	}
-
-	sum := *a + *b
-
-	return &sum
-}
-
 // maxInt is the larger of two optional ints.
 func maxInt(a, b *int) *int {
 	if a == nil || (b != nil && *b > *a) {
@@ -137,16 +124,10 @@ func maxInt(a, b *int) *int {
 
 // Add combines the usage of two attempts or phases of one run.
 func (u Usage) Add(o Usage) Usage {
-	u.Input, u.Output, u.Cached = addInt(u.Input, o.Input), addInt(u.Output, o.Output), addInt(u.Cached, o.Cached)
+	u.Input, u.Output, u.Cached = sum.Add(u.Input, o.Input), sum.Add(u.Output, o.Output), sum.Add(u.Cached, o.Cached)
 
 	u.PeakContext = maxInt(u.PeakContext, o.PeakContext)
-	switch {
-	case u.Cost == nil:
-		u.Cost = o.Cost
-	case o.Cost != nil:
-		sum := *u.Cost + *o.Cost
-		u.Cost = &sum
-	}
+	u.Cost = sum.Add(u.Cost, o.Cost)
 
 	return u
 }
