@@ -272,11 +272,6 @@ func (n Network) Open() bool {
 	return len(n.allowed) == 0
 }
 
-// Allowed is the validated allowlist, empty when egress is open.
-func (n Network) Allowed() []string {
-	return slices.Clone(n.allowed)
-}
-
 // Permits reports whether host is reachable under the policy.
 func (n Network) Permits(host string) bool {
 	if n.Open() {

@@ -325,13 +325,6 @@ func (e *Emulate) Comments(ctx context.Context, repo string, number int) ([]Comm
 	return out, err
 }
 
-// SetPermission grants a user a permission on repo, as the repository's admin.
-func (e *Emulate) SetPermission(ctx context.Context, repo, login, permission string) error {
-	path := "/repos/" + repo + "/collaborators/" + url.PathEscape(login)
-
-	return e.Do(ctx, http.MethodPut, path, AdminToken, map[string]string{"permission": permission}, nil)
-}
-
 // RemoveLabel removes one label from an issue.
 func (e *Emulate) RemoveLabel(ctx context.Context, repo string, number int, label string) error {
 	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", repo, number, url.PathEscape(label))
