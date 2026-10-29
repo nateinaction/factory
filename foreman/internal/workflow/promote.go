@@ -50,34 +50,26 @@ func ParsePublished(body string) (GroupID, bool, error) {
 
 // parsePromotionMarker reads one promotion marker line and the group it names.
 func parsePromotionMarker(body, prefix string) (GroupID, bool, error) {
-	if !strings.HasPrefix(body, prefix) {
-		return GroupID{}, false, nil
-	}
+	var group GroupID
 
-	line, _, _ := strings.Cut(body, "\n")
+	spec := markerSpec{prefix: prefix, fields: promotionMarkerFields, what: "promotion"}
 
-	closed, ok := strings.CutSuffix(line, " -->")
-	if !ok {
-		return GroupID{}, true, errors.New("promotion marker is not closed")
-	}
+	found, err := parseMarkerFields(body, spec, func(key, value string) error {
+		if key != promotionGroupField {
+			return fmt.Errorf("bad promotion marker field %q", key)
+		}
 
-	fields := strings.Fields(strings.TrimPrefix(closed, prefix))
-	if len(fields) != promotionMarkerFields {
-		return GroupID{}, true, fmt.Errorf("promotion marker has %d fields, want %d",
-			len(fields), promotionMarkerFields)
-	}
+		parsed, err := ParseGroupID(value)
+		if err != nil {
+			return err
+		}
 
-	key, value, ok := strings.Cut(fields[0], "=")
-	if !ok || key != promotionGroupField || value == "" {
-		return GroupID{}, true, fmt.Errorf("bad promotion marker field %q", fields[0])
-	}
+		group = parsed
 
-	group, err := ParseGroupID(value)
-	if err != nil {
-		return GroupID{}, true, err
-	}
+		return nil
+	})
 
-	return group, true, nil
+	return group, found, err
 }
 
 // PromotionRepo is the repository a promoted group's issue is filed in. A document group stays in the

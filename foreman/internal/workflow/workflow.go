@@ -4,7 +4,6 @@ package workflow
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -531,6 +530,76 @@ func parseOptionalTime(text string) (time.Time, error) {
 // MarkerPrefix starts every marker comment foreman posts, and never appears in a model's text.
 const MarkerPrefix = "<!-- factory:"
 
+// markerSpec is one marker's wire format: its prefix, how many key=value fields it carries, the one
+// field that may be empty, and the name its errors use.
+type markerSpec struct {
+	prefix   string
+	fields   int
+	optional string
+	what     string
+}
+
+// parseMarkerFields parses body's first line as a marker of spec, handing each field to decode. found
+// is false when body does not start with the marker; a body that does is parsed strictly: it must be
+// closed, carry exactly spec.fields fields, and have no unknown or repeated key and no empty value
+// except spec.optional.
+func parseMarkerFields(body string, spec markerSpec, decode func(key, value string) error) (bool, error) {
+	if !strings.HasPrefix(body, spec.prefix) {
+		return false, nil
+	}
+
+	line, _, _ := strings.Cut(body, "\n")
+
+	closed, ok := strings.CutSuffix(line, " -->")
+	if !ok {
+		return true, fmt.Errorf("%s marker is not closed", spec.what)
+	}
+
+	fields := strings.Fields(strings.TrimPrefix(closed, spec.prefix))
+	if len(fields) != spec.fields {
+		return true, fmt.Errorf("%s marker has %d fields, want %d", spec.what, len(fields), spec.fields)
+	}
+
+	seen := make(map[string]bool, len(fields))
+
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return true, fmt.Errorf("bad %s marker field %q", spec.what, field)
+		}
+
+		if seen[key] {
+			return true, fmt.Errorf("repeated %s field %q", spec.what, key)
+		}
+
+		if value == "" && key != spec.optional {
+			return true, fmt.Errorf("empty %s field %q", spec.what, field)
+		}
+
+		if err := decode(key, value); err != nil {
+			return true, err
+		}
+
+		seen[key] = true
+	}
+
+	return true, nil
+}
+
+// markerValue reads a marker whose whole payload is one value between its prefix and " -->".
+func markerValue(body, prefix string) (string, bool) {
+	first, _, _ := strings.Cut(body, "\n")
+
+	rest, ok := strings.CutPrefix(first, prefix)
+	if !ok {
+		return "", false
+	}
+
+	value, ok := strings.CutSuffix(rest, " -->")
+
+	return value, ok
+}
+
 // transitionPrefix starts a handoff marker.
 const transitionPrefix = MarkerPrefix + "handoff "
 
@@ -564,12 +633,16 @@ func RenderTransition(t Transition) (string, error) {
 		transitionPrefix, t.Role, t.RunID, t.From, t.To, t.SHA), nil
 }
 
-// transitionFields is how many key=value fields a marker carries.
-const transitionFields = 5
+// shaField is the marker field that names a commit.
+const shaField = "sha"
 
-// transitionKeys are the fields of a marker, in the order it renders them.
-func transitionKeys() []string {
-	return []string{"role", "run", "from", "to", "sha"}
+// transitionFieldCount is how many key=value fields a handoff marker carries.
+const transitionFieldCount = 5
+
+// transitionSpec is the handoff marker's wire format. Only the commit may be empty: a claim before
+// any commit exists has no SHA yet.
+var transitionSpec = markerSpec{ //nolint:gochecknoglobals // a read-only format
+	prefix: transitionPrefix, fields: transitionFieldCount, optional: shaField, what: "transition",
 }
 
 // validTransition checks every value against what a marker can carry.
@@ -600,78 +673,39 @@ func validTransition(t Transition) error {
 // ParseTransition reads a marker at the top of body. found is false when body does not start with
 // one; a body that does is parsed strictly, so a malformed marker is an error.
 func ParseTransition(body string) (Transition, bool, error) {
-	if !strings.HasPrefix(body, transitionPrefix) {
+	var t Transition
+
+	found, err := parseMarkerFields(body, transitionSpec, func(key, value string) error {
+		switch key {
+		case "role":
+			t.Role = Role(value)
+		case "run":
+			t.RunID = value
+		case "from":
+			t.From = State(value)
+		case "to":
+			t.To = State(value)
+		case shaField:
+			t.SHA = value
+		default:
+			return fmt.Errorf("unknown transition field %q", key)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return Transition{}, found, err
+	}
+
+	if !found {
 		return Transition{}, false, nil
 	}
 
-	line, _, _ := strings.Cut(body, "\n")
-
-	rest, ok := strings.CutSuffix(line, " -->")
-	if !ok {
-		return Transition{}, true, errors.New("transition marker is not closed")
-	}
-
-	t, err := transitionFromFields(strings.TrimPrefix(rest, transitionPrefix))
-	if err != nil {
+	if err := validTransition(t); err != nil {
 		return Transition{}, true, err
 	}
 
 	return t, true, nil
-}
-
-// transitionFromFields parses and validates a marker's key=value fields.
-func transitionFromFields(text string) (Transition, error) {
-	fields := strings.Fields(text)
-	if len(fields) != transitionFields {
-		return Transition{}, fmt.Errorf("transition marker has %d fields, want %d", len(fields), transitionFields)
-	}
-
-	values, err := transitionValues(fields)
-	if err != nil {
-		return Transition{}, err
-	}
-
-	t := Transition{
-		Role: Role(values["role"]), RunID: values["run"],
-		From: State(values["from"]), To: State(values["to"]), SHA: values["sha"],
-	}
-
-	if err := validTransition(t); err != nil {
-		return Transition{}, err
-	}
-
-	return t, nil
-}
-
-// transitionValues reads the fields strictly: no unknown or repeated key, and only sha may be empty.
-func transitionValues(fields []string) (map[string]string, error) {
-	values := make(map[string]string, len(fields))
-
-	for _, field := range fields {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !slices.Contains(transitionKeys(), key) {
-			return nil, fmt.Errorf("unknown transition field %q", field)
-		}
-
-		if _, seen := values[key]; seen {
-			return nil, fmt.Errorf("repeated transition field %q", key)
-		}
-
-		// Only the commit may be empty: a claim before any commit exists has no SHA yet.
-		if value == "" && key != "sha" {
-			return nil, fmt.Errorf("empty transition field %q", field)
-		}
-
-		values[key] = value
-	}
-
-	for _, key := range transitionKeys() {
-		if _, ok := values[key]; !ok {
-			return nil, fmt.Errorf("transition marker has no %s", key)
-		}
-	}
-
-	return values, nil
 }
 
 // LatestTransition is the last transition marker in API order, which is oldest first.
@@ -801,24 +835,34 @@ func ReviewRounds(reviews, comments []Item, sha string) int {
 	return len(marked)
 }
 
-// reviewSHA reads the commit a review marker names.
+// reviewSHA reads the commit a review marker names, empty when the marker is malformed.
 func reviewSHA(body string) string {
-	first, _, _ := strings.Cut(body, "\n")
-	sha, _, _ := strings.Cut(strings.TrimPrefix(first, ReviewMarkerPrefix), " -->")
+	sha, _ := markerValue(body, ReviewMarkerPrefix)
 
 	return sha
 }
 
-// ciFailureSHA reads the commit a CI failure marker names.
-func ciFailureSHA(body string) string {
-	first, _, _ := strings.Cut(body, "\n")
-	fields, _, _ := strings.Cut(strings.TrimPrefix(first, CIFailureMarkerPrefix), " -->")
+// ciFailureSpec is the CI failure marker's wire format.
+var ciFailureSpec = markerSpec{ //nolint:gochecknoglobals // a read-only format
+	prefix: CIFailureMarkerPrefix, fields: 1, what: "ci-failure",
+}
 
-	for field := range strings.FieldsSeq(fields) {
-		if sha, ok := strings.CutPrefix(field, "sha="); ok {
-			return sha
+// ciFailureSHA reads the commit a CI failure marker names, empty when the marker is malformed.
+func ciFailureSHA(body string) string {
+	var sha string
+
+	found, err := parseMarkerFields(body, ciFailureSpec, func(key, value string) error {
+		if key != shaField {
+			return fmt.Errorf("bad ci-failure marker field %q", key)
 		}
+
+		sha = value
+
+		return nil
+	})
+	if err != nil || !found {
+		return ""
 	}
 
-	return ""
+	return sha
 }
