@@ -14,7 +14,8 @@
           pname = "foreman";
           version = "0.1.0";
           src = ./foreman;
-          vendorHash = null; # the module has no dependencies
+          # Update after any go.mod change: set lib.fakeHash, build, and copy the "got" hash.
+          vendorHash = "sha256-S38KonlL5c8nyd+U0KjeQAc8vz6+00nuVf1UMsjDHtM=";
           env.CGO_ENABLED = "0";
           subPackages = [ "cmd/foreman" ];
           meta.mainProgram = "foreman";

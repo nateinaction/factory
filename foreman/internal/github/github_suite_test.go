@@ -1,0 +1,14 @@
+package github_test
+
+import (
+	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// TestGitHub runs the github suite.
+func TestGitHub(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "github")
+}

@@ -1,5 +1,6 @@
 // Package fakegh is a recording stand-in for GitHub's REST API, for tests. Routes use ServeMux
-// patterns ("GET /repos/{o}/{r}"); a request no route matches fails the test.
+// patterns ("GET /repos/{o}/{r}"); a request no route matches is answered 500 and listed by
+// Unexpected, which a test asserts is empty.
 package fakegh
 
 import (
@@ -10,16 +11,6 @@ import (
 	"strings"
 	"sync"
 )
-
-// T is the part of a test the fake reports to: testing.T and Ginkgo's GinkgoT both satisfy it.
-type T interface {
-	// Helper marks the caller as a test helper.
-	Helper()
-	// Errorf fails the test with a message.
-	Errorf(format string, args ...any)
-	// Cleanup registers fn to run when the test ends.
-	Cleanup(fn func())
-}
 
 // Request is one call the fake GitHub received.
 type Request struct {
@@ -32,20 +23,35 @@ type Request struct {
 
 // Server is a recording GitHub stand-in.
 type Server struct {
-	t      T
-	srv    *httptest.Server
-	mu     sync.Mutex
-	reqs   []Request
-	routes *http.ServeMux
+	srv        *httptest.Server
+	mu         sync.Mutex
+	reqs       []Request
+	unexpected []string
+	routes     *http.ServeMux
 }
 
-// New starts a fake whose unhandled calls fail the test. It is closed when the test ends.
-func New(t T) *Server {
-	t.Helper()
-	f := &Server{t: t, routes: http.NewServeMux()}
+// New starts a fake. The caller closes it.
+func New() *Server {
+	f := &Server{routes: http.NewServeMux()}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
-	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// Close shuts the fake down.
+func (f *Server) Close() { f.srv.Close() }
+
+// Unexpected lists the requests no route matched, and any body that could not be read.
+func (f *Server) Unexpected() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.unexpected...)
+}
+
+// fault records a request the test did not expect.
+func (f *Server) fault(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unexpected = append(f.unexpected, text)
 }
 
 // URL is the fake's API root.
@@ -58,14 +64,14 @@ func (f *Server) Client() *http.Client { return f.srv.Client() }
 func (f *Server) serve(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		f.t.Errorf("read body: %v", err)
+		f.fault("read body: " + err.Error())
 	}
 	f.mu.Lock()
 	f.reqs = append(f.reqs, Request{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Clone(), string(body)})
 	f.mu.Unlock()
 	r.Body = io.NopCloser(strings.NewReader(string(body)))
 	if _, pattern := f.routes.Handler(r); pattern == "" {
-		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		f.fault(r.Method + " " + r.URL.Path)
 		http.Error(w, "unexpected", http.StatusInternalServerError)
 		return
 	}

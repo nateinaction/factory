@@ -2,149 +2,103 @@ package foreman
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// withConfig writes a valid config file and points the harness at it.
-func (h *harness) withConfig() {
-	h.t.Helper()
-	path := filepath.Join(h.dir, "config.json")
-	if err := os.WriteFile(path, []byte(validConfig), 0o600); err != nil {
-		h.t.Fatal(err)
-	}
-	h.deps.Settings.ConfigFile = path
-}
+var _ = Describe("Main", func() {
+	var h *harness
 
-// TestMainRejectsBadInvocationsWithUsageExit pins: main rejects bad invocations with usage exit.
-func TestMainRejectsBadInvocationsWithUsageExit(t *testing.T) {
-	bad := [][]string{
-		nil,
-		{"frobnicate"},
-		{"poll", "extra"},
-		{"start"},
-		{"start", "implementer", "o/r"},
-		{"start", "implementer", "o/r", "5", "extra"},
-		{"run", "implementer", "o/r"},
-		{"start", "implementer", "not-a-repo", "5"},
-		{"start", "implementer", "o/r", "five"},
-		{"run", "implementer", "o/r", "5; rm -rf /"},
-	}
-	for _, args := range bad {
-		h := newHarness(t)
-		h.withConfig()
-		if code := Main(context.Background(), args, h.deps); code != ExitUsage {
-			t.Errorf("%v: exit %d", args, code)
-		}
-		if len(h.runner.cmds) != 0 || len(h.gh.Calls()) != 0 {
-			t.Errorf("%v: did work on a bad invocation", args)
-		}
-	}
-}
+	BeforeEach(func() {
+		h = newHarness()
+	})
 
-// TestMainUnknownAgentRoleFailsClosed pins: main unknown agent role fails closed.
-func TestMainUnknownAgentRoleFailsClosed(t *testing.T) {
-	for _, verb := range []string{"start", "run"} {
-		h := newHarness(t)
-		h.withConfig()
-		code := Main(context.Background(), []string{verb, "janitor", "o/r", "5"}, h.deps)
-		if code == 0 {
-			t.Errorf("%s accepted an unknown role", verb)
-		}
-		if !strings.Contains(h.errb.String(), `unknown agent role "janitor"`) {
-			t.Errorf("%s stderr %q", verb, h.errb.String())
-		}
-		if len(h.runner.cmds) != 0 || len(h.gh.Calls()) != 0 {
-			t.Errorf("%s did work for an unknown role", verb)
-		}
+	// main runs one invocation against the harness.
+	main := func(args ...string) int {
+		return Main(context.Background(), args, h.deps)
 	}
-}
 
-// TestMainKnownRoleWithoutBehaviourExitsNonZero pins: main known role without behaviour exits non zero.
-func TestMainKnownRoleWithoutBehaviourExitsNonZero(t *testing.T) {
-	h := newHarness(t)
-	h.withConfig()
-	if code := Main(context.Background(), []string{"start", "planner", "o/r", "5"}, h.deps); code == 0 {
-		t.Error("exit 0")
-	}
-}
+	Context("with a valid config", func() {
+		BeforeEach(func() {
+			h.withConfig()
+		})
 
-// TestMainPollUsesTheConfiguredAgentRoles pins: main poll polls where the configured Apps are installed.
-func TestMainPollUsesTheConfiguredAgentRoles(t *testing.T) {
-	h := newHarness(t)
-	h.withConfig()
-	h.queue(nil)
-	if code := Main(context.Background(), []string{"poll"}, h.deps); code != 0 {
-		t.Fatalf("exit %d: %s", code, h.errb.String())
-	}
-	if got := h.gh.Calls()[0].Path; got != "/repos/o/r/issues" {
-		t.Errorf("path %q", got)
-	}
-}
+		DescribeTable("rejects a bad invocation with the usage exit, doing nothing",
+			func(args ...string) {
+				Expect(main(args...)).To(Equal(ExitUsage))
+				h.expectNoWork()
+			},
+			Entry("no verb"),
+			Entry("unknown verb", "frobnicate"),
+			Entry("poll with arguments", "poll", "extra"),
+			Entry("start alone", "start"),
+			Entry("start without an issue", "start", "implementer", "o/r"),
+			Entry("start with an extra argument", "start", "implementer", "o/r", "5", "extra"),
+			Entry("run without an issue", "run", "implementer", "o/r"),
+			Entry("a malformed repository", "start", "implementer", "not-a-repo", "5"),
+			Entry("a word for an issue", "start", "implementer", "o/r", "five"),
+			Entry("an injected issue", "run", "implementer", "o/r", "5; rm -rf /"),
+		)
 
-// TestMainRunReturnsTheReviewVerdictAsExitCode pins: main run returns the review verdict as exit code.
-func TestMainRunReturnsTheReviewVerdictAsExitCode(t *testing.T) {
-	h := newHarness(t)
-	h.withConfig()
-	h.reviewerGH(nil)
-	h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), blockingReview)
-	if code := Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps); code != workflow.ReviewFindings {
-		t.Fatalf("exit %d: %s", code, h.errb.String())
-	}
-	if oc := h.runner.find("opencode run --agent reviewer"); len(oc) != 1 {
-		t.Errorf("model from config not used: %v", h.runner.cmds)
-	}
-}
+		DescribeTable("fails closed on an unknown agent role",
+			func(verb string) {
+				Expect(main(verb, "janitor", "o/r", "5")).NotTo(BeZero())
+				Expect(h.errb.String()).To(ContainSubstring(`unknown agent role "janitor"`))
+				h.expectNoWork()
+			},
+			Entry(nil, "start"), Entry(nil, "run"),
+		)
 
-// TestMainStartRunsTheWholeImplementerHandoff pins: main start runs the whole implementer handoff.
-func TestMainStartRunsTheWholeImplementerHandoff(t *testing.T) {
-	h := newHarness(t)
-	h.withConfig()
-	h.acceptWrites("5")
-	if code := Main(context.Background(), []string{"start", "implementer", "o/r", "5"}, h.deps); code != 0 {
-		t.Fatalf("exit %d: %s", code, h.errb.String())
-	}
-}
+		It("exits non-zero for a known agent role without behaviour", func() {
+			Expect(main("start", "planner", "o/r", "5")).NotTo(BeZero())
+		})
 
-// TestMainBadConfigFailsClosed pins: main bad config fails closed.
-func TestMainBadConfigFailsClosed(t *testing.T) {
-	for _, cfg := range []string{``, `{}`, `{"roles":["janitor"],"agents":{}}`, `{"roles":["implementer"],"agents":{}}`, `{"roles":[],"agents":{}}`, `{"agents":{}}`, `[`} {
-		h := newHarness(t)
-		path := filepath.Join(h.dir, "config.json")
-		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		h.deps.Settings.ConfigFile = path
-		if code := Main(context.Background(), []string{"poll"}, h.deps); code == 0 {
-			t.Errorf("accepted config %q", cfg)
-		}
-	}
-	h := newHarness(t)
-	h.deps.Settings.ConfigFile = filepath.Join(h.dir, "missing.json")
-	if code := Main(context.Background(), []string{"poll"}, h.deps); code == 0 {
-		t.Error("accepted a missing config")
-	}
-}
+		It("polls where the configured agent roles' Apps are installed", func() {
+			h.queue(nil)
+			Expect(main("poll")).To(BeZero(), h.errb.String())
+			Expect(h.gh.Calls()[0].Path).To(Equal("/repos/o/r/issues"))
+		})
 
-// TestMainErrorsNeverCarryTheToken pins: main errors never carry the token.
-func TestMainErrorsNeverCarryTheToken(t *testing.T) {
-	h := newHarness(t)
-	h.withConfig()
-	h.gh.Status("GET /repos/o/r/issues", 500)
-	if code := Main(context.Background(), []string{"poll"}, h.deps); code != 1 {
-		t.Fatalf("exit %d", code)
-	}
-	if strings.Contains(h.errb.String(), "minted-token") || !strings.Contains(h.errb.String(), "foreman: ") {
-		t.Errorf("stderr %q", h.errb.String())
-	}
-}
+		It("returns the review verdict as the exit code of run", func() {
+			h.reviewerGH(nil)
+			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
+			Expect(main("run", "reviewer", "o/r", "5")).To(Equal(workflow.ReviewFindings), h.errb.String())
+			Expect(h.runner.find("opencode run --agent reviewer")).To(HaveLen(1), "model from config not used")
+		})
 
-// validConfig is a config file with every agent role.
-var validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
-	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
-	`"curator":{"model":"prov/model","context_cap":200000}}}`
+		It("runs the whole Implementer handoff on start", func() {
+			h.acceptWrites("5")
+			Expect(main("start", "implementer", "o/r", "5")).To(BeZero(), h.errb.String())
+		})
+
+		It("never puts a token in an error", func() {
+			h.gh.Status("GET /repos/o/r/issues", 500)
+			Expect(main("poll")).To(Equal(1))
+			Expect(h.errb.String()).To(ContainSubstring("foreman: "))
+			Expect(h.errb.String()).NotTo(ContainSubstring("minted-token"))
+		})
+	})
+
+	DescribeTable("fails closed on a bad config",
+		func(cfg string) {
+			h.withConfigText(cfg)
+			Expect(main("poll")).NotTo(BeZero())
+		},
+		Entry("empty", ``),
+		Entry("no fields", `{}`),
+		Entry("unknown role", `{"roles":["janitor"],"agents":{}}`),
+		Entry("no agents", `{"roles":["implementer"],"agents":{}}`),
+		Entry("no roles", `{"roles":[],"agents":{}}`),
+		Entry("roles missing", `{"agents":{}}`),
+		Entry("not JSON", `[`),
+	)
+
+	It("fails closed on a missing config", func() {
+		h.deps.Settings.ConfigFile = filepath.Join(h.dir, "missing.json")
+		Expect(main("poll")).NotTo(BeZero())
+	})
+})

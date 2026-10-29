@@ -6,21 +6,19 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
+	"net/http"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
-	"testing"
 
-	"github.com/nateinaction/factory/foreman/internal/workflow"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // moduleSources lists every non-test Go file in the module, whose root is two levels up.
-func moduleSources(t *testing.T) []string {
-	t.Helper()
+func moduleSources() []string {
 	var files []string
-	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
+	Expect(filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -28,81 +26,70 @@ func moduleSources(t *testing.T) []string {
 			files = append(files, path)
 		}
 		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(files, filepath.Join("..", "..", "internal", "github", "github.go")) {
-		t.Fatalf("walked the wrong tree: %v", files)
-	}
+	})).To(Succeed())
+	Expect(files).To(ContainElement(filepath.Join("..", "..", "internal", "github", "github.go")), "walked the wrong tree")
 	return files
 }
 
-// TestNoCodePathNamesTheMergeEndpoint reads foreman's own source: no string literal
-// may name a merge endpoint, so no code path can call it. A human stays in the merge path.
-func TestNoCodePathNamesTheMergeEndpoint(t *testing.T) {
-	for _, name := range moduleSources(t) {
-		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			s, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				t.Errorf("%s: unquote %s: %v", name, lit.Value, err)
-				return true
-			}
-			if strings.Contains(s, "/merge") || strings.Contains(s, "auto_merge") || strings.Contains(strings.ToLower(s), "enableautomerge") {
-				t.Errorf("%s: string literal %q names a merge endpoint", name, s)
-			}
+// stringLiterals returns every string literal in the Go file at path.
+func stringLiterals(path string) []string {
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	Expect(err).NotTo(HaveOccurred())
+	var out []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
 			return true
-		})
-	}
+		}
+		s, err := strconv.Unquote(lit.Value)
+		Expect(err).NotTo(HaveOccurred(), path+": "+lit.Value)
+		out = append(out, s)
+		return true
+	})
+	return out
 }
 
-// TestNoRunMakesAMergeCall drives every flow against a fake and checks that no request merges.
-func TestNoRunMakesAMergeCall(t *testing.T) {
-	flows := map[string]func(*harness){
-		"poll": func(h *harness) {
-			h.queue(map[string][]map[string]any{workflow.LabelReviewReady: {{"number": 5}}})
-			h.acceptWrites("5")
-			_ = Main(context.Background(), []string{"poll"}, h.deps)
-		},
-		"start": func(h *harness) {
-			h.acceptWrites("5")
-			_ = Main(context.Background(), []string{"start", "reviewer", "o/r", "5"}, h.deps)
-		},
-		"run implementer": func(h *harness) {
-			h.implementerGH(nil, nil)
-			writeToken(t, h)
-			_ = Main(context.Background(), []string{"run", "implementer", "o/r", "5"}, h.deps)
-		},
-		"run reviewer": func(h *harness) {
-			h.reviewerGH(nil)
-			h.opencodeWrites("code-review", filepath.Join(h.deps.Settings.WorkRoot, "review-5.json"), cleanReview)
-			_ = Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps)
-		},
-	}
-	for name, flow := range flows {
-		h := newHarness(t)
-		h.withConfig()
-		flow(h)
-		for _, r := range h.gh.Calls() {
-			if strings.Contains(r.Path, "merge") || r.Method == "PUT" {
-				t.Errorf("%s: %s %s", name, r.Method, r.Path)
+// A human stays in the merge path: foreman has no code path that can merge.
+var _ = Describe("the merge path", func() {
+	It("is named by no string literal in foreman's source", func() {
+		for _, path := range moduleSources() {
+			for _, s := range stringLiterals(path) {
+				Expect(s).NotTo(Or(
+					ContainSubstring("/merge"), ContainSubstring("auto_merge"),
+					WithTransform(strings.ToLower, ContainSubstring("enableautomerge")),
+				), path)
 			}
 		}
-	}
-}
+	})
 
-// writeToken leaves a token for the factory half.
-func writeToken(t *testing.T, h *harness) {
-	t.Helper()
-	if err := os.WriteFile(h.deps.Settings.TokenPath(workflow.Implementer), []byte("t"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-}
+	DescribeTable("is called by no flow",
+		func(flow func(h *harness)) {
+			h := newHarness()
+			h.withConfig()
+			flow(h)
+			for _, r := range h.gh.Calls() {
+				Expect(r.Path).NotTo(ContainSubstring("merge"))
+				Expect(r.Method).NotTo(Equal(http.MethodPut))
+			}
+		},
+		Entry("poll", func(h *harness) {
+			h.queue(map[string][]map[string]any{"ready-for-agent-review": {{"number": 5}}})
+			h.acceptWrites("5")
+			Main(context.Background(), []string{"poll"}, h.deps)
+		}),
+		Entry("start", func(h *harness) {
+			h.acceptWrites("5")
+			Main(context.Background(), []string{"start", "reviewer", "o/r", "5"}, h.deps)
+		}),
+		Entry("run implementer", func(h *harness) {
+			h.implementerGH(nil, nil)
+			h.writeToken("implementer", "t")
+			Main(context.Background(), []string{"run", "implementer", "o/r", "5"}, h.deps)
+		}),
+		Entry("run reviewer", func(h *harness) {
+			h.reviewerGH(nil)
+			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+			Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps)
+		}),
+	)
+})
