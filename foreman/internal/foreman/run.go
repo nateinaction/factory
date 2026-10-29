@@ -183,10 +183,13 @@ func (d Deps) withProxy(
 	}
 
 	usage, err := fn(p.URL())
+	// Read the usage before stopping: a response still being relayed when the model exits cannot be
+	// counted, and Close is what ends it.
+	read := p.Usage()
 	// A failure to stop the proxy is part of the run's outcome, not a diagnostic to drop.
 	err = errors.Join(err, p.Close())
 
-	return usage.Use(reported(p.Usage())), err
+	return usage.Use(reported(read)), err
 }
 
 // proxy starts the run's OpenRouter proxy with key on the configured loopback address.
