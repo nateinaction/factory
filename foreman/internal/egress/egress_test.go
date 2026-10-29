@@ -536,6 +536,28 @@ var _ = Describe("Proxy", func() {
 		Expect(p.Close()).NotTo(HaveOccurred())
 	})
 
+	It("logs a serve failure it did not cause", func() {
+		var logged logBuffer
+
+		p, err := StartWithLogger(
+			GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0",
+			slog.New(slog.NewTextHandler(&logged, nil)),
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		DeferCleanup(func() {
+			// test cleanup: this spec closed the listener itself, so the proxy's own close reports
+			// that rather than changing the assertion
+			_ = p.Close()
+		})
+
+		// A listener closed under the server is a fatal accept error: nothing answers the run's
+		// requests afterwards.
+		Expect(p.listener.Close()).To(Succeed())
+
+		Eventually(logged.String).Should(ContainSubstring("serve stopped"))
+	})
+
 	It("joins the API path without doubling the prefix", func() {
 		api := apiServer()
 

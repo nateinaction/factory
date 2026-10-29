@@ -18,8 +18,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/nateinaction/factory/foreman/internal/proxy"
 	"github.com/nateinaction/factory/foreman/internal/proxyauth"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
@@ -38,18 +38,9 @@ const (
 // tunnelDirections is how many copies a tunnel runs, one for each direction.
 const tunnelDirections = 2
 
-// Ceilings on the proxy's connections.
-const (
-	// dialTimeout bounds reaching an upstream.
-	dialTimeout = 10 * time.Second
-	// headerTimeout bounds waiting for an upstream's response headers.
-	headerTimeout = 60 * time.Second
-	// idleTimeout bounds a kept-alive connection between requests.
-	idleTimeout = 90 * time.Second
-	// MaxTunnels bounds how many tunnels one run's proxy carries at once. A run that asks for more is
-	// refused rather than growing the proxy without limit.
-	MaxTunnels = 64
-)
+// MaxTunnels bounds how many tunnels one run's proxy carries at once. A run that asks for more is
+// refused rather than growing the proxy without limit.
+const MaxTunnels = 64
 
 // Proxy is a running egress proxy.
 type Proxy struct {
@@ -81,7 +72,7 @@ func StartWithLogger(
 	ctx context.Context, policy sandbox.Network, apiURL, token, addr string, logger *slog.Logger,
 ) (*Proxy, error) {
 	return startProxy(ctx, policy, apiURL, token, addr, logger, gateway{
-		resolve: net.DefaultResolver, dial: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		resolve: net.DefaultResolver, dial: (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext,
 	})
 }
 
@@ -96,7 +87,7 @@ func startProxy(
 		return nil, fmt.Errorf("egress proxy: a per-run token is required")
 	}
 
-	if err := loopback(addr); err != nil {
+	if err := proxy.Address("egress", addr); err != nil {
 		return nil, err
 	}
 
@@ -118,40 +109,23 @@ func startProxy(
 		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
 		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
-	plainDial := (&net.Dialer{Timeout: dialTimeout}).DialContext
-	p.transport = transport(p.gateway.dialContext)
+	plainDial := (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext
+	// Both transports ignore the proxy environment variables, so traffic the run sends through this
+	// proxy is never sent through another one.
+	p.transport = proxy.Transport(p.gateway.dialContext, proxy.DialTimeout)
 	// The key proxy is foreman's own loopback listener rather than a model-chosen destination, so
 	// its transport dials without the public-address check.
-	p.apiTransport = transport(plainDial)
+	p.apiTransport = proxy.Transport(plainDial, proxy.DialTimeout)
 	p.forwarder = p.reverseProxy(p.transport, func(*httputil.ProxyRequest) {}, "egress proxy: upstream unavailable")
 	p.apiProxy = p.reverseProxy(p.apiTransport, func(pr *httputil.ProxyRequest) {
 		pr.Out.URL = p.apiURL(pr.In)
 		pr.Out.Host = ""
 	}, "egress proxy: model endpoint unavailable")
-	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: headerTimeout}
+	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: proxy.HeaderTimeout}
 
-	go func() {
-		// Serve returns ErrServerClosed when Close stops it, which is the only outcome: there is
-		// nothing to report after the listener is closed.
-		_ = p.server.Serve(ln)
-	}()
+	proxy.Serve(logger, "egress", p.server, ln)
 
 	return p, nil
-}
-
-// loopback checks that addr is a loopback literal, the only address the proxy may listen on.
-func loopback(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("egress proxy address %q: %w", addr, err)
-	}
-
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("egress proxy address %q: listens on loopback only", addr)
-	}
-
-	return nil
 }
 
 // parseAPI validates the key proxy URL. Empty means the run has no model endpoint, which is refused
@@ -171,18 +145,6 @@ func parseAPI(apiURL string) (*url.URL, error) {
 	}
 
 	return parsed, nil
-}
-
-// transport ignores the proxy environment variables, so traffic the run sends through this proxy is
-// never sent through another one.
-func transport(dial dialFunc) *http.Transport {
-	return &http.Transport{
-		Proxy:                 nil,
-		DialContext:           dial,
-		TLSHandshakeTimeout:   dialTimeout,
-		ResponseHeaderTimeout: headerTimeout,
-		IdleConnTimeout:       idleTimeout,
-	}
 }
 
 // reverseProxy is a forwarding handler over transport. rewrite names the outbound destination;

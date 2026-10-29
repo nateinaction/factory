@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+
+	"github.com/nateinaction/factory/foreman/internal/proxy"
 )
 
 // resolver looks up every address a host names. *net.Resolver is one.
@@ -14,14 +16,11 @@ type resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-// dialFunc opens a connection to an address.
-type dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
-
 // gateway reaches a destination. It is a value so a test can drive the resolution and the dial
 // without depending on a host's network.
 type gateway struct {
 	resolve resolver
-	dial    dialFunc
+	dial    proxy.DialFunc
 }
 
 // refusedDestination is a destination the proxy will not reach, named by the address that refused
