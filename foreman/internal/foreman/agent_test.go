@@ -42,6 +42,24 @@ var _ = Describe("the opencode adapter", func() {
 		}
 	})
 
+	It("hands the model no OTEL_* variable, and replaces the inherited environment", func() {
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid:4318")
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=secret")
+
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+		calls := h.opencodeCalls()
+		Expect(calls).NotTo(BeEmpty())
+
+		for _, c := range calls {
+			Expect(c.ReplaceEnv).To(BeTrue(), "the model must not inherit foreman's environment")
+
+			for name := range c.Env {
+				Expect(name).NotTo(HavePrefix("OTEL_"))
+			}
+		}
+	})
+
 	It("gives each run fresh state, deletes it afterwards, and never continues by recency", func() {
 		var seen []string
 
