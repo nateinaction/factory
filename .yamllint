@@ -7,6 +7,10 @@
 # The defaults are kept except where this repo knowingly differs:
 extends: default
 
+# Local credentials, gitignored; CI never has them and they are not ours to reflow.
+ignore: |
+  secrets/
+
 rules:
   # Ansible templates are full of Jinja (`{{ ... }}`), which the key-separator
   # rule misreads; the flow mappings in group_vars use one space inside.

@@ -1,13 +1,19 @@
-name: check
+name: Lint and vulnerability scan
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
-  check:
+  lint-and-vulncheck:
+    name: pre-commit hooks and govulncheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+      # The sandbox acceptance specs run the real srt (bubblewrap). Ubuntu 24.04 runners restrict
+      # unprivileged user namespaces, which makes bwrap fail setting up loopback.
+      - name: allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The same hooks the git hook runs, from .pre-commit-config.yaml.
       - name: pre-commit
         run: nix develop --command pre-commit run --all-files
