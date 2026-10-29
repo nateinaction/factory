@@ -17,6 +17,12 @@ import (
 // operating system's limit on a single argument.
 const DocsLimitChars = 40_000
 
+// MaxDocFiles bounds how many files one prompt reads from the repository's docs directories.
+const MaxDocFiles = 100
+
+// docDirs are the directories whose Markdown files join the repository docs, in read order.
+var docDirs = []string{"docs/agents", "docs/adr"} //nolint:gochecknoglobals // a read-only order
+
 // IssueMaterialHeading starts the variable part of a prompt. Everything before it is the prefix.
 const IssueMaterialHeading = "\n# Issue material\n\n"
 
@@ -35,9 +41,10 @@ type Doc struct {
 }
 
 // ReadRepoDocs reads the repository's steering documents in a fixed order: AGENTS.md, GLOSSARY.md,
-// then docs/agents/*.md by name. A missing document is skipped; the total is capped at DocsLimitChars
-// characters. The clone is untrusted, so every read goes through an os.Root: a document that is a
-// symlink out of the repository fails the read instead of putting a host file into the prompt.
+// then every Markdown file under docs/agents and docs/adr by path. A missing document is skipped; the
+// total is capped at DocsLimitChars characters and MaxDocFiles files. The clone is untrusted, so
+// every read goes through an os.Root: a document that is a symlink out of the repository fails the
+// read instead of putting a host file into the prompt.
 func ReadRepoDocs(dir string) ([]Doc, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -48,9 +55,9 @@ func ReadRepoDocs(dir string) ([]Doc, error) {
 		_ = root.Close()
 	}()
 
-	extra, err := fs.Glob(root.FS(), "docs/agents/*.md") // Glob returns names sorted
+	extra, err := docFiles(root)
 	if err != nil {
-		return nil, fmt.Errorf("list docs/agents: %w", err)
+		return nil, err
 	}
 
 	paths := append([]string{"AGENTS.md", "GLOSSARY.md"}, extra...)
@@ -75,6 +82,41 @@ func ReadRepoDocs(dir string) ([]Doc, error) {
 	return docs, nil
 }
 
+// docFiles lists the Markdown files under the repository's doc directories, sorted, at most
+// MaxDocFiles. A missing directory holds no documents.
+func docFiles(root *os.Root) ([]string, error) {
+	var out []string
+
+	for _, dir := range docDirs {
+		err := fs.WalkDir(root.FS(), dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+
+				return err
+			}
+
+			if entry.IsDir() || !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+
+			if len(out) >= MaxDocFiles {
+				return fs.SkipAll
+			}
+
+			out = append(out, path)
+
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list %s: %w", dir, err)
+		}
+	}
+
+	return out, nil
+}
+
 // Build joins the three parts in their fixed order: the agent role's prompt, the repository
 // docs, then the issue material. The first two are the prefix and carry nothing that varies per run.
 func Build(rolePrompt string, docs []Doc, material string) string {
@@ -97,13 +139,15 @@ const implementerRolePrompt = "Use the `implement` skill on the issue given unde
 	"The repository is the current directory, already on its own branch. Leave your changes " +
 	"uncommitted: do not commit, push, comment or ask questions, because foreman makes every write " +
 	"from your output file. Write the result as JSON with \"version\": 1, \"commit_message\", and, on " +
-	"a first run, \"pr_title\" and \"pr_body\". On a review round add \"replies\": a list of " +
-	"{\"finding\": \"...\", \"status\": \"fixed\" or \"contested\", \"reason\": \"...\"}."
+	"a first run, \"pr_title\" and \"pr_body\". On a review round add \"replies\": one entry per " +
+	"finding, {\"finding\": the finding's location or its claim, \"status\": \"fixed\" or " +
+	"\"contested\", \"reason\": \"...\"}."
 
 // plannerRolePrompt is the Planner's fixed instruction. The model never chooses a label, never
 // commits, and writes only its output file; foreman makes every tracker write.
 const plannerRolePrompt = "Use the `grilling`, `wayfinder`, `to-spec` and `to-tickets` skills on the " +
-	"issue given under \"Issue material\". Do not change the repository, do not commit, do not comment " +
+	"issue given under \"Issue material\". The repository is a read-only clone of the default branch: " +
+	"do not change it, do not commit, do not comment " +
 	"and do not ask questions in the session: foreman posts the round and moves the issue. Write one " +
 	"JSON object to the output file with \"version\": 1, \"kind\" and \"comment\". " +
 	"A \"kind\": \"questions\" round is numbered questions, each with a recommended answer worded so " +

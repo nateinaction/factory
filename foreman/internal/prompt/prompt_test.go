@@ -171,6 +171,7 @@ var _ = Describe("ReadRepoDocs", func() {
 	It("reads in a fixed order, skips missing docs, and stays under the cap", func() {
 		write("docs/agents/b.md", "B")
 		write("docs/agents/a.md", "A")
+		write("docs/adr/0001-use-go.md", "Use Go.")
 		write("GLOSSARY.md", strings.Repeat("g", DocsLimitChars+10))
 		write("AGENTS.md", "root")
 
@@ -182,7 +183,9 @@ var _ = Describe("ReadRepoDocs", func() {
 			names = append(names, d.Path)
 		}
 
-		Expect(names).To(Equal([]string{"AGENTS.md", "GLOSSARY.md", "docs/agents/a.md", "docs/agents/b.md"}))
+		Expect(names).To(Equal([]string{
+			"AGENTS.md", "GLOSSARY.md", "docs/agents/a.md", "docs/agents/b.md", "docs/adr/0001-use-go.md",
+		}))
 		Expect(chars(docs)).To(BeNumerically("<=", DocsLimitChars))
 	})
 

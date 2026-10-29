@@ -13,6 +13,19 @@ import (
 // firstRun is a valid implementer-output.json for a first run.
 const firstRun = `{"version":1,"commit_message":"Add x","pr_title":"Add x","pr_body":"Closes #5"}`
 
+// renderedReview is the rendered review the rework output answers: one high and one low finding.
+const renderedReview = `<!-- agent-review:abc -->
+## Agent review
+
+looks wrong
+
+### High (1)
+- **` + "`a.go:3`" + `**: bug in a.go
+
+### Low (1)
+- **` + "`b.go`" + `**: rename b
+`
+
 // rework is a valid implementer-output.json for a review round.
 const rework = `{"version":1,"commit_message":"Fix x","replies":[` +
 	`{"finding":"bug in a.go","status":"fixed","reason":"now nil-checked"},` +
@@ -37,7 +50,7 @@ func problems(err error) []string {
 
 var _ = Describe("ParseImplementerOutput", func() {
 	It("reads a first run", func() {
-		out, err := workflow.ParseImplementerOutput(firstRun, false)
+		out, err := workflow.ParseImplementerOutput(firstRun, false, "")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(Equal(workflow.ImplementerOutput{
 			Version: 1, CommitMessage: "Add x", PRTitle: "Add x", PRBody: "Closes #5",
@@ -45,7 +58,7 @@ var _ = Describe("ParseImplementerOutput", func() {
 	})
 
 	It("reads a review round's replies", func() {
-		out, err := workflow.ParseImplementerOutput(rework, true)
+		out, err := workflow.ParseImplementerOutput(rework, true, renderedReview)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.Replies).To(Equal([]workflow.Reply{
 			{Finding: "bug in a.go", Status: workflow.ReplyFixed, Reason: "now nil-checked"},
@@ -55,7 +68,7 @@ var _ = Describe("ParseImplementerOutput", func() {
 
 	DescribeTable("rejects the whole file",
 		func(text string, rework bool, want string) {
-			_, err := workflow.ParseImplementerOutput(text, rework)
+			_, err := workflow.ParseImplementerOutput(text, rework, renderedReview)
 			Expect(err).To(HaveOccurred())
 			Expect(problems(err)).To(ContainElement(ContainSubstring(want)))
 		},
@@ -81,6 +94,12 @@ var _ = Describe("ParseImplementerOutput", func() {
 			`{"version":1,"commit_message":"c","pr_title":"t"}`, false, "pr_body"),
 		Entry("replies on a first run", rework, false, "review round"),
 		Entry("no replies on a review round", `{"version":1,"commit_message":"c"}`, true, "reply"),
+		Entry("a finding with no reply",
+			`{"version":1,"commit_message":"c","replies":[{"finding":"a.go:3","status":"fixed",`+
+				`"reason":"done"}]}`, true, "needs a reply to the low finding b.go"),
+		Entry("a reply that names no finding of the review",
+			`{"version":1,"commit_message":"c","replies":[{"finding":"something else","status":"fixed",`+
+				`"reason":"done"}]}`, true, "needs a reply to the high finding a.go:3"),
 		Entry("a reply without a finding",
 			`{"version":1,"commit_message":"c","replies":[{"status":"fixed","reason":"r"}]}`, true, "finding"),
 		Entry("a reply with an unknown status",

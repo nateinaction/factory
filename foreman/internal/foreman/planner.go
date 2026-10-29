@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
-	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
@@ -17,93 +17,54 @@ import (
 )
 
 // runPlanner works the issue in a fresh sandbox directory and logs the run's one usage line.
-func runPlanner(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-) (err error) {
-	var (
-		usage   opencode.Usage
-		domains []string
-	)
-
-	files, err := newSandboxFiles(d.Settings.WorkRoot, workflow.Planner, number)
-	if err != nil {
-		return err
-	}
-
-	defer func() { err = errors.Join(err, files.remove()) }()
-
-	usage, domains, err = plan(ctx, d, repo, agent, retro, number, files.db(workflow.Planner), files)
-	d.logUsage(opencode.NewUsageReport(workflow.Planner, repo, number, d.Host, agent, usage).
-		WithDomains(domains))
-
-	return err
+func runPlanner(ctx context.Context, d Deps, spec runSpec) error {
+	return withSandboxRun(d, spec, workflow.Planner, func(files sandboxFiles) (opencode.Usage, []string, error) {
+		return plan(ctx, d, spec, files)
+	})
 }
 
 // plan reads the Planner's secrets and runs its work behind the run's proxies.
 func plan(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
-	db string, files sandboxFiles,
+	ctx context.Context, d Deps, spec runSpec, files sandboxFiles,
 ) (opencode.Usage, []string, error) {
-	network, err := sandbox.ParseNetwork(agent.Egress.AllowedDomains)
-	if err != nil {
-		return opencode.Usage{}, nil, err
-	}
-
-	sec, err := readSecrets(d.Settings, workflow.Planner)
-	if err != nil {
-		return opencode.Usage{}, nil, err
-	}
-
-	return d.withProxy(ctx, network, sec.openrouterKey, func(baseURL, proxyAddr string) (opencode.Usage, error) {
-		return planRun(ctx, d, sec, baseURL, proxyAddr, network, repo, agent, retro, number, db, files)
-	})
+	return withRunSecrets(ctx, d, spec, workflow.Planner,
+		func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (opencode.Usage, error) {
+			return planRun(ctx, d, spec, sec, baseURL, proxyAddr, network, files)
+		})
 }
 
-// planRun is the Planner's work, with its proxies already up. It reads the issue thread, runs the
-// model under the sandbox and applies one round. The retro is the epilogue of the final-round run
-// only, keyed by the id of the comment that stored the proposal.
+// planRun is the Planner's work, with its proxies already up. It reads the default branch's docs and
+// the issue thread, runs the model under the sandbox and applies one round. The retro is the epilogue
+// of the final-round run only, keyed by the id of the comment that stored the proposal.
 func planRun(
-	ctx context.Context, d Deps, sec secrets, baseURL, proxyAddr string, network sandbox.Network,
-	repo string, agent config.AgentConfig, retro config.Budget, number int, db string, files sandboxFiles,
+	ctx context.Context, d Deps, spec runSpec, sec secrets, baseURL, proxyAddr string,
+	network sandbox.Network, files sandboxFiles,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Planner, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, spec.repo, workflow.Planner, spec.agent, spec.number,
+		files.db(workflow.Planner))
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
-	scratch, outPath, err := plannerPaths(d.Settings.WorkRoot, number)
+	s, paths, docs, comments, err := plannerContext(ctx, d, spec, j, sec, files, network, proxyAddr)
 	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	comments, err := j.c.ListComments(ctx, repo, number)
-	if err != nil {
-		return opencode.Usage{}, err
-	}
-
-	s := newSession(d, j, scratch, nil)
-
-	if s, err = d.sandboxedWithToolchain(
-		ctx, s, j, sec, repo, "", files, workflow.Planner, "", outPath,
-		[]string{retroPath(d.Settings.WorkRoot, number, workflow.Planner)}, network, proxyAddr,
-	); err != nil {
 		return opencode.Usage{}, err
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Planner, Prompt: prompt.Planner(nil, repo, j.issue, comments, outPath),
-		Timeout: agent.Deadline(), Steps: agent.Steps,
+		Role: workflow.Planner, Prompt: prompt.Planner(docs, spec.repo, j.issue, comments, paths.out),
+		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
 	})
 	if err != nil {
 		return res.Usage, err
 	}
 
-	out, err := readPlannerOutput(outPath)
+	out, err := readPlannerOutput(paths.out)
 	if err != nil {
-		return res.Usage, rejectOutput(ctx, j.c, repo, number, workflow.Planner, err)
+		return res.Usage, rejectOutput(ctx, j.c, spec.repo, spec.number, workflow.Planner, err)
 	}
 
-	commentID, final, err := applyPlannerRound(ctx, j, d.runID(), repo, number, out)
+	commentID, final, err := applyPlannerRound(ctx, j, d.runID(), spec.repo, spec.number, out)
 	if err != nil {
 		return res.Usage, err
 	}
@@ -113,19 +74,71 @@ func planRun(
 	}
 
 	return res.Usage.Add(s.retroEpilogue(
-		ctx, j, repo, number, workflow.Planner, res.Session, fmt.Sprint(commentID), nil, retro,
+		ctx, j, spec.repo, spec.number, workflow.Planner, res.Session, fmt.Sprint(commentID),
+		nil, spec.retro,
 	)), nil
 }
 
-// plannerPaths clears and returns a Planner run's scratch directory and output path. The Planner has
-// no clone: it reads the issue thread.
-func plannerPaths(root string, number int) (string, string, error) {
-	scratch, err := scratchDir(root, fmt.Sprintf("planner-%d", number))
+// plannerContext clones the default branch, reads its docs and the issue thread, and puts the
+// Planner's session inside its sandbox.
+func plannerContext(
+	ctx context.Context, d Deps, spec runSpec, j job, sec secrets, files sandboxFiles,
+	network sandbox.Network, proxyAddr string,
+) (session, plannerFiles, []prompt.Doc, []workflow.Item, error) {
+	paths, err := plannerPaths(d.Settings.WorkRoot, spec.number)
 	if err != nil {
-		return "", "", err
+		return session{}, plannerFiles{}, nil, nil, err
 	}
 
-	return scratch, filepath.Join(scratch, workflow.PlannerOutputFile), nil
+	branch, err := j.c.DefaultBranch(ctx, spec.repo)
+	if err != nil {
+		return session{}, plannerFiles{}, nil, nil, err
+	}
+
+	s := newSession(d, j, paths.workdir, nil)
+
+	if err := s.cloneDefault(ctx, spec.repo, branch); err != nil {
+		return session{}, plannerFiles{}, nil, nil, err
+	}
+
+	docs, err := prompt.ReadRepoDocs(paths.workdir)
+	if err != nil {
+		return session{}, plannerFiles{}, nil, nil, err
+	}
+
+	comments, err := j.c.ListComments(ctx, spec.repo, spec.number)
+	if err != nil {
+		return session{}, plannerFiles{}, nil, nil, err
+	}
+
+	s, err = d.sandboxedWithToolchain(
+		ctx, s, j, sec, spec.repo, branch, files, workflow.Planner, paths.workdir, paths.out,
+		[]string{retroPath(d.Settings.WorkRoot, spec.number, workflow.Planner)}, network, proxyAddr,
+	)
+
+	return s, paths, docs, comments, err
+}
+
+// plannerFiles are a Planner run's read-only clone, its scratch directory and its output path.
+type plannerFiles struct {
+	workdir, out string
+}
+
+// plannerPaths clears and returns a Planner run's paths. The clone is a read-only copy of the default
+// branch, which supplies the repository docs; the output file sits outside it in the run's scratch
+// directory.
+func plannerPaths(root string, number int) (plannerFiles, error) {
+	workdir, err := freshPath(root, "plan-"+strconv.Itoa(number))
+	if err != nil {
+		return plannerFiles{}, err
+	}
+
+	scratch, err := scratchDir(root, "planner-"+strconv.Itoa(number))
+	if err != nil {
+		return plannerFiles{}, err
+	}
+
+	return plannerFiles{workdir: workdir, out: filepath.Join(scratch, workflow.PlannerOutputFile)}, nil
 }
 
 // readPlannerOutput reads and validates the Planner's output file.

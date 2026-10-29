@@ -380,6 +380,35 @@ var _ = Describe("Run", func() {
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
+		It("asks the latest human writer to merge when the issue was authored by a bot", func() {
+			h.reviewerGH(nil)
+			h.comment(5, "o", "Let's take this one")
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				"o/r", pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory[bot]"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(
+				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "a bot author asked nobody to merge")
+		})
+
+		It("skips the review request with a log when no human writer exists", func() {
+			h.reviewerGH(nil)
+			pr, _ := h.pullRequest()
+
+			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
+				"o/r", pr, "sha-head", workflow.ReviewerOutput{
+					Version: 1, Verdict: workflow.Approve, Summary: "fine",
+				}, workflow.Issue{Number: 5, Author: "factory[bot]"}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(Equal(workflow.ReviewClean))
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
+			Expect(h.logs.String()).To(ContainSubstring("no human writer to ask for an approval review"))
+		})
+
 		It("keys the retro by the PR head SHA it reviewed", func() {
 			h.reviewerGH(nil)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {

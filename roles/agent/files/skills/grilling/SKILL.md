@@ -11,7 +11,7 @@ Work the tree in **rounds**. The **frontier** is every decision whose prerequisi
 
 ## In the factory
 
-You cannot ask the writer interactively: the `question` tool is denied. A round **ends your run**. Write the round to the run's output file exactly as the run's prompt describes (the Planner's round goes in `questions`), then stop. The next run reads the writer's answers from the issue thread; they reshape the tree, and you recompute the frontier and write the next round.
+You cannot ask the writer interactively: the `question` tool is denied. A round **ends your run**. Write the round to the run's output file exactly as the run's prompt describes: the Planner writes `"kind": "questions"`, with the numbered questions and their recommended answers in `comment`, then stops. The next run reads the writer's answers from the issue thread; they reshape the tree, and you recompute the frontier and write the next round.
 
 Format each question the way the output file asks, and word it so "yes" accepts your recommended answer.
 
