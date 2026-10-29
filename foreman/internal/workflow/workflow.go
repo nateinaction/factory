@@ -298,6 +298,8 @@ func ValidateRepo(repo string) error {
 
 // Issue is the part of a GitHub issue foreman reads.
 type Issue struct {
+	// ID is GitHub's database id, which sub-issue and dependency links name.
+	ID            int64
 	Number        int
 	Title         string
 	Body          string
@@ -311,6 +313,7 @@ type Issue struct {
 // UnmarshalJSON reads an issue; the issues endpoint marks pull requests with a pull_request key.
 func (i *Issue) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		ID       int64  `json:"id"`
 		Number   int    `json:"number"`
 		Title    string `json:"title"`
 		Body     string `json:"body"`
@@ -339,7 +342,7 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 	}
 
 	*i = Issue{
-		Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
+		ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
 		Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
 	}
 

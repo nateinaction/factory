@@ -34,7 +34,7 @@ func redrawDashboard(ctx context.Context, d Deps, c github.Client, repo string) 
 
 	switch {
 	case !found:
-		if _, err := c.CreateIssue(ctx, repo, workflow.DashboardTitle, text); err != nil {
+		if _, err := c.CreateIssue(ctx, repo, workflow.DashboardTitle, text, nil); err != nil {
 			return fmt.Errorf("create the dashboard: %w", err)
 		}
 
