@@ -27,11 +27,6 @@ func Backoff(attempt int) time.Duration {
 // InMemoryDB is OPENCODE_DB's value for a run whose state never touches the disk.
 const InMemoryDB = ":memory:"
 
-// ProxyAPIKey is the placeholder opencode sends as its provider key. The egress proxy forwards the
-// request to the run's key proxy, which replaces the Authorization header with the real OpenRouter
-// key. The placeholder is never a secret.
-const ProxyAPIKey = "factory-egress-proxy" //nolint:gosec // a placeholder, never a credential
-
 // FailureKind says why a model run failed. Its text is safe to put in a comment: it names the kind and
 // carries nothing from the response.
 type FailureKind string
@@ -324,15 +319,16 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 
 // Env is the environment of one opencode process. The inline config turns compaction on or off for
 // this agent role and points the OpenRouter provider at the run's proxy; the rest keeps repository
-// config and external skills out and state private. The key is never here: the proxy holds it.
-func Env(baseURL, stateDB string, a config.AgentConfig) (map[string]string, error) {
+// config and external skills out and state private. opencode sends token as its provider key, which
+// both proxies require; the OpenRouter key is never here: the key proxy holds it.
+func Env(baseURL, token, stateDB string, a config.AgentConfig) (map[string]string, error) {
 	inline, err := json.Marshal(map[string]any{
 		"compaction": map[string]bool{"auto": a.Compaction},
 		"provider": map[string]any{
 			"openrouter": map[string]any{"options": map[string]string{
-				// opencode v1.19.3 refuses to call a provider with no key. This placeholder is
-				// replaced by the key proxy; the real key is never here.
-				"baseURL": baseURL, "apiKey": ProxyAPIKey,
+				// opencode v1.19.3 refuses to call a provider with no key. This run's token is
+				// replaced by the real key at the key proxy; the OpenRouter key is never here.
+				"baseURL": baseURL, "apiKey": token,
 			}},
 		},
 	})

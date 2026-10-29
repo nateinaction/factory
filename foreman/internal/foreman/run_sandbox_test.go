@@ -98,8 +98,8 @@ var _ = Describe("the sandbox", func() {
 			Expect(c.Env).To(HaveKeyWithValue("PATH", HavePrefix("/nix/store/toolchain/bin:")))
 			Expect(c.Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(c.Env).NotTo(HaveKey("FACTORY_KEY_FILE"))
-			Expect(c.Env["OPENCODE_CONFIG_CONTENT"]).To(ContainSubstring(`"apiKey":"factory-egress-proxy"`),
-				"opencode v1.19.3 needs a placeholder key")
+			Expect(c.Env["OPENCODE_CONFIG_CONTENT"]).To(ContainSubstring(`"apiKey":"`+testToken+`"`),
+				"the model sends the run's token and never the OpenRouter key")
 		}
 
 		port := proxyPortOf(h.opencodeCalls()[0])
@@ -208,7 +208,7 @@ var _ = Describe("the sandbox", func() {
 		fake := &fakeEgress{
 			url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9", domains: []string{"api.example.com"},
 		}
-		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _ string) (EgressProxy, error) {
+		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _, _ string) (EgressProxy, error) {
 			fake.policy = policy
 
 			return fake, nil

@@ -119,9 +119,9 @@ nix develop --command sh -c 'export PATH=/path/to/opencode-1.19.3:$PATH; go test
 # Ran 3 of 84 Specs ... SUCCESS! -- 3 Passed
 ```
 
-The run needed the placeholder `apiKey` in `OPENCODE_CONFIG_CONTENT` that opencode 1.19.3 requires
-(the egress proxy replaces it with the real key), and a streamed `text/event-stream` provider answer.
-Both are in the acceptance test and the production adapter.
+The run needed the per-run token in `OPENCODE_CONFIG_CONTENT`'s `apiKey`, which opencode 1.19.3
+requires and both proxies check, and a streamed `text/event-stream` provider answer. Both are in the
+acceptance test and the production adapter.
 
 The spec skips, rather than failing, when the host cannot exercise it:
 

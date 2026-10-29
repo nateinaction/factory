@@ -9,6 +9,11 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
+// factoryApp is the bot login of the factory's App for an agent role, as GitHub reports it.
+func factoryApp(role workflow.Role) string {
+	return "o-factory-" + string(role) + "[bot]"
+}
+
 var _ = Describe("ParseRole", func() {
 	DescribeTable("accepts the known set",
 		func(name string) {

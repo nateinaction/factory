@@ -35,10 +35,13 @@ proxy reads `usage.prompt_tokens`, `usage.completion_tokens`, `usage.prompt_toke
 and `usage.cost` from each response (the last SSE message when streaming), and the run's usage line
 takes those totals over the adapter's own.
 
-Checked against the pinned v1.19.3: opencode refuses a run with no provider key. The adapter sets the
-placeholder `provider.openrouter.options.apiKey` (`factory-egress-proxy`, never the real key), which
-opencode sends and the egress proxy's forward to the key proxy replaces. The acceptance test in
-`foreman/internal/foreman/acceptance_test.go` exercises this under srt.
+Checked against the pinned v1.19.3: opencode refuses a run with no provider key. For each run foreman
+mints a random token and sets it as `provider.openrouter.options.apiKey`; opencode sends it as its
+`Authorization` header. The egress proxy and the key proxy both require it, comparing it in constant
+time before forwarding, so another local process or run cannot spend the key. The key proxy replaces
+the header with the real OpenRouter key, which never enters the model's config. The token stays in
+memory and the run's environment, never in a file that outlives the run or in a log. The acceptance
+test in `foreman/internal/foreman/acceptance_test.go` exercises this under srt.
 
 
 ## How foreman enforces the step cap and the deadline

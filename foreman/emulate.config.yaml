@@ -22,19 +22,19 @@ tokens:
       - repo
   # Tokens the fake `github-app-token` helper mints, one per agent role.
   minted-token-planner:
-    login: factory-planner
+    login: o-factory-planner[bot]
     scopes:
       - repo
   minted-token-researcher:
-    login: factory-researcher
+    login: o-factory-researcher[bot]
     scopes:
       - repo
   minted-token-implementer:
-    login: factory-implementer
+    login: o-factory-implementer[bot]
     scopes:
       - repo
   minted-token-reviewer:
-    login: factory-reviewer
+    login: o-factory-reviewer[bot]
     scopes:
       - repo
 
@@ -44,11 +44,11 @@ github:
       name: Repository Owner
     - login: factory
       name: Factory
-    - login: factory-planner
+    - login: o-factory-planner[bot]
       name: Factory Planner
-    - login: factory-researcher
+    - login: o-factory-researcher[bot]
       name: Factory Researcher
-    - login: factory-implementer
+    - login: o-factory-implementer[bot]
       name: Factory Implementer
-    - login: factory-reviewer
+    - login: o-factory-reviewer[bot]
       name: Factory Reviewer

@@ -280,7 +280,7 @@ var _ = Describe("Poll", func() {
 				From: workflow.Implement, To: workflow.Implementing,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(emulator.CommentAs(context.Background(), "o/r", 5, "secret-token", marker)).To(Succeed())
+			h.comment(5, appLogin(workflow.Implementer), marker)
 
 			Expect(poll()).Error().NotTo(HaveOccurred())
 
@@ -297,7 +297,7 @@ var _ = Describe("Poll", func() {
 				From: workflow.Implement, To: workflow.Implementing,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(emulator.CommentAs(context.Background(), "o/r", 5, "secret-token", marker)).To(Succeed())
+			h.comment(5, appLogin(workflow.Implementer), marker)
 			Expect(emulator.Do(context.Background(), http.MethodPost, "/repos/o/r/issues/5/labels",
 				ghtest.AdminToken, map[string]any{"labels": []string{workflow.LabelImplementing}}, nil)).To(Succeed())
 
