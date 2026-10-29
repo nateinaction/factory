@@ -74,7 +74,7 @@ var _ = Describe("the opencode adapter", func() {
 	It("keeps the Reviewer's state in memory", func() {
 		h.reviewerGH(nil)
 		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 3, 5)).
+		Expect(Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)).
 			Error().NotTo(HaveOccurred())
 		calls := h.opencodeCalls()
 		Expect(calls).To(HaveLen(2), "the review and its retro")
@@ -101,8 +101,8 @@ var _ = Describe("the opencode adapter", func() {
 		cfg.Agents[string(workflow.Reviewer)] = agent
 
 		_, err := Run(
-			context.Background(), h.deps, workflow.Reviewer, "o/r",
-			cfg.Agents[string(workflow.Reviewer)], cfg.Retro, cfg.ReviewRoundLimit, 5,
+			context.Background(), h.deps, workflow.Reviewer, testRef(5),
+			cfg.Agents[string(workflow.Reviewer)], cfg.Retro, cfg.ReviewRoundLimit,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(h.opencodeCalls()[0].Timeout).To(beNear(30 * time.Minute))

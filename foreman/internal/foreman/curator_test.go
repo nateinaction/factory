@@ -71,7 +71,7 @@ var _ = Describe("the Curator", func() {
 	runCuratorRun := func(number int) (int, error) {
 		h.writeToken(workflow.Curator, "repo-token\n")
 
-		return Run(ctx, h.deps, workflow.Curator, "o/r", testAgent(), testRetro(), 3, number)
+		return Run(ctx, h.deps, workflow.Curator, testRef(number), testAgent(), testRetro(), 3)
 	}
 
 	// dashboardBody reads a dashboard's body back.

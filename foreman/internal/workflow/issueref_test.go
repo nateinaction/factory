@@ -25,6 +25,25 @@ var _ = Describe("ParseRepo", func() {
 	)
 })
 
+var _ = Describe("ParseIssueRef", func() {
+	It("parses the repository and issue number arguments once, into one value", func() {
+		ref, err := workflow.ParseIssueRef("o/r", "5")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ref.Repo.String()).To(Equal("o/r"))
+		Expect(ref.Number).To(Equal(5))
+		Expect(ref.String()).To(Equal("o/r#5"))
+	})
+
+	DescribeTable("returns an error, never a value, when either part is bad",
+		func(repo, number string) {
+			ref, err := workflow.ParseIssueRef(repo, number)
+			Expect(err).To(HaveOccurred())
+			Expect(ref).To(Equal(workflow.IssueRef{}))
+		},
+		Entry(nil, "nope", "5"), Entry(nil, "o/r", "x"), Entry(nil, "o/r", "-1"),
+	)
+})
+
 var _ = Describe("IssueRef", func() {
 	It("formats as owner/name#N for logs", func() {
 		repo, err := workflow.ParseRepo("nateinaction/factory")
