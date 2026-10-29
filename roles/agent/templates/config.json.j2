@@ -1,10 +1,14 @@
 {#- foreman's view of factory_models: model, context cap and compaction per agent role, plus the
-    step cap and deadline foreman enforces, the retro budget shared by every agent role, how far
-    past a deadline a running label may age before the poll calls the run dead, and the limits of
-    the CI gate and the review rounds. -#}
+    step cap and deadline foreman enforces, the shared retro budget and any per-role override, how
+    far past a deadline a running label may age before the poll calls the run dead, and the limits
+    of the CI gate and the review rounds. -#}
 {%- set agents = {} -%}
 {%- for role, m in factory_models.items() -%}
 {%- set limits = factory_agent_limits[role] -%}
 {%- set _ = agents.update({role: {'model': m.model, 'context_cap': m.context_cap | default(factory_context_cap) | int, 'compaction': m.compaction, 'egress': {'allowed_domains': factory_egress.get(role, [])}, 'steps': limits.steps | int, 'deadline_minutes': limits.deadline_minutes | int}}) -%}
 {%- endfor -%}
-{{ {'roles': github_apps | list | sort, 'agents': agents, 'retro': {'steps': factory_retro_steps | int, 'deadline_minutes': factory_retro_deadline_minutes | int}, 'dead_run_margin_minutes': factory_dead_run_margin_minutes | int, 'ci_pending_deadline_minutes': factory_ci_pending_deadline_minutes | int, 'review_round_limit': factory_review_round_limit | int, 'unhosted_roles': factory_agent_unhosted_roles | list | sort, 'factory_repo': factory_repo} | to_nice_json }}
+{%- set retro_by_role = {} -%}
+{%- for role, limits in factory_retro_limits.items() -%}
+{%- set _ = retro_by_role.update({role: {'steps': limits.steps | default(factory_retro_steps) | int, 'deadline_minutes': limits.deadline_minutes | default(factory_retro_deadline_minutes) | int}}) -%}
+{%- endfor -%}
+{{ {'roles': github_apps | list | sort, 'agents': agents, 'retro': {'steps': factory_retro_steps | int, 'deadline_minutes': factory_retro_deadline_minutes | int}, 'retro_by_role': retro_by_role, 'dead_run_margin_minutes': factory_dead_run_margin_minutes | int, 'ci_pending_deadline_minutes': factory_ci_pending_deadline_minutes | int, 'review_round_limit': factory_review_round_limit | int, 'unhosted_roles': factory_agent_unhosted_roles | list | sort, 'factory_repo': factory_repo} | to_nice_json }}

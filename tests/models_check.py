@@ -183,6 +183,8 @@ def main(out: str) -> None:
 
     assert_no_ask()
     assert CFG["retro"] == {"steps": RETRO[0], "deadline_minutes": RETRO[1]}, "retro budget"
+    # Every retro starts on the shared budget; a role gets its own only through group_vars.
+    assert CFG["retro_by_role"] == {}, "an agent role has a retro override by default"
     assert CFG["dead_run_margin_minutes"] == DEAD_RUN_MARGIN, "dead-run margin"
     assert CFG["review_round_limit"] == REVIEW_ROUND_LIMIT, "review round limit"
     assert CFG["ci_pending_deadline_minutes"] == CI_PENDING_DEADLINE_MINUTES, "CI pending deadline"

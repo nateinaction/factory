@@ -1180,7 +1180,7 @@ func runAsFactory(
 		}
 	}()
 
-	ceiling := cfg.Agents[string(role)].Deadline() + cfg.Retro.Deadline() + supervisorGitRuns*GitTimeout
+	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
 	_, runErr := d.Runner.Run(ctx, proc.Cmd{
 		Argv:    []string{"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo, strconv.Itoa(number)},

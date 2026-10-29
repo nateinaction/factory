@@ -149,7 +149,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 				d.Settings.FactoryRepo = cfg.FactoryRepo
 				code, err = foreman.Run(
 					cmd.Context(), *d, role, args[1],
-					cfg.Agents[string(role)], cfg.Retro, cfg.ReviewRoundLimit, number,
+					cfg.Agents[string(role)], cfg.RetroBudget(role), cfg.ReviewRoundLimit, number,
 				)
 			}
 
