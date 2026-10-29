@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -149,7 +150,19 @@ func (rc runCtx) resolveToolchain(ctx context.Context, files sandboxFiles, env r
 		return "", nil
 	}
 
-	return rc.d.toolchain(ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files)
+	spans := rc.spans()
+
+	ctx, span := spans.start(ctx, telemetry.SpanToolchain)
+	defer span.End()
+
+	path, err := rc.d.toolchain(
+		ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files, spans,
+	)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return path, err
 }
 
 // sandboxed puts the run's clone inside its own sandbox: the default branch's dev environment, the

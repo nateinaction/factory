@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
 
 // agent runs the model, retrying transient failures up to twice within r.Timeout.
@@ -29,7 +32,7 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 	for attempt := 1; attempt <= opencode.MaxModelAttempts; attempt++ {
 		res.Attempts = attempt
 
-		stream, err := s.attempt(ctx, r, time.Until(deadline))
+		stream, err := s.tracedAttempt(ctx, r, attempt, time.Until(deadline))
 
 		res.Usage = res.Usage.Add(stream.Usage)
 
@@ -80,11 +83,47 @@ func (s session) afterAttempt(
 		return false, &opencode.ModelError{Kind: kind, Attempts: attempt, Cause: cause}
 	}
 
-	if err := s.d.sleep(ctx, opencode.Backoff(attempt)); err != nil {
+	if err := s.backoff(ctx, attempt); err != nil {
 		return false, fmt.Errorf("%s: %w", r.Role, err)
 	}
 
 	return false, nil
+}
+
+// tracedAttempt runs one model attempt inside its own span, which carries the attempt number and, when
+// the attempt failed, the failure kind. A retried attempt is a failed span of its own, beside the
+// backoff that follows it.
+func (s session) tracedAttempt(
+	ctx context.Context, r opencode.Run, attempt int, timeout time.Duration,
+) (opencode.Stream, error) {
+	ctx, span := s.spans.start(ctx, telemetry.SpanModelAttempt, attribute.Int(telemetry.AttrAttempt, attempt))
+	defer span.End()
+
+	stream, err := s.attempt(ctx, r, timeout)
+	if kind, failed := opencode.Failure(stream, err); failed {
+		markFailure(span, kind)
+	}
+
+	return stream, err
+}
+
+// backoff waits before the next attempt inside the wait's own span, which names the attempt it
+// precedes and how long it waits.
+func (s session) backoff(ctx context.Context, attempt int) error {
+	wait := opencode.Backoff(attempt)
+
+	_, span := s.spans.start(ctx, telemetry.SpanModelBackoff,
+		attribute.Int(telemetry.AttrNextAttempt, attempt+1),
+		attribute.Float64(telemetry.AttrBackoffSeconds, wait.Seconds()))
+	defer span.End()
+
+	if err := s.d.sleep(ctx, wait); err != nil {
+		markFailureOf(span, err)
+
+		return err
+	}
+
+	return nil
 }
 
 // attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to

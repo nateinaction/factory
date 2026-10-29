@@ -27,6 +27,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/security"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -164,6 +165,8 @@ type session struct {
 	gitEnv   map[string]string
 	agentEnv map[string]string
 	gitArgv  []string
+	// spans opens the run's stage spans, each carrying the run's attributes.
+	spans stageSpans
 	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
@@ -187,9 +190,15 @@ func (s session) head(ctx context.Context) (string, error) {
 
 // clone clones the repository into the session's workdir.
 func (s session) clone(ctx context.Context, repo workflow.Repo) error {
+	_, span := s.spans.start(ctx, telemetry.SpanClone)
+	defer span.End()
+
 	_, err := s.d.run(ctx, proc.Cmd{
 		Argv: []string{gitProgram, gitClone, "https://github.com/" + repo.String() + ".git", s.workdir}, Env: s.gitEnv,
 	})
+	if err != nil {
+		markFailureOf(span, err)
+	}
 
 	return err
 }
@@ -197,7 +206,7 @@ func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
 // environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
 // run outside the sandbox; identity adds the committer a run needs.
-func newSession(d Deps, j job, workdir string, identity []string) session {
+func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans) session {
 	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
 
 	return session{
@@ -206,6 +215,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
+		spans:    spans,
 		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
@@ -580,12 +590,19 @@ func (s session) applyImplementer(
 // commit stages the working tree and commits it, with the clone's hooks disabled so nothing the
 // model wrote runs outside the sandbox. A tree with nothing to commit is left as it is.
 func (s session) commit(ctx context.Context, message string) error {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishCommit)
+	defer span.End()
+
 	if _, err := s.git(ctx, nil, "add", "-A"); err != nil {
+		markFailureOf(span, err)
+
 		return err
 	}
 
 	status, err := s.git(ctx, nil, "status", "--porcelain")
 	if err != nil {
+		markFailureOf(span, err)
+
 		return err
 	}
 
@@ -594,6 +611,9 @@ func (s session) commit(ctx context.Context, message string) error {
 	}
 
 	_, err = s.git(ctx, nil, "commit", "-m", message)
+	if err != nil {
+		markFailureOf(span, err)
+	}
 
 	return err
 }
@@ -651,11 +671,25 @@ func (s session) publish(
 		push = []string{gitPush, "--force", gitRemote, branch}
 	}
 
-	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+	if err := s.push(ctx, push); err != nil {
 		return nil, err
 	}
 
 	return s.upsertPR(ctx, j, repo, branch, pr, out)
+}
+
+// push pushes the branch inside its stage span.
+func (s session) push(ctx context.Context, push []string) error {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishPush)
+	defer span.End()
+
+	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+		markFailureOf(span, err)
+
+		return err
+	}
+
+	return nil
 }
 
 // upsertPR opens the pull request linked to the issue, or updates the open one's text when the output
@@ -663,14 +697,24 @@ func (s session) publish(
 func (s session) upsertPR(
 	ctx context.Context, j job, repo workflow.Repo, branch string, pr *github.PullRequest, out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishPR)
+	defer span.End()
+
 	if pr == nil {
-		return openPR(ctx, j.c, repo, j.issue, branch, out)
+		opened, err := openPR(ctx, j.c, repo, j.issue, branch, out)
+		if err != nil {
+			markFailureOf(span, err)
+		}
+
+		return opened, err
 	}
 
 	if out.PRTitle != "" && out.PRBody != "" {
 		ref := workflow.IssueRef{Repo: repo, Number: pr.Number}
 
 		if err := j.c.UpdatePR(ctx, ref, out.PRTitle, workflow.PRBody(j.issue.Number, out.PRBody)); err != nil {
+			markFailureOf(span, err)
+
 			return nil, err
 		}
 	}
@@ -836,7 +880,7 @@ func (s session) publishResearch(ctx context.Context, number int, branch string)
 		push = []string{gitPush, "--force", gitRemote, branch}
 	}
 
-	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+	if err := s.push(ctx, push); err != nil {
 		return "", err
 	}
 
@@ -962,6 +1006,22 @@ func (s session) checkoutForReview(ctx context.Context, repo workflow.Repo, bran
 	}
 
 	return s.head(ctx)
+}
+
+// postVerdictTraced posts the verdict inside the publishing stage's review span.
+func postVerdictTraced(
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, pr int, sha string,
+	out workflow.ReviewerOutput, issue workflow.Issue, limit int, spans stageSpans,
+) (int, error) {
+	ctx, span := spans.start(ctx, telemetry.SpanPublishReview)
+	defer span.End()
+
+	code, err := postVerdict(ctx, d, c, repo, pr, sha, out, issue, limit)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return code, err
 }
 
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The

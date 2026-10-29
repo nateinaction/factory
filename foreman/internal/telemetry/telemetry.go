@@ -50,6 +50,29 @@ const (
 	AttrState = "factory.state"
 	// AttrSkipReason is why a poll left a queue alone.
 	AttrSkipReason = "factory.skip_reason"
+	// AttrModel is the model an agent role's run calls.
+	AttrModel = "factory.model"
+	// AttrWorkerHost is the host the run ran on.
+	AttrWorkerHost = "factory.worker_host"
+	// AttrOutcome is how a run ended.
+	AttrOutcome = "factory.outcome"
+	// AttrFailureKind is why a failed run, or a failed stage of one, failed.
+	AttrFailureKind = "factory.failure_kind"
+	// AttrAttempt is the 1-based number of one model attempt.
+	AttrAttempt = "factory.attempt"
+	// AttrNextAttempt is the attempt a backoff wait precedes.
+	AttrNextAttempt = "factory.next_attempt"
+	// AttrBackoffSeconds is the length of a backoff wait.
+	AttrBackoffSeconds = "factory.backoff_seconds"
+	// AttrAttempts is how many times a run called the model.
+	AttrAttempts = "factory.attempts"
+	// AttrInputTokens, AttrOutputTokens and AttrCachedTokens are the run's token totals.
+	AttrInputTokens  = "factory.input_tokens"
+	AttrOutputTokens = "factory.output_tokens"
+	//nolint:gosec // G101: an attribute name, not a credential
+	AttrCachedTokens = "factory.cached_tokens"
+	// AttrCost is what the run's responses cost, in US dollars.
+	AttrCost = "factory.cost"
 )
 
 // Poll span names. Enqueue is separate from its repository span so a run can continue its trace.
@@ -82,6 +105,36 @@ const (
 	MetricPollClaims = "factory.poll.claims"
 	// MetricPollCapacity is the run capacity left for an agent role after the poll's claims.
 	MetricPollCapacity = "factory.poll.capacity_left"
+)
+
+// Run span names. Each stage span is a child of the process root span, which names the run verb.
+const (
+	// SpanClone clones the repository the run works.
+	SpanClone = "foreman.run.clone"
+	// SpanToolchain resolves the default branch's dev environment.
+	SpanToolchain = "foreman.run.toolchain"
+	// SpanToolchainClone is the shallow clone the dev environment is resolved from.
+	SpanToolchainClone = "foreman.run.toolchain.clone"
+	// SpanToolchainEnv is the dev-environment evaluation itself.
+	SpanToolchainEnv = "foreman.run.toolchain.env"
+	// SpanProxyBind starts the run's OpenRouter proxy.
+	SpanProxyBind = "foreman.run.proxy.bind"
+	// SpanModelAttempt is one call to the model.
+	SpanModelAttempt = "foreman.run.model.attempt"
+	// SpanModelBackoff is the wait between two model attempts.
+	SpanModelBackoff = "foreman.run.model.backoff"
+	// SpanOutputValidation reads and parses the agent role's output file.
+	SpanOutputValidation = "foreman.run.output.validate"
+	// SpanPublishCommit commits the agent's working tree.
+	SpanPublishCommit = "foreman.run.publish.commit"
+	// SpanPublishPush pushes the branch.
+	SpanPublishPush = "foreman.run.publish.push"
+	// SpanPublishPR opens or updates the pull request.
+	SpanPublishPR = "foreman.run.publish.pull_request"
+	// SpanPublishReview posts the review's verdict.
+	SpanPublishReview = "foreman.run.publish.review"
+	// SpanRetro runs the run's retro.
+	SpanRetro = "foreman.run.retro"
 )
 
 // RootSpanName is the process root span's name for a foreman verb.
