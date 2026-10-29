@@ -622,10 +622,11 @@ func (c Client) Finish(
 func (c Client) recordedMarker(ctx context.Context, ref workflow.IssueRef, marker string) (int64, error) {
 	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
+		// Fail closed: when authorship cannot be read, no comment counts as recorded.
 		return 0, err
 	}
 
-	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+	if mine := workflow.FactoryStartsWith(comments, marker, ref.Repo.Owner()); len(mine) > 0 {
 		return mine[0].ID, nil
 	}
 
