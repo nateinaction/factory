@@ -74,6 +74,21 @@ var _ = Describe("Researcher", func() {
 	})
 })
 
+var _ = Describe("Planner", func() {
+	It("names the map and resolution shapes and leaves a prototype to a human", func() {
+		got := Planner(nil, "o/r", workflow.Issue{Number: 4, Title: "T", Body: "B"}, nil, "/w/out.json")
+
+		Expect(got).To(And(
+			ContainSubstring(`"shape": "map"`),
+			ContainSubstring(`"shape": "resolution"`),
+			ContainSubstring(`"not_yet_specified"`),
+			ContainSubstring("Is this resolved?"),
+			ContainSubstring("A prototype ticket is left for a human"),
+			ContainSubstring("never build a prototype"),
+		))
+	})
+})
+
 var _ = Describe("Retro and Reviewer", func() {
 	It("names the issue, the output file and the JSON shape", func() {
 		r := Retro(RetroRequest{Role: workflow.Implementer, Repo: "o/r", Issue: 9, OutPath: "/w/retro.json"})

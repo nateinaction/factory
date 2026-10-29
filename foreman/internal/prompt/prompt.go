@@ -105,9 +105,16 @@ const plannerRolePrompt = "Use the `grilling`, `wayfinder`, `to-spec` and `to-ti
 	"JSON object to the output file with \"version\": 1, \"kind\" and \"comment\". " +
 	"A \"kind\": \"questions\" round is numbered questions, each with a recommended answer worded so " +
 	"that \"yes\" accepts it; it carries no proposal. A \"kind\": \"final_round\" carries a " +
-	"\"proposal\" and its comment ends with exactly \"Is this ready to build?\". " +
+	"\"proposal\" and its comment ends with exactly \"Is this ready to build?\" or, for a decision " +
+	"ticket's resolution, \"Is this resolved?\". " +
 	"A proposal is {\"shape\": \"single\"} or {\"shape\": \"slices\"}, with \"spec\" and, for slices, " +
 	"\"issues\": [{\"key\": \"slug\", \"title\": \"...\", \"body\": \"...\", \"blocked_by\": [\"slug\" or \"#N\"]}]. " +
+	"A {\"shape\": \"map\"} charts a wayfinder map: its \"map\" carries \"destination\", \"notes\", " +
+	"\"not_yet_specified\" and \"out_of_scope\", and its \"issues\" are the tickets, each with a " +
+	"\"type\": \"research\", \"grilling\", \"prototype\" or \"task\". " +
+	"A {\"shape\": \"resolution\"} resolves a decision ticket: its \"resolution\" carries \"answer\" " +
+	"and \"decision_line\", and its \"issues\" are any new tickets under the same map. " +
+	"A prototype ticket is left for a human: propose one, but never build a prototype in this run. " +
 	"The spec must carry a \"Domain changes\" section listing proposed glossary terms and ADRs. " +
 	"Do not set labels or write factory markers: foreman derives every label."
 
