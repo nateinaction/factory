@@ -63,17 +63,28 @@ The adapter therefore gives srt one loopback port and delegates the decision to
   outbound traffic and routes HTTP(S) through that port.
 - The egress proxy enforces the role's allowlist (empty means open), refuses anything else, and
   records every host it is asked for — allowed or refused — for the usage line.
+- It also refuses a destination whose address is not publicly routable, whatever the allowlist
+  says: loopback, private space, shared space (`100.64.0.0/10`, which is where a tailnet lives),
+  link-local addresses including `169.254.169.254`, `0.0.0.0/8`, multicast and unspecified
+  addresses, with IPv4-mapped IPv6 checked as IPv4. A name with any refused address is refused
+  whole. Both the `CONNECT` path and the plain-HTTP path go through this check, so an open agent
+  role still cannot reach dagu on the tailnet or another run's loopback proxy.
+- Each destination is resolved once and the proxy dials the resolved address, so a second DNS
+  answer cannot point the connection at an address the check never saw.
 - The same proxy answers the model's `/api/v1` path and forwards it to the run's OpenRouter key
-  proxy, adding the key there. One loopback port therefore serves both the API and general egress,
-  which matters on Linux: srt only bridges its configured proxy ports into the sandbox network
-  namespace. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at that port.
+  proxy, adding the key there. The key proxy is foreman's own loopback listener, so that one
+  forward is dialed without the public-address check. One loopback port therefore serves both the
+  API and general egress, which matters on Linux: srt only bridges its configured proxy ports into
+  the sandbox network namespace. `OPENCODE_CONFIG_CONTENT` points
+  `provider.openrouter.options.baseURL` at that port.
 - srt's own proxy is skipped for HTTP because an external proxy is named. Its SOCKS side still runs
   with the empty allowlist srt requires, so non-HTTP TCP egress is denied; opencode's traffic is
   HTTP(S).
 
 This is a deliberate deviation from "srt's proxy is always in front": srt's proxy cannot be open, so
 the forwarding decision and the domain log live in foreman's proxy, which srt forces all HTTP
-traffic through. The OpenRouter key never enters the sandbox; only the key proxy holds it.
+traffic through. The OpenRouter key never enters the sandbox; only the key proxy holds it. The
+decision is recorded in `docs/adr/0001-egress-proxy-in-front-of-srt.md`.
 
 ## Fail closed
 

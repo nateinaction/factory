@@ -2,12 +2,15 @@ package egress
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,6 +21,10 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
+
+// publicAddress is a name-independent address no refusal rule covers: everything a spec stands up
+// itself listens on loopback, so a spec that wants a successful dial fakes the resolution.
+const publicAddress = "93.184.216.34"
 
 // testToken is the per-run token every spec sends the proxy.
 const testToken = "run-token"
@@ -117,6 +124,69 @@ func apiServer() *httptest.Server {
 	return server
 }
 
+// staticResolver answers every lookup with its addresses.
+type staticResolver []netip.Addr
+
+// LookupNetIP returns the resolver's addresses whatever it was asked for.
+func (r staticResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return r, nil
+}
+
+// startWith binds a proxy on a free loopback port that reaches destinations through g.
+func startWith(n sandbox.Network, g gateway) *Proxy {
+	GinkgoHelper()
+
+	p, err := startProxy(GinkgoT().Context(), n, "", testToken, "127.0.0.1:0", nil, g)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(p.Close)
+
+	return p
+}
+
+// loopbackGateway treats every destination as public and dials the loopback server at the port the
+// spec asked for, so a spec exercises the proxy's success paths without outside network access.
+func loopbackGateway() gateway {
+	return gateway{
+		resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+		dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, fmt.Errorf("test dial %q: %w", address, err)
+			}
+
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+		},
+	}
+}
+
+// refusedHosts is one address from every range the proxy must not reach.
+func refusedHosts() []string {
+	return []string{
+		"0.0.0.0", "127.0.0.1", "127.9.9.9", "10.1.2.3", "172.16.0.1", "192.168.1.1",
+		"169.254.169.254", "100.64.0.1", "224.0.0.1", "255.255.255.255",
+		"::1", "fd00::1", "fe80::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:192.168.1.1",
+	}
+}
+
+// forward sends one absolute-form GET for target through proxy and returns the response.
+func forward(proxyAddr, target string) (*http.Response, net.Conn) {
+	GinkgoHelper()
+
+	parsed, err := url.Parse(target)
+	Expect(err).NotTo(HaveOccurred())
+
+	conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", proxyAddr)
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target, parsed.Host)
+	Expect(err).NotTo(HaveOccurred())
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	Expect(err).NotTo(HaveOccurred())
+
+	return resp, conn
+}
+
 // apiGet asks the proxy's API for rawURL with the run's token.
 func apiGet(rawURL string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(GinkgoT().Context(), http.MethodGet, rawURL, nil)
@@ -155,8 +225,7 @@ var _ = Describe("Proxy", func() {
 		echo, stop := echoServer()
 		DeferCleanup(stop)
 
-		p := start(policy(), "")
-		DeferCleanup(p.Close)
+		p := startWith(policy(), loopbackGateway())
 
 		resp, conn := connect(p.Address(), echo)
 
@@ -194,8 +263,7 @@ var _ = Describe("Proxy", func() {
 		}))
 		DeferCleanup(upstream.Close)
 
-		p := start(policy("127.0.0.1"), "")
-		DeferCleanup(p.Close)
+		p := startWith(policy("127.0.0.1"), loopbackGateway())
 
 		conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", p.Address())
 		Expect(err).NotTo(HaveOccurred())
@@ -229,8 +297,7 @@ var _ = Describe("Proxy", func() {
 		}))
 		DeferCleanup(upstream.Close)
 
-		p := start(policy("127.0.0.1"), "")
-		DeferCleanup(p.Close)
+		p := startWith(policy("127.0.0.1"), loopbackGateway())
 
 		conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", p.Address())
 		Expect(err).NotTo(HaveOccurred())
@@ -280,8 +347,7 @@ var _ = Describe("Proxy", func() {
 		DeferCleanup(upstream.Close)
 		DeferCleanup(unblock)
 
-		p := start(policy("127.0.0.1"), "")
-		DeferCleanup(p.Close)
+		p := startWith(policy("127.0.0.1"), loopbackGateway())
 
 		client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
 			Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: p.Address()}),
@@ -411,8 +477,7 @@ var _ = Describe("Proxy", func() {
 		echo, stop := echoServer()
 		DeferCleanup(stop)
 
-		p := start(policy(), "")
-		DeferCleanup(p.Close)
+		p := startWith(policy(), loopbackGateway())
 
 		for range 2 {
 			resp, conn := connect(p.Address(), echo)
@@ -476,5 +541,92 @@ var _ = Describe("Proxy", func() {
 		body, err := io.ReadAll(resp.Body)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(body)).To(Equal("api GET /api/v1/models"))
+	})
+
+	Describe("destination refusal", func() {
+		It("refuses a CONNECT to every range that is not publicly routable", func() {
+			// open egress: the refusal must not depend on the agent role's allowlist
+			p := start(policy(), "")
+			DeferCleanup(p.Close)
+
+			for _, host := range refusedHosts() {
+				resp, conn := connect(p.Address(), net.JoinHostPort(host, "443"))
+				// test cleanup: a close error changes no assertion
+				_ = conn.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
+				Expect(p.Domains()).To(ContainElement(host))
+			}
+		})
+
+		It("refuses a plain HTTP request to every range that is not publicly routable", func() {
+			p := start(policy(), "")
+			DeferCleanup(p.Close)
+
+			for _, host := range refusedHosts() {
+				resp, conn := forward(p.Address(), "http://"+net.JoinHostPort(host, "80")+"/thing")
+				// test cleanup: a close error changes no assertion
+				_ = conn.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
+			}
+		})
+
+		It("refuses a name that resolves to a refused address", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{
+					netip.MustParseAddr(publicAddress), netip.MustParseAddr("10.1.2.3"),
+				},
+				dial: (&net.Dialer{}).DialContext,
+			})
+
+			resp, conn := connect(p.Address(), "internal.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(p.Domains()).To(ContainElement("internal.example"))
+
+			resp, conn = forward(p.Address(), "http://internal.example/thing")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		})
+
+		It("dials the address it checked instead of resolving the name again", func() {
+			dialed := make(chan string, 1)
+
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial: func(_ context.Context, _ string, address string) (net.Conn, error) {
+					dialed <- address
+
+					return nil, errors.New("test dial: not reaching anything")
+				},
+			})
+
+			resp, conn := connect(p.Address(), "public.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			var address string
+			Eventually(dialed, "5s").Should(Receive(&address))
+
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+			Expect(address).To(Equal(publicAddress + ":443"))
+		})
+
+		It("answers bad gateway when the name cannot be resolved", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{}, dial: (&net.Dialer{}).DialContext,
+			})
+
+			resp, conn := connect(p.Address(), "missing.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+		})
 	})
 })
