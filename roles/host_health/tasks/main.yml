@@ -1,0 +1,66 @@
+---
+# Host health on every host: node_exporter supplies memory and filesystem use on loopback, and a
+# timer adds the SoC temperature and the firmware's throttling bits, which node_exporter cannot read
+# on a Pi. The host's collector scrapes both and forwards them to the telemetry backend.
+#
+# The nixpkgs revision pins node_exporter's version, as it does the collector's.
+- name: Install node_exporter
+  ansible.builtin.command: >-
+    /nix/var/nix/profiles/default/bin/nix profile add
+    --profile /nix/var/nix/profiles/default
+    github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#prometheus-node-exporter
+  args:
+    creates: /nix/var/nix/profiles/default/bin/node_exporter
+  environment:
+    PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+
+# node_exporter reads the reporter's textfile collector directory; the reporter, not node_exporter,
+# writes it, so a failed read leaves the last good file.
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ factory_host_health_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the health reporter
+  ansible.builtin.copy:
+    src: factory-host-health
+    dest: /usr/local/bin/factory-host-health
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install node_exporter's unit
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Install the health reporter's units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [factory-host-health.service, factory-host-health.timer]
+  notify: Restart factory host health timer
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Enable and start the health reporter's timer
+  ansible.builtin.systemd_service:
+    name: factory-host-health.timer
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -119,6 +120,54 @@ var _ = Describe("Start", func() {
 		tel.Shutdown(context.Background())
 		Expect(time.Since(start)).To(BeNumerically("<", telemetry.FlushBound+time.Second))
 	})
+})
+
+var _ = Describe("trace context propagation", func() {
+	// testTraceParent is a well-formed W3C trace context: version, trace id, parent id, sampled flag.
+	const testTraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	It("injects the active span as a W3C traceparent", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		ctx, span := tp.Tracer("t").Start(context.Background(), "s")
+		defer span.End()
+
+		Expect(telemetry.TraceParent(ctx)).To(Equal(
+			"00-" + span.SpanContext().TraceID().String() + "-" + span.SpanContext().SpanID().String() + "-01"))
+	})
+
+	It("injects nothing outside a real span", func() {
+		Expect(telemetry.TraceParent(context.Background())).To(BeEmpty())
+	})
+
+	It("continues a valid trace context as its remote parent", func() {
+		ctx, ok := telemetry.ContinueTrace(context.Background(), testTraceParent)
+		Expect(ok).To(BeTrue())
+
+		sc := trace.SpanContextFromContext(ctx)
+		Expect(sc.TraceID().String()).To(Equal("4bf92f3577b34da6a3ce929d0e0e4736"))
+		Expect(sc.SpanID().String()).To(Equal("00f067aa0ba902b7"))
+		Expect(sc.IsRemote()).To(BeTrue())
+	})
+
+	It("starts a new trace from a missing context", func() {
+		ctx, ok := telemetry.ContinueTrace(context.Background(), "")
+		Expect(ok).To(BeTrue())
+		Expect(trace.SpanContextFromContext(ctx).IsValid()).To(BeFalse())
+	})
+
+	DescribeTable("ignores a malformed context",
+		func(value string) {
+			ctx, ok := telemetry.ContinueTrace(context.Background(), value)
+			Expect(ok).To(BeFalse())
+			Expect(trace.SpanContextFromContext(ctx).IsValid()).To(BeFalse())
+		},
+		Entry("not a traceparent", "not-a-traceparent"),
+		Entry("a non-hex version", "gg-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+		Entry("an all-zero trace id", "00-00000000000000000000000000000000-00f067aa0ba902b7-01"),
+		Entry("a truncated span id", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa-01"),
+		Entry("a bad flag", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-zz"),
+	)
 })
 
 var _ = Describe("LogHandler", func() {

@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -152,6 +153,41 @@ const (
 // RootSpanName is the process root span's name for a foreman verb.
 func RootSpanName(verb string) string {
 	return "foreman." + verb
+}
+
+// TraceParentHeader is the W3C trace context header foreman carries between processes.
+const TraceParentHeader = "traceparent"
+
+// TraceParentVar is the environment variable and DAG parameter that carries the W3C trace context
+// between foreman's processes.
+const TraceParentVar = "TRACEPARENT"
+
+// TraceParent is the W3C traceparent value for the span active in ctx, or empty when ctx has no real
+// span. It is how one process hands its trace to the next.
+func TraceParent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+
+	return carrier.Get(TraceParentHeader)
+}
+
+// ContinueTrace makes value the remote parent in ctx. It returns ctx unchanged and false for a
+// malformed value, so the caller can log a diagnostic and start a new trace. An empty value is not
+// malformed: it simply carries no trace context.
+func ContinueTrace(ctx context.Context, value string) (context.Context, bool) {
+	if value == "" {
+		return ctx, true
+	}
+
+	carrier := propagation.MapCarrier{TraceParentHeader: value}
+	continued := propagation.TraceContext{}.Extract(ctx, carrier)
+	sc := trace.SpanContextFromContext(continued)
+
+	if !sc.IsValid() || !sc.IsRemote() {
+		return ctx, false
+	}
+
+	return continued, true
 }
 
 // Telemetry is the tracer and meter for one process, and the way to flush them.

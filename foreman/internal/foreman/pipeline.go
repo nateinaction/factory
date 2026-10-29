@@ -267,13 +267,16 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 
 	var egressRefusals, keyRefusals map[security.Outcome]int
 
+	// The run's one usage record is left even when the run failed, once the proxies have added what
+	// they read: that merge happens in the defer below, which runs first. Status reads the record,
+	// never a line on stdout.
 	started := r.d.now()
 
 	defer func() {
 		st := r.stats(result, err, r.d.now().Sub(started))
 		r.annotateRun(ctx, st, result.usage)
 		r.recordAlerts(ctx, st, result.usage, egressRefusals, keyRefusals)
-		r.d.logUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
+		r.d.recordUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
 			WithDomains(domains, refused))
 	}()
 

@@ -19,6 +19,8 @@
     - nix
     - users
     - dagu
+    - role: host_health
+      when: factory_host_health | bool
     - role: collector
       when: factory_collector | bool
     - role: telemetry

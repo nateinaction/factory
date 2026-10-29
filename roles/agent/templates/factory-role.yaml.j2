@@ -17,6 +17,11 @@ params:
     type: string
     required: true
     description: Number of the claimed GitHub issue
+  - name: TRACEPARENT
+    type: string
+    required: false
+    default: ""
+    description: W3C trace context of the poll's enqueue span, so the run continues its trace
 steps:
   - name: {{ agent_role }}
-    run: /usr/local/bin/foreman start {{ agent_role }} ${params.REPO} ${params.ISSUE}
+    run: /usr/local/bin/foreman start {{ agent_role }} ${params.REPO} ${params.ISSUE} ${params.TRACEPARENT}
