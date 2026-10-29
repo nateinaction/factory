@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,11 +189,91 @@ func newHarness() *harness {
 			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
-		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs),
+		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs), RunID: "run-1",
 		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 	}
 
 	return h
+}
+
+// tokenFor is the seeded token of a test user.
+func tokenFor(login string) string {
+	switch login {
+	case "o":
+		return ghtest.AdminToken
+	case "factory":
+		return "secret-token"
+	}
+
+	Fail("no seeded token for " + login)
+
+	return ""
+}
+
+// createAs creates an issue in o/r authored by login.
+func (h *harness) createAs(login string, labels []string, title string) int {
+	GinkgoHelper()
+
+	number, err := emulator.CreateIssueAs(context.Background(), "o/r", tokenFor(login), labels, title, "Do it")
+	Expect(err).NotTo(HaveOccurred())
+
+	return number
+}
+
+// comment posts a comment on o/r#number as login.
+func (h *harness) comment(number int, login, text string) {
+	GinkgoHelper()
+	Expect(emulator.CommentAs(context.Background(), "o/r", number, tokenFor(login), text)).To(Succeed())
+}
+
+// labels reads back the labels an issue carries.
+func (h *harness) labels(number int) []string {
+	GinkgoHelper()
+
+	issue, err := emulator.Issue(context.Background(), "o/r", number)
+	Expect(err).NotTo(HaveOccurred())
+
+	out := make([]string, 0, len(issue.Labels))
+	for _, l := range issue.Labels {
+		out = append(out, l.Name)
+	}
+
+	return out
+}
+
+// factoryLabels are the factory labels an issue carries.
+func (h *harness) factoryLabels(number int) []string {
+	GinkgoHelper()
+
+	var out []string
+
+	for _, label := range h.labels(number) {
+		if strings.HasPrefix(label, "factory:") {
+			out = append(out, label)
+		}
+	}
+
+	return out
+}
+
+// markerComments are the factory transition markers posted on o/r#number, oldest first.
+func (h *harness) markerComments(number int) []string {
+	GinkgoHelper()
+
+	var out []string
+
+	for _, raw := range h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/issues/%d/comments", number)) {
+		var body struct {
+			Body string `json:"body"`
+		}
+		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
+
+		if strings.HasPrefix(body.Body, workflow.MarkerPrefix) {
+			out = append(out, body.Body)
+		}
+	}
+
+	return out
 }
 
 // defaultRun answers token minting and git queries, and a clone makes its directory, as git does;
@@ -257,12 +336,6 @@ func (h *harness) expectAuthorizedAs(role workflow.Role) {
 	for _, r := range h.gh.Calls() {
 		Expect(r.Header.Get("Authorization")).To(Equal("Bearer minted-token-"+string(role)), r.Method+" "+r.Path)
 	}
-}
-
-// expectOnlyReads fails the spec when any GitHub call wrote.
-func (h *harness) expectOnlyReads() {
-	GinkgoHelper()
-	Expect(h.gh.Summary()).To(HaveEach(HavePrefix("GET ")))
 }
 
 // repoOf is the value of --repo in a github-app-token command line.
@@ -335,6 +408,7 @@ func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
 	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
 
 	labels := map[int][]string{}
+	bodies := map[int]string{}
 	highest := 0
 
 	for label, issues := range byLabel {
@@ -345,24 +419,30 @@ func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
 			}
 
 			labels[number] = append(labels[number], label)
+
+			if body, ok := fields["body"].(string); ok {
+				bodies[number] = body
+			}
+
 			highest = maxInt(highest, number)
 		}
 	}
 
 	for number := 1; number <= highest; number++ {
-		_, err := emulator.CreateIssue(context.Background(), repo, labels[number], "Add x", "Do x")
+		body := bodies[number]
+		if body == "" {
+			body = "Do x"
+		}
+
+		_, err := emulator.CreateIssue(context.Background(), repo, labels[number], "Add x", body)
 		Expect(err).NotTo(HaveOccurred())
 	}
 }
 
-// acceptWrites makes sure issue n exists. Label and comment writes then succeed against the emulator.
-func (h *harness) acceptWrites(n string) {
+// acceptWrites makes sure issue 5 exists. Label and comment writes then succeed against the emulator.
+func (h *harness) acceptWrites() {
 	GinkgoHelper()
-
-	number, err := strconv.Atoi(n)
-	Expect(err).NotTo(HaveOccurred(), "issue number %q", n)
-
-	h.ensureIssue("o/r", number)
+	h.ensureIssue("o/r", 5)
 }
 
 // ensureIssue creates the filler issues below number and then number itself.

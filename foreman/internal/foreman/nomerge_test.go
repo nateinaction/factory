@@ -87,15 +87,15 @@ var _ = Describe("the merge path", func() {
 			}
 		},
 		Entry("poll", func(h *harness) {
-			h.queue(map[string][]map[string]any{"ready-for-agent-review": {{"number": 5}}})
-			h.acceptWrites("5")
+			h.queue(map[string][]map[string]any{workflow.LabelReview: {{"number": 5}}})
+			h.acceptWrites()
 			cfg, err := config.Load(h.deps.Settings.ConfigFile)
 			Expect(err).NotTo(HaveOccurred())
 			_, err = Poll(context.Background(), h.deps, cfg.Roles)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("start", func(h *harness) {
-			h.acceptWrites("5")
+			h.acceptWrites()
 			_, err := Start(context.Background(), h.deps, workflow.Reviewer, "o/r", 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
