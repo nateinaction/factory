@@ -74,8 +74,9 @@ factory_context_cap: 200000
 factory_max_output: 32000
 # Egress per agent role. An empty list is open egress, the default. A list limits that role to those
 # domains; foreman's loopback proxy refuses everything else and logs every domain the run contacts.
-# A restricted role must still name openrouter.ai, or it cannot reach its model. A repository cannot
-# change this.
+# Whatever the list says, a destination that is not publicly routable (loopback, private, shared,
+# link-local, metadata) is refused. A restricted role must still name openrouter.ai, or it cannot
+# reach its model. A repository cannot change this.
 factory_egress:
   planner: []
   researcher: []
