@@ -1,8 +1,12 @@
 package github_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -37,6 +41,33 @@ var _ = Describe("the client's source", func() {
 		return out
 	}
 
+	// literals lists every string a file defines, comments excluded: a comment may name a path or a
+	// state without building one.
+	literals := func(src string) []string {
+		GinkgoHelper()
+
+		file, err := parser.ParseFile(token.NewFileSet(), "source.go", src, 0)
+		Expect(err).NotTo(HaveOccurred())
+
+		var out []string
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+
+			value, err := strconv.Unquote(lit.Value)
+			Expect(err).NotTo(HaveOccurred())
+
+			out = append(out, value)
+
+			return true
+		})
+
+		return out
+	}
+
 	It("sends every request from one function", func() {
 		sent := 0
 
@@ -48,10 +79,19 @@ var _ = Describe("the client's source", func() {
 			"a second request path repeats the close, the size cap and the status check")
 	})
 
+	It("names the closed state with the workflow package's constant", func() {
+		for name, src := range sources() {
+			Expect(literals(src)).NotTo(ContainElement("closed"),
+				name+" spells the closed state itself; use workflow.Closed")
+		}
+	})
+
 	It("builds every repository path from the one builder", func() {
 		for name, src := range sources() {
-			Expect(src).NotTo(ContainSubstring(`"/repos`),
-				name+" builds an API path by hand; repoPath escapes every part for the whole client")
+			for _, literal := range literals(src) {
+				Expect(literal).NotTo(ContainSubstring("/repos"),
+					name+" builds an API path by hand; repoPath escapes every part for the whole client")
+			}
 		}
 	})
 })

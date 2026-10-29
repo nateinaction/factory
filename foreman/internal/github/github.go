@@ -38,8 +38,6 @@ const (
 	StateOpen = "open"
 	// StateAll is the query value that lists issues in any state.
 	StateAll = "all"
-	// stateClosed is the state value that closes an issue.
-	stateClosed = "closed"
 	// stateParam is the query parameter that filters by issue state.
 	stateParam = "state"
 	// sortParam is the query parameter that picks the sort field.
@@ -392,7 +390,7 @@ func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]work
 	open := make([]workflow.Issue, 0, len(blocking))
 
 	for _, b := range blocking {
-		if b.State != stateClosed {
+		if b.State != string(workflow.Closed) {
 			open = append(open, b)
 		}
 	}
@@ -430,7 +428,7 @@ func (c Client) UpdateIssueBody(ctx context.Context, ref workflow.IssueRef, body
 // CloseIssue closes an issue.
 func (c Client) CloseIssue(ctx context.Context, ref workflow.IssueRef) error {
 	return c.Call(ctx, http.MethodPatch, issuePath(ref),
-		issueStateRequest{State: stateClosed}, nil)
+		issueStateRequest{State: string(workflow.Closed)}, nil)
 }
 
 // endpointSupported reads the outcome of a call to an endpoint a repository may lack. A 404 means the
@@ -576,7 +574,7 @@ func (c Client) CloseResolved(ctx context.Context, ref workflow.IssueRef, t work
 	}
 
 	return c.Call(ctx, http.MethodPatch, issuePath(ref),
-		map[string]string{stateParam: stateClosed}, nil)
+		map[string]string{stateParam: string(workflow.Closed)}, nil)
 }
 
 // Comment posts a comment on an issue.

@@ -664,7 +664,7 @@ func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 			return false, fmt.Errorf("read blocker #%d: %w", number, err)
 		}
 
-		if blocker.State != "closed" {
+		if blocker.State != string(workflow.Closed) {
 			return true, nil
 		}
 	}
