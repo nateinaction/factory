@@ -199,8 +199,8 @@ model, context cap and compaction setting come from `factory_models`.
 Things to know:
 
 - The worker's dagu unit sets `NoNewPrivileges=false` so `sudo` can run.
-- foreman writes diagnostics to stderr as `log/slog` text records (leveled, with
-  key/value attributes). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
+- foreman writes diagnostics to stderr as `log/slog` JSON records, one object per line (`time`, `level`, `msg`, plus
+  the record's attributes as further keys). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
   output, never diagnostics.
 - `foreman --help` lists the verbs (`poll`, `start`, `run`, `status`, `logs`). Settings default to

@@ -53,6 +53,7 @@ func run() int {
 		Runner: proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
 		HTTP:   &http.Client{Timeout: github.HTTPTimeout},
 		Out:    os.Stdout,
+		Err:    os.Stderr,
 		Log:    logger,
 		Host:   host,
 		RunID:  os.Getenv("DAG_RUN_ID"),
@@ -98,9 +99,9 @@ func exit(logger *slog.Logger, cmd *cobra.Command, err error) int {
 	return ExitUsage
 }
 
-// newLogger builds the diagnostic logger: text records to out, leveled by FACTORY_LOG_LEVEL.
+// newLogger builds the diagnostic logger: JSON records, one per line, to out, leveled by FACTORY_LOG_LEVEL.
 func newLogger(out io.Writer) *slog.Logger {
-	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))}))
+	return slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: parseLevel(os.Getenv(logLevelEnv))}))
 }
 
 // parseLevel reads a level name, falling back to info when it is missing or unknown.

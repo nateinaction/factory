@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,6 +219,46 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(h.logs.String()).NotTo(ContainSubstring(testToken))
 		Expect(h.out.String()).NotTo(ContainSubstring(testToken))
+	})
+
+	DescribeTable("redacts every secret the run holds from both of the model's streams",
+		func(secret string, onStdout bool) {
+			line := "echo " + secret + " done\n"
+			if onStdout {
+				h.answerOpencodeStreams(line, "")
+			} else {
+				h.answerOpencodeStreams("", line)
+			}
+
+			// The run's outcome is not under test, only what reached a log.
+			_, _ = h.runImpl(testAgent())
+			Expect(h.logs.String()).NotTo(ContainSubstring(secret))
+			Expect(h.out.String()).NotTo(ContainSubstring(secret))
+			Expect(h.errOut.String()).NotTo(ContainSubstring(secret))
+			Expect(h.logs.String() + h.errOut.String()).To(ContainSubstring("[redacted]"))
+		},
+		Entry("OpenRouter key on stdout", "or-key", true),
+		Entry("OpenRouter key on stderr", "or-key", false),
+		Entry("proxy token on stdout", testToken, true),
+		Entry("proxy token on stderr", testToken, false),
+		Entry("read-only GitHub token on stdout", "read-only-token-implementer", true),
+		Entry("read-only GitHub token on stderr", "read-only-token-implementer", false),
+	)
+
+	It("redacts a secret that arrives split across two stderr writes", func() {
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if !isModel(c) {
+				return base(c)
+			}
+
+			_, _ = io.WriteString(c.Stderr, "token run-prox")
+			_, _ = io.WriteString(c.Stderr, "y-token end\n")
+
+			return "", nil
+		})
+		_, _ = h.runImpl(testAgent())
+		Expect(h.errOut.String()).NotTo(ContainSubstring("run-proxy-token"))
+		Expect(h.errOut.String()).To(ContainSubstring("token [redacted] end"))
 	})
 
 	It("mints a fresh random proxy token for each run", func() {
