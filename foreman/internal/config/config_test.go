@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -97,6 +98,7 @@ var _ = Describe("Load", func() {
 	load := func(agents map[string]config.AgentConfig) error {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": agents, "retro": retro,
+			"dead_run_margin_minutes": 10,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = config.Load(writeConfig(raw))
@@ -132,12 +134,35 @@ var _ = Describe("Load", func() {
 	It("requires a retro step cap and deadline", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
-			"retro": config.Budget{Steps: 0, DeadlineMinutes: 0},
+			"retro": config.Budget{Steps: 0, DeadlineMinutes: 0}, "dead_run_margin_minutes": 10,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = config.Load(writeConfig(raw))
 		Expect(err).To(MatchError(ContainSubstring("retro")))
+	})
+
+	It("requires a positive dead-run margin", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"retro": retro, "dead_run_margin_minutes": 0,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = config.Load(writeConfig(raw))
+		Expect(err).To(MatchError(ContainSubstring("dead-run margin")))
+	})
+
+	It("reads the dead-run margin as a duration", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"retro": retro, "dead_run_margin_minutes": 10,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg, err := config.Load(writeConfig(raw))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.DeadRunMargin()).To(Equal(10 * time.Minute))
 	})
 
 	DescribeTable("rejects a malformed config",

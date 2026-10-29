@@ -14,4 +14,4 @@ Run typechecking regularly, single test files regularly, and the full test suite
 
 Once done, call the Skill tool with "code-review" to review the work.
 
-Commit your work to the current branch. Do not push and do not open a pull request: foreman does both, from the run's output file. Write that file as the run's prompt describes, including the commit message and, on a first run, the pull request title and body. On a review round it also carries a reply per finding.
+Leave your changes uncommitted in the clone. Do not commit, push, comment or open a pull request: foreman does all of it, from the run's output file. Write that file as the run's prompt describes, including the commit message and, on a first run, the pull request title and body. On a review round it also carries a reply per finding, saying `fixed` or `contested` with a reason.

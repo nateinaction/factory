@@ -91,7 +91,7 @@ var _ = Describe("the merge path", func() {
 			h.acceptWrites()
 			cfg, err := config.Load(h.deps.Settings.ConfigFile)
 			Expect(err).NotTo(HaveOccurred())
-			_, err = Poll(context.Background(), h.deps, cfg.Roles)
+			_, err = Poll(context.Background(), h.deps, cfg)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("start", func(h *harness) {
@@ -102,6 +102,7 @@ var _ = Describe("the merge path", func() {
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
+			h.implementerWrites(firstRunOutput)
 			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),

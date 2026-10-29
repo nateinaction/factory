@@ -43,7 +43,7 @@ const (
 	MaxReviewRounds = 3
 )
 
-// Exit codes of `run reviewer`, read by `start reviewer`.
+// Exit codes of `run <agent role>`, read by `start <agent role>`.
 const (
 	// ReviewClean means no high or medium findings.
 	ReviewClean = 0
@@ -51,6 +51,9 @@ const (
 	ReviewFindings = 10
 	// ReviewExhausted means findings remain after MaxReviewRounds rounds.
 	ReviewExhausted = 11
+	// ExitReported means the factory half already posted the reason on the issue, so `start` only
+	// records the failure and adds nothing but the transition marker.
+	ExitReported = 12
 )
 
 // Labels of the handoff channel. Every factory label is prefixed "factory:".
@@ -659,6 +662,17 @@ func BranchName(number int) string {
 	return fmt.Sprintf("agent/issue-%d", number)
 }
 
+// PRBody keeps the pull request body the model wrote and makes sure the pull request links the
+// issue, so merging it closes the issue.
+func PRBody(number int, body string) string {
+	link := fmt.Sprintf("#%d", number)
+	if strings.Contains(body, link) {
+		return body
+	}
+
+	return strings.TrimSpace(body) + "\n\nCloses " + link
+}
+
 // Truncate keeps at most n characters; none when n is not positive.
 func Truncate(s string, n int) string {
 	if n <= 0 {
@@ -681,58 +695,9 @@ func ReviewMarker(sha string) string {
 // ReviewMarkerPrefix starts every review foreman posts.
 const ReviewMarkerPrefix = "<!-- agent-review:"
 
-// Finding is one review finding.
-type Finding struct {
-	Severity Severity
-	Title    string
-	Detail   string
-	Location string
-}
-
-// ParseReview is strict: anything malformed is an error, so a bad review can never read as an approval.
-func ParseReview(text string) (string, []Finding, error) {
-	var raw struct {
-		Summary  *string `json:"summary"`
-		Findings *[]struct {
-			Severity *string `json:"severity"`
-			Title    *string `json:"title"`
-			Detail   *string `json:"detail"`
-			Location *string `json:"location"`
-		} `json:"findings"`
-	}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return "", nil, fmt.Errorf("review is not valid: %w", err)
-	}
-
-	if raw.Summary == nil || raw.Findings == nil {
-		return "", nil, errors.New("review needs a string summary and a list of findings")
-	}
-
-	findings := make([]Finding, 0, len(*raw.Findings))
-	for _, f := range *raw.Findings {
-		if f.Severity == nil || f.Title == nil || f.Detail == nil {
-			return "", nil, errors.New("finding needs a severity, a title and a detail")
-		}
-
-		sev := Severity(*f.Severity)
-		if !slices.Contains(Severities(), sev) {
-			return "", nil, fmt.Errorf("unknown severity: %q", *f.Severity)
-		}
-
-		loc := ""
-		if f.Location != nil {
-			loc = *f.Location
-		}
-
-		findings = append(findings, Finding{Severity: sev, Title: *f.Title, Detail: *f.Detail, Location: loc})
-	}
-
-	return *raw.Summary, findings, nil
-}
-
 // Blocking keeps the findings that must be fixed before the pull request is accepted.
-func Blocking(findings []Finding) []Finding {
-	var out []Finding
+func Blocking(findings []ReviewFinding) []ReviewFinding {
+	var out []ReviewFinding
 
 	for _, f := range findings {
 		if f.Severity.Blocks() {
@@ -741,39 +706,6 @@ func Blocking(findings []Finding) []Finding {
 	}
 
 	return out
-}
-
-// RenderReview is the review body posted on the pull request.
-func RenderReview(sha, summary string, findings []Finding) string {
-	lines := []string{ReviewMarker(sha), "## Agent review", "", summary}
-
-	for _, sev := range Severities() {
-		var group []string
-
-		for _, f := range findings {
-			if f.Severity != sev {
-				continue
-			}
-
-			loc := ""
-			if f.Location != "" {
-				loc = " (`" + f.Location + "`)"
-			}
-
-			group = append(group, fmt.Sprintf("- **%s**%s: %s", f.Title, loc, f.Detail))
-		}
-
-		if len(group) > 0 {
-			lines = append(lines, "", fmt.Sprintf("### %s (%d)", sev.title(), len(group)))
-			lines = append(lines, group...)
-		}
-	}
-
-	if len(findings) == 0 {
-		lines = append(lines, "", "No findings.")
-	}
-
-	return Truncate(strings.Join(lines, "\n"), CommentLimitChars)
 }
 
 // StartsWith keeps the items whose body starts with prefix, in API order.

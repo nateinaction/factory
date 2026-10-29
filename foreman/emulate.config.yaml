@@ -21,6 +21,14 @@ tokens:
     scopes:
       - repo
   # Tokens the fake `github-app-token` helper mints, one per agent role.
+  minted-token-planner:
+    login: factory-planner
+    scopes:
+      - repo
+  minted-token-researcher:
+    login: factory-researcher
+    scopes:
+      - repo
   minted-token-implementer:
     login: factory-implementer
     scopes:
@@ -36,6 +44,10 @@ github:
       name: Repository Owner
     - login: factory
       name: Factory
+    - login: factory-planner
+      name: Factory Planner
+    - login: factory-researcher
+      name: Factory Researcher
     - login: factory-implementer
       name: Factory Implementer
     - login: factory-reviewer

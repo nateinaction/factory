@@ -44,6 +44,8 @@ LIMITS = {
     "curator": (60, 30),
 }
 RETRO = (20, 15)
+# The dead-run margin, in minutes, past an agent role's deadline (the spec's "Other limits").
+DEAD_RUN_MARGIN = 10
 
 OUTPUT_FILE = {
     "planner": "planner-output.json",
@@ -178,6 +180,7 @@ def main(out: str) -> None:
 
     assert_no_ask()
     assert CFG["retro"] == {"steps": RETRO[0], "deadline_minutes": RETRO[1]}, "retro budget"
+    assert CFG["dead_run_margin_minutes"] == DEAD_RUN_MARGIN, "dead-run margin"
 
 
 main(sys.argv[1])

@@ -44,6 +44,10 @@ expect() {
 
 expect "implementer mints its own repo-scoped token" 0 "tok-1-7-r" token --app implementer --repo o/r
 expect "reviewer mints its own repo-scoped token" 0 "tok-2-7-r" token --app reviewer --repo o/r
+expect "a read-only token is restricted to read permissions" 0 "tok-1-7-r-ro" \
+  token --app implementer --repo o/r --read-only
+expect "a read-only token is still one repository" 0 "tok-2-7-r-ro" \
+  token --app reviewer --repo o/r --read-only
 expect "an App not installed on the repo mints nothing" 1 "" token --app implementer --repo o/q
 expect "an App without credentials mints nothing, and takes no other App's" 1 "" token --app planner --repo o/r
 expect "an app name cannot climb out of the config dir" 1 "" token --app ../implementer --repo o/r

@@ -35,7 +35,8 @@ var _ = Describe("Run", func() {
 			h.writeToken(workflow.Implementer, "repo-token\n")
 		})
 
-		It("on a first run clones, runs the model, force-pushes, opens the PR and posts the retro", func() {
+		It("commits with hooks disabled, pushes, opens the PR and posts the retro", func() {
+			h.implementerWrites(firstRunOutput)
 			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
 			Expect(run(workflow.Implementer)).To(BeZero())
 
@@ -51,9 +52,15 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.implOut()))
 			h.expectNoSecretInFiles(work, "or-key")
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(joined(oc[0])).NotTo(ContainSubstring("Review:"), "first run carries review feedback")
+
+			Expect(h.runner.find("add -A")).To(HaveLen(1))
+			commit := h.runner.find("commit -m Add x")
+			Expect(commit).To(HaveLen(1))
+			Expect(joined(commit[0])).To(ContainSubstring("core.hooksPath=/dev/null"), "hooks left enabled")
 
 			push := h.runner.find("noreply.github.com push")
 			Expect(push).To(HaveLen(1))
@@ -62,7 +69,7 @@ var _ = Describe("Run", func() {
 
 			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(ConsistOf(And(
 				ContainSubstring(`"title":"Add x"`), ContainSubstring(`"head":"agent/issue-5"`),
-				ContainSubstring(`"base":"main"`), ContainSubstring(`Closes #5\n\nOpened by the factory agent.`),
+				ContainSubstring(`"base":"main"`), ContainSubstring(`"body":"Closes #5"`),
 			)))
 			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ContainElement(
 				ContainSubstring("Pull request: " + prURL)))
@@ -95,6 +102,7 @@ var _ = Describe("Run", func() {
 
 				return base(c)
 			})
+			h.implementerWrites(firstRunOutput)
 			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
 
 			Expect(run(workflow.Implementer)).To(BeZero())
@@ -102,7 +110,92 @@ var _ = Describe("Run", func() {
 				ContainSubstring("<!-- factory:retro issue=5 role=implementer key=sha-new -->")))
 		})
 
+		It("gives the model a read-only token of its own App, scoped to the repository", func() {
+			h.implementerWrites(firstRunOutput)
+			Expect(run(workflow.Implementer)).To(BeZero())
+
+			oc := h.runner.find("opencode run --agent implementer")
+			Expect(oc).NotTo(BeEmpty())
+			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-implementer"))
+
+			mint := h.runner.find("app-token", " token ", "--read-only")
+			Expect(mint).To(HaveLen(1))
+			Expect(appOf(mint[0])).To(Equal(string(workflow.Implementer)))
+			Expect(mint[0].Argv[len(mint[0].Argv)-3:]).To(Equal([]string{"--repo", "o/r", "--read-only"}))
+			h.expectLeakFree("repo-token", "read-only-token", "or-key")
+		})
+
+		It("rejects a file with an unknown or labelled field, applying nothing", func() {
+			h.implementerWrites(`{"version":1,"commit_message":"Add x",` +
+				`"pr_title":"Add x","pr_body":"Closes #5","labels":["factory:done"]}`)
+
+			code, err := run(workflow.Implementer)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+
+			comments := h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")
+			Expect(comments).To(HaveLen(1), "the errors go in one comment")
+			Expect(comments[0]).To(And(
+				ContainSubstring("output file was rejected"), ContainSubstring(`unknown field \"labels\"`),
+			))
+			Expect(h.runner.find("commit -m")).To(BeEmpty(), "committed a rejected file")
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty(), "pushed a rejected file")
+			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty())
+		})
+
+		It("rejects a factory marker in the model's text", func() {
+			h.implementerWrites(strings.Replace(firstRunOutput, "Add x", "Add x <!-- factory:handoff -->", 1))
+
+			code, err := run(workflow.Implementer)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+				ContainSubstring("carries a factory marker")))
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+		})
+
+		It("rejects a run whose model wrote no output file", func() {
+			code, err := run(workflow.Implementer)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+				ContainSubstring("cannot be read")))
+			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+		})
+
+		It("answers the review's findings on the pull request", func() {
+			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
+				[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
+			h.implementerWrites(reworkOutput)
+
+			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+
+			pr, _ := h.pullRequest()
+			quotes := h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/issues/%d/comments", pr))
+			Expect(quotes).To(ConsistOf(And(
+				ContainSubstring(workflow.RepliesMarker("sha-head")),
+				ContainSubstring("- **fixed** `bug`: fixed it"),
+			)))
+		})
+
+		It("changes nothing when the same output is applied twice", func() {
+			h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
+				[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
+			h.implementerWrites(reworkOutput)
+
+			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+
+			pr, _ := h.pullRequest()
+			quotes := h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/issues/%d/comments", pr))
+			Expect(quotes).To(HaveLen(1), "posted the replies twice")
+			Expect(h.gh.Summary()).To(ContainElement(
+				ContainSubstring("PATCH /repos/o/r/issues/comments/")), "did not update the replies")
+			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty(), "opened a second pull request")
+		})
+
 		It("fails without new commits, publishing nothing", func() {
+			h.implementerWrites(firstRunOutput)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "rev-list --count") {
 					return "0\n", nil
@@ -119,6 +212,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("logs a failed retro but does not fail the run", func() {
+			h.implementerWrites(firstRunOutput)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if strings.Contains(joined(c), "--session") {
 					return "", errors.New("retro blew up")
@@ -131,6 +225,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("logs an invalid retro.json and posts nothing", func() {
+			h.implementerWrites(firstRunOutput)
 			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), `{"version":1,"findings":[{"target":"nope"}]}`)
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.logs.String()).To(And(
@@ -166,6 +261,7 @@ var _ = Describe("Run", func() {
 
 		It("drops a retro over its own step cap and leaves the run's outcome alone", func() {
 			h.answerOpencode(okStream("ses_1"), stepsStream(testRetro().Steps))
+			h.implementerWrites(firstRunOutput)
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
@@ -173,6 +269,8 @@ var _ = Describe("Run", func() {
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {
+			h.implementerWrites(firstRunOutput)
+
 			short := config.Budget{Steps: testRetro().Steps}
 
 			code, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), short, 5)
@@ -198,6 +296,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("clears stale scratch from an earlier run", func() {
+			h.implementerWrites(firstRunOutput)
 			Expect(os.MkdirAll(h.deps.Settings.WorkRoot, 0o700)).To(Succeed())
 			Expect(os.WriteFile(h.retroOut(workflow.Implementer), []byte(validRetro), 0o600)).To(Succeed())
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
@@ -209,6 +308,7 @@ var _ = Describe("Run", func() {
 		h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
 			[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
 		h.writeToken(workflow.Implementer, "repo-token")
+		h.implementerWrites(reworkOutput)
 		Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
 
 		_, prURL := h.pullRequest()
@@ -218,6 +318,7 @@ var _ = Describe("Run", func() {
 		Expect(oc).NotTo(BeEmpty())
 		Expect(joined(oc[0])).To(
 			ContainSubstring("Review:\n"+workflow.ReviewMarker("old")+"\nFIX THE THING"), "feedback missing")
+		Expect(joined(oc[0])).To(ContainSubstring(`"replies"`), "the review round was not asked to answer")
 
 		push := h.runner.find("noreply.github.com push")
 		Expect(push).To(HaveLen(1))
@@ -232,7 +333,7 @@ var _ = Describe("Run", func() {
 	})
 
 	Describe("the Reviewer", func() {
-		It("approves a clean review of the head commit, then posts a retro keyed by its head SHA", func() {
+		It("approves a clean review of the head commit, posts its retro and asks a human to merge", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
 			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
@@ -241,6 +342,11 @@ var _ = Describe("Run", func() {
 				ContainSubstring(`"event":"APPROVE"`), ContainSubstring(`"commit_id":"sha-head"`),
 				ContainSubstring("<!-- agent-review:sha-head -->"),
 			)))
+
+			pr, _ := h.pullRequest()
+			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(
+				ConsistOf(ContainSubstring(`"reviewers":["o"]`)), "no human was asked to merge")
+
 			work := filepath.Join(h.deps.Settings.WorkRoot, "review-5")
 			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
 			Expect(h.runner.find("fetch origin agent/issue-5")).To(HaveLen(1))
@@ -250,16 +356,17 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
+			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-reviewer"))
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
 
-			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "review-5.spec.md"))
+			spec, err := os.ReadFile(filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", "issue.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))
 
 			Expect(h.retroComments()).To(ConsistOf(
 				ContainSubstring("<!-- factory:retro issue=5 role=reviewer key=sha-head -->")))
-			h.expectLeakFree("repo-token", "or-key")
+			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
 		It("keys the retro by the PR head SHA it reviewed", func() {
@@ -338,13 +445,40 @@ var _ = Describe("Run", func() {
 			Expect(h.retroComments()).To(BeEmpty(), "added a second retro comment")
 		})
 
-		It("sends findings back as a comment review", func() {
+		It("requests changes as a native review of the head commit", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
-				ContainSubstring(`"event":"COMMENT"`), ContainSubstring("### High (1)"),
+				ContainSubstring(`"event":"REQUEST_CHANGES"`), ContainSubstring("### High (1)"),
 			)))
+		})
+
+		It("rejects a high finding without REQUEST_CHANGES, posting no review", func() {
+			h.reviewerGH(nil)
+			h.opencodeWrites("code-review", h.reviewOut(),
+				`{"version":1,"verdict":"APPROVE","summary":"s","findings":[`+
+					`{"severity":"high","path":"a.go","claim":"bug"}]}`)
+
+			code, err := run(workflow.Reviewer)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+				ContainSubstring("a high or medium finding needs REQUEST_CHANGES")))
+		})
+
+		It("rejects REQUEST_CHANGES without findings", func() {
+			h.reviewerGH(nil)
+			h.opencodeWrites("code-review", h.reviewOut(),
+				`{"version":1,"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}`)
+
+			code, err := run(workflow.Reviewer)
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(err).To(HaveOccurred())
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+				ContainSubstring("REQUEST_CHANGES needs at least one finding")))
 		})
 
 		It("stops after the maximum number of rounds", func() {
@@ -385,6 +519,7 @@ var _ = Describe("Run", func() {
 			Expect(os.WriteFile(outside, []byte(cleanReview), 0o600)).To(Succeed())
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if c.Argv[0] == "opencode" && strings.Contains(joined(c), "code-review") {
+					Expect(os.MkdirAll(filepath.Dir(h.reviewOut()), 0o700)).To(Succeed())
 					Expect(os.Symlink(outside, h.reviewOut())).To(Succeed())
 				}
 
@@ -392,13 +527,13 @@ var _ = Describe("Run", func() {
 			})
 
 			code, err := run(workflow.Reviewer)
-			Expect(err).To(MatchError(ContainSubstring("read review")))
+			Expect(err).To(MatchError(ContainSubstring("cannot be read")))
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
 		})
 
 		It("fails without an open pull request", func() {
-			h.ensureIssue("o/r", 5)
+			h.ensureIssue(5)
 			h.writeToken(workflow.Reviewer, "t")
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(MatchError(ContainSubstring("no open pull request for agent/issue-5")))

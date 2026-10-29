@@ -4,6 +4,10 @@
   github-app-token token --app A --repo OWNER/NAME
         print a fresh, uncached token of App A, limited to that repository and
         carrying the permissions the App was granted
+  github-app-token token --app A --repo OWNER/NAME --read-only
+        the same token, restricted to read Contents, Issues, Pull requests and
+        Metadata: what the model inside a run gets as GH_TOKEN, so it can read
+        the issue and the pull request but never write
   github-app-token repositories --app A
         print OWNER/NAME for every repository App A is installed on
 
@@ -31,6 +35,13 @@ REPO_RE = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 PAGE_SIZE = 100
 MAX_PAGES = 10
 MAX_INSTALLATIONS = 50
+# The model reads the issue, its comments and the pull request; it never writes.
+READ_ONLY = {
+    "contents": "read",
+    "issues": "read",
+    "metadata": "read",
+    "pull_requests": "read",
+}
 
 
 def usage():
@@ -43,14 +54,23 @@ def b64(b):
 
 def parse(argv):
     """Return (command, {flag: value}) for `cmd --flag value ...`; anything else is a usage error."""
-    if not argv or len(argv) % 2 == 0:
+    if not argv:
         usage()
-    flags = {}
-    for flag, value in zip(argv[1::2], argv[2::2]):
-        if not flag.startswith("--") or flag in flags:
+    cmd, rest, flags, i = argv[0], argv[1:], {}, 0
+    while i < len(rest):
+        flag = rest[i]
+        if not flag.startswith("--") or flag[2:] in flags:
             usage()
-        flags[flag[2:]] = value
-    return argv[0], flags
+        # --read-only is a switch, so it carries no value.
+        if flag == "--read-only":
+            flags["read-only"] = "1"
+            i += 1
+            continue
+        if i + 1 >= len(rest):
+            usage()
+        flags[flag[2:]] = rest[i + 1]
+        i += 2
+    return cmd, flags
 
 
 def app_dir(app):
@@ -86,19 +106,21 @@ def call(method, path, bearer, body=None):
         return json.load(r)
 
 
-def installation_token(app, installation_id, repo_name=None):
-    body = None if repo_name is None else {"repositories": [repo_name]}
-    r = call("POST", f"/app/installations/{installation_id}/access_tokens", jwt(app), body)
+def installation_token(app, installation_id, repo_name=None, read_only=False):
+    body = {} if repo_name is None else {"repositories": [repo_name]}
+    if read_only:
+        body["permissions"] = READ_ONLY
+    r = call("POST", f"/app/installations/{installation_id}/access_tokens", jwt(app), body or None)
     return r["token"]
 
 
-def repo_token(app, repo):
+def repo_token(app, repo, read_only=False):
     """A one-hour token for a single repository, never cached: a cache file would outlive the hour."""
     m = REPO_RE.match(repo)
     if not m or ".." in repo:
         raise ValueError(f"--repo takes OWNER/NAME, got {repo!r}")
     inst = call("GET", f"/repos/{repo}/installation", jwt(app))
-    return installation_token(app, inst["id"], m.group(2))
+    return installation_token(app, inst["id"], m.group(2), read_only)
 
 
 def installed_repositories(app):
@@ -127,8 +149,8 @@ def installation_repositories(token):
 
 def main():
     cmd, flags = parse(sys.argv[1:])
-    if cmd == "token" and set(flags) == {"app", "repo"}:
-        print(repo_token(flags["app"], flags["repo"]))
+    if cmd == "token" and set(flags) <= {"app", "repo", "read-only"} and {"app", "repo"} <= set(flags):
+        print(repo_token(flags["app"], flags["repo"], "read-only" in flags))
     elif cmd == "repositories" and set(flags) == {"app"}:
         for name in installed_repositories(flags["app"]):
             print(name)

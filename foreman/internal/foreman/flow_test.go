@@ -22,7 +22,7 @@ var _ = Describe("the Implementer and Reviewer path", func() {
 
 		// The poll routes the claim to the Implementer's run.
 		Expect(Poll(context.Background(), h.deps,
-			[]workflow.Role{workflow.Implementer, workflow.Reviewer})).Error().NotTo(HaveOccurred())
+			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
 		Expect(h.labels(5)).To(ContainElement(workflow.LabelImplementing))
 
 		// The Implementer's run opens the pull request and hands off to the Reviewer.
@@ -36,7 +36,7 @@ var _ = Describe("the Implementer and Reviewer path", func() {
 		// The review queue claims it, then the Reviewer's verdict closes the loop.
 		h.out.Reset()
 		Expect(Poll(context.Background(), h.deps,
-			[]workflow.Role{workflow.Implementer, workflow.Reviewer})).Error().NotTo(HaveOccurred())
+			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
 		Expect(h.labels(5)).To(ContainElement(workflow.LabelReviewing))
 
 		h.sudoExit(workflow.ReviewClean)

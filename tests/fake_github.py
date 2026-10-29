@@ -51,8 +51,17 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.split("/")
         if len(parts) == 5 and parts[1:3] == ["app", "installations"] and parts[4] == "access_tokens":
             app = iss(self.headers["Authorization"])
-            scope = ",".join(body["repositories"]) if body else "all"
-            return self.reply(201, {"token": f"tok-{app}-{parts[3]}-{scope}"})
+            scope = ",".join(body["repositories"]) if body and "repositories" in body else "all"
+            suffix = ""
+            permissions = (body or {}).get("permissions")
+            if permissions is not None:
+                # The model's token must be read-only on the four permissions the spec names.
+                if any(v != "read" for v in permissions.values()) or set(permissions) != {
+                    "contents", "issues", "metadata", "pull_requests",
+                }:
+                    return self.reply(400, {"message": "not a read-only token request"})
+                suffix = "-ro"
+            return self.reply(201, {"token": f"tok-{app}-{parts[3]}-{scope}{suffix}"})
         self.reply(500, {"message": "unexpected " + self.path})
 
     def log_message(self, *args):

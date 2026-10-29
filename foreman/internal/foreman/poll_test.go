@@ -28,7 +28,7 @@ var _ = Describe("Poll", func() {
 
 	// poll polls for the Implementer's and the Reviewer's queues.
 	poll := func() (int, error) {
-		return Poll(context.Background(), h.deps, []workflow.Role{workflow.Implementer, workflow.Reviewer})
+		return Poll(context.Background(), h.deps, pollConfig(workflow.Implementer, workflow.Reviewer))
 	}
 
 	// expectNothingReady fails the spec unless the poll found nothing and said so.
@@ -229,7 +229,7 @@ var _ = Describe("Poll", func() {
 					defer GinkgoRecover()
 					defer wg.Done()
 
-					_, err := Poll(context.Background(), d, []workflow.Role{workflow.Implementer, workflow.Reviewer})
+					_, err := Poll(context.Background(), d, pollConfig(workflow.Implementer, workflow.Reviewer))
 					Expect(err).NotTo(HaveOccurred())
 				}(d)
 			}
