@@ -155,7 +155,7 @@ var _ = Describe("the Planner", func() {
 		Expect(code).To(Equal(workflow.ExitReported))
 		Expect(err).To(HaveOccurred())
 
-		comments := h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")
+		comments := h.reportComments()
 		Expect(comments).To(HaveLen(1))
 		Expect(comments[0]).To(ContainSubstring("output file was rejected"))
 		Expect(h.labels(5)).NotTo(ContainElement(workflow.LabelWaiting))

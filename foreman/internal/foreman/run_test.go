@@ -161,10 +161,10 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
 
-			comments := h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")
+			comments := h.reportComments()
 			Expect(comments).To(HaveLen(1), "the errors go in one comment")
 			Expect(comments[0]).To(And(
-				ContainSubstring("output file was rejected"), ContainSubstring(`unknown field \"labels\"`),
+				ContainSubstring("output file was rejected"), ContainSubstring(`unknown field "labels"`),
 			))
 			Expect(h.runner.find("commit -m")).To(BeEmpty(), "committed a rejected file")
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty(), "pushed a rejected file")
@@ -177,8 +177,7 @@ var _ = Describe("Run", func() {
 			code, err := run(workflow.Implementer)
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
-				ContainSubstring("carries a factory marker")))
+			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("carries a factory marker")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
 		})
 
@@ -186,8 +185,7 @@ var _ = Describe("Run", func() {
 			code, err := run(workflow.Implementer)
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
-				ContainSubstring("cannot be read")))
+			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("cannot be read")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
 		})
 
@@ -270,6 +268,44 @@ var _ = Describe("Run", func() {
 			Expect(code).NotTo(BeZero())
 			Expect(h.retroComments()).To(ConsistOf(
 				ContainSubstring("<!-- factory:retro issue=5 role=implementer key=sha-head -->")))
+		})
+
+		It("moves the issue to review before its retro starts", func() {
+			h.implementerWrites(firstRunOutput)
+			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+
+			var labelsAtRetro []string
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) && strings.Contains(joined(c), "--session") {
+					labelsAtRetro = h.factoryLabels(5)
+				}
+
+				return base(c)
+			})
+
+			Expect(run(workflow.Implementer)).To(BeZero())
+			Expect(labelsAtRetro).To(ConsistOf(workflow.LabelReview), "the retro held the issue's state")
+		})
+
+		It("moves a failed run to failed before its retro starts", func() {
+			h.answerOpencode(errStream("APIError", 500))
+			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+
+			var labelsAtRetro []string
+
+			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+				if isModel(c) && strings.Contains(joined(c), "--session") {
+					labelsAtRetro = h.factoryLabels(5)
+				}
+
+				return base(c)
+			})
+
+			code, err := run(workflow.Implementer)
+			Expect(err).To(HaveOccurred())
+			Expect(code).NotTo(BeZero())
+			Expect(labelsAtRetro).To(ConsistOf(workflow.LabelFailed), "the retro held the issue's state")
 		})
 
 		DescribeTable("skips the retro when the failure leaves nothing to resume",
@@ -605,7 +641,7 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+			Expect(h.reportComments()).To(ConsistOf(
 				ContainSubstring("a high or medium finding needs REQUEST_CHANGES")))
 		})
 
@@ -618,7 +654,7 @@ var _ = Describe("Run", func() {
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
 			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
+			Expect(h.reportComments()).To(ConsistOf(
 				ContainSubstring("REQUEST_CHANGES needs at least one finding")))
 		})
 
@@ -772,7 +808,7 @@ var _ = Describe("Run", func() {
 			Expect(h.runner.find("noreply.github.com push")).To(HaveLen(2))
 			Expect(h.runner.find("--force")).To(BeEmpty(), "forced over an existing findings branch")
 
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(HaveLen(1), "posted twice")
+			Expect(h.reportComments()).To(HaveLen(1), "posted twice")
 			Expect(h.gh.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
 			Expect(h.gh.Bodies("PATCH", "/repos/o/r/issues/6")).To(HaveLen(1), "appended the decision twice")
 		})
@@ -783,8 +819,7 @@ var _ = Describe("Run", func() {
 			code, err := run(workflow.Researcher)
 			Expect(code).To(Equal(workflow.ExitReported))
 			Expect(err).To(HaveOccurred())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
-				ContainSubstring("output file was rejected")))
+			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("output file was rejected")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
 		})
 

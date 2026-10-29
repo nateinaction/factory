@@ -1009,7 +1009,7 @@ func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, r
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	r := ar.route(cfg, ref, factoryExit(ctx, d, cfg, role, ref))
+	r := ar.route(cfg.ReviewRoundLimit, ref, factoryExit(ctx, d, cfg, role, ref))
 
 	switch {
 	case r.err != nil:
@@ -1040,7 +1040,9 @@ func failureText(role workflow.Role, code int) string {
 }
 
 // finishRun records a run's outcome. A closed destination closes the ticket instead of labelling it; a
-// mint failure always falls back to factory:failed, reported by an App that is still installed.
+// mint failure always falls back to factory:failed, reported by an App that is still installed. The
+// factory half applies it before its retro, and `start` applies it again afterwards as the safety net
+// for a factory half that never returned; a transition already recorded is not recorded again.
 func finishRun(
 	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
 ) error {
@@ -1135,6 +1137,9 @@ func runAsFactory(
 		Argv: []string{
 			"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo.String(), strconv.Itoa(number),
 		},
+		// The factory half records the same transition markers, so both halves must name one run.
+		// The sudoers rule keeps this variable for that reason.
+		Env:     map[string]string{"DAG_RUN_ID": d.runID()},
 		Timeout: ceiling,
 	})
 

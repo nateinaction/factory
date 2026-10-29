@@ -49,6 +49,8 @@ var _ = Describe("Start", func() {
 			Expect(sudo[0].Argv).To(Equal([]string{
 				"sudo", "-n", "-u", "factory", "/usr/local/bin/foreman", "run", "implementer", "o/r", "5",
 			}))
+			Expect(sudo[0].Env).To(HaveKeyWithValue("DAG_RUN_ID", "run-1"),
+				"the factory half records the same markers, so it must name the same run")
 			Expect(*seen).To(Equal(factoryHalf{token: "minted-token-implementer", mode: 0o640}))
 			expectTokenRemoved(workflow.Implementer)
 

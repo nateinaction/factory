@@ -497,15 +497,22 @@ func (c Client) UpsertComment(ctx context.Context, ref workflow.IssueRef, marker
 }
 
 // CloseResolved records a resolved ticket's final transition, releases its claim and closes it. A
-// closed ticket carries no factory label.
+// closed ticket carries no factory label. A transition already recorded is not recorded again.
 func (c Client) CloseResolved(ctx context.Context, ref workflow.IssueRef, t workflow.Transition) error {
 	marker, err := workflow.RenderTransition(t)
 	if err != nil {
 		return err
 	}
 
-	if err := c.Comment(ctx, ref, marker); err != nil {
+	mine, err := c.recordedMarker(ctx, ref, marker)
+	if err != nil {
 		return err
+	}
+
+	if mine == 0 {
+		if err := c.Comment(ctx, ref, marker); err != nil {
+			return err
+		}
 	}
 
 	if err := c.removeLabel(ctx, ref, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
@@ -574,7 +581,9 @@ func (c Client) Claim(ctx context.Context, ref workflow.IssueRef, t workflow.Tra
 }
 
 // Finish posts the transition marker and its outcome, swaps src for dst, and tolerates a label a
-// person already moved. It returns the comment's id, which a Planner retro is keyed by.
+// person already moved. It returns the comment's id, which a Planner retro is keyed by. A transition
+// already recorded is not recorded again, so a run can settle before its retro and `start` can still
+// apply the same transition afterwards.
 func (c Client) Finish(
 	ctx context.Context, ref workflow.IssueRef, t workflow.Transition, text string,
 ) (int64, error) {
@@ -583,14 +592,20 @@ func (c Client) Finish(
 		return 0, err
 	}
 
-	body := marker
-	if text != "" {
-		body += "\n\n" + text
-	}
-
-	comment, err := c.CommentReturningID(ctx, ref, body)
+	id, err := c.recordedMarker(ctx, ref, marker)
 	if err != nil {
 		return 0, err
+	}
+
+	if id == 0 {
+		body := marker
+		if text != "" {
+			body += "\n\n" + text
+		}
+
+		if id, err = c.CommentReturningID(ctx, ref, body); err != nil {
+			return 0, err
+		}
 	}
 
 	if err := c.removeLabel(ctx, ref, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
@@ -598,7 +613,23 @@ func (c Client) Finish(
 		return 0, err
 	}
 
-	return comment, c.AddLabel(ctx, ref, string(t.To))
+	return id, c.AddLabel(ctx, ref, string(t.To))
+}
+
+// recordedMarker is the id of the comment that already carries marker, or 0 when none does. A
+// transition found already recorded still has its labels applied, so a crash between the comment and
+// the labels is repaired rather than stranded.
+func (c Client) recordedMarker(ctx context.Context, ref workflow.IssueRef, marker string) (int64, error) {
+	comments, err := c.ListComments(ctx, ref)
+	if err != nil {
+		return 0, err
+	}
+
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+		return mine[0].ID, nil
+	}
+
+	return 0, nil
 }
 
 // CommentReturningID posts a comment and returns its id.
