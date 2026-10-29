@@ -113,7 +113,14 @@ path; the Reviewer takes over from `factory:review`.
    `/run/factory/gh-token-<agent role>`, and runs
    `foreman run <role> <owner/repo> <issue>` as `factory` through a
    single-purpose sudoers rule.
-3. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
+3. Research (`run`): clones the repo, runs `opencode run` with the `research`
+   skill, commits the findings under `docs/research/`, and pushes them to
+   `research/<name>`. It never opens a PR: the branch is a record, never merged.
+   Foreman posts the resolution (with a link to the branch), appends the
+   decision line to the ticket's map, and the ticket closes with no factory
+   label. A re-run reuses the branch and updates the same resolution comment.
+   A retro follows the push, keyed by the findings branch SHA.
+4. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
    with the `implement` skill, pushes, and opens a PR. If the PR already exists
    (a rework), it continues from that branch with the latest review in the
    prompt. Then it continues the same opencode session, by explicit session id,
@@ -122,13 +129,13 @@ path; the Reviewer takes over from `factory:review`.
    repeat for the same key updates that comment. The retro has its own step cap
    and deadline and is best effort: a dropped or invalid retro is logged and
    does not fail the run. The issue becomes `factory:review`.
-4. Review (`review-run`): checks out the PR branch, runs the `code-review` skill
+5. Review (`review-run`): checks out the PR branch, runs the `code-review` skill
    against the issue as spec, and posts the findings on the PR as a review. With
    no high or medium findings it approves and the issue becomes `factory:done`.
    Otherwise the issue goes back to `factory:implement` for another implement
    pass, up to 3 reviews, after which it is `factory:failed`. A retro follows
    the verdict, keyed by the reviewed PR head SHA.
-5. Any failure leaves the issue `factory:failed` with a marker and a comment. A
+6. Any failure leaves the issue `factory:failed` with a marker and a comment. A
    writer's comment sends it back to the agent role that failed.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an

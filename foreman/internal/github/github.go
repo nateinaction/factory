@@ -318,6 +318,68 @@ func (c Client) GetIssue(ctx context.Context, repo string, number int) (workflow
 	return issue, err
 }
 
+// Parent reads the issue's parent, when the repository supports sub-issues. supported is false when
+// the endpoint is missing, so the caller can fall back to the body's "Part of #N" convention.
+func (c Client) Parent(ctx context.Context, repo string, number int) (workflow.Issue, bool, error) {
+	var parent workflow.Issue
+
+	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", repo, number), nil, &parent)
+	if isStatus(err, http.StatusNotFound) {
+		return workflow.Issue{}, false, nil
+	}
+
+	if err != nil {
+		return workflow.Issue{}, false, err
+	}
+
+	return parent, true, nil
+}
+
+// UpdateIssueBody replaces an issue's body.
+func (c Client) UpdateIssueBody(ctx context.Context, repo string, number int, text string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		bodyRequest{Body: text}, nil)
+}
+
+// PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
+// branch updates that comment rather than adding another.
+func (c Client) PostResolution(ctx context.Context, repo string, number int, branch, text string) error {
+	marker := workflow.ResearchMarker(branch)
+
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return err
+	}
+
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+			bodyRequest{Body: text}, nil)
+	}
+
+	return c.Comment(ctx, repo, number, text)
+}
+
+// CloseResolved records a resolved ticket's final transition, releases its claim and closes it. A
+// closed ticket carries no factory label.
+func (c Client) CloseResolved(ctx context.Context, repo string, number int, t workflow.Transition) error {
+	marker, err := workflow.RenderTransition(t)
+	if err != nil {
+		return err
+	}
+
+	if err := c.Comment(ctx, repo, number, marker); err != nil {
+		return err
+	}
+
+	if err := c.removeLabel(ctx, repo, number, string(t.From)); err != nil && !isStatus(err, http.StatusNotFound) {
+		// A 404 means a person already removed it: fine, still close the ticket.
+		return err
+	}
+
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		map[string]string{"state": "closed"}, nil)
+}
+
 // Comment posts a comment on an issue.
 func (c Client) Comment(ctx context.Context, repo string, number int, text string) error {
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number),

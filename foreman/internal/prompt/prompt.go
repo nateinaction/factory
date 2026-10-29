@@ -106,6 +106,15 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 	`"findings": [{"severity": "high|medium|low", "path": "file", "line": 3, "claim": "..."}]. ` +
 	"A high or medium finding requires REQUEST_CHANGES, and REQUEST_CHANGES needs at least one finding."
 
+// researcherRolePrompt is the Researcher's fixed instruction.
+const researcherRolePrompt = "Use the `research` skill on the ticket given under \"Issue material\". " +
+	"Write the findings as Markdown files under `docs/research/` in the current directory; that " +
+	"directory is the only part of the clone you may change. Do not commit, push, comment, close or " +
+	"ask questions, because foreman makes every write from your output file. Write the result as JSON " +
+	"with \"version\": 1, \"branch\": the <name> in research/<name> (one branch-safe segment), " +
+	"\"resolution\": the comment to post (a link to the findings and a short answer), and " +
+	"\"decision_line\": the map's one-line gist of the decision."
+
 // Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run; thread
 // is every comment since the marker when a writer's comment woke the issue; and outPath is where the
 // model writes implementer-output.json.
@@ -161,6 +170,16 @@ func Thread(comments []workflow.Item) string {
 func Reviewer(docs []Doc, base, specPath, outPath string) string {
 	return Build(reviewerRolePrompt, docs, fmt.Sprintf("The fixed point is origin/%s.\n"+
 		"The spec is the issue saved at %s.\nWrite the JSON to %s.", base, specPath, outPath))
+}
+
+// Researcher is the Researcher's prompt; thread is every comment since the marker when a writer's
+// comment woke the ticket, and outPath is where the model writes researcher-output.json.
+func Researcher(
+	docs []Doc, repo string, issue workflow.Issue, thread []workflow.Item, outPath string,
+) string {
+	return Build(researcherRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s"+
+		"\n\nWrite the JSON to %s.", repo, issue.Number, issue.Title,
+		workflow.Truncate(issue.Body, workflow.BodyLimitChars), Thread(thread), outPath))
 }
 
 // retroJSONShape tells the model the exact file foreman validates.
