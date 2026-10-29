@@ -55,11 +55,13 @@ const (
 	ActionIgnore DashboardActionKind = "ignore"
 	// ActionMerge merged two groups into one.
 	ActionMerge DashboardActionKind = "merge"
+	// ActionCurate asked the Curator for a run.
+	ActionCurate DashboardActionKind = "curate"
 )
 
 // DashboardActionKinds is the closed set of writer actions.
 func DashboardActionKinds() []DashboardActionKind {
-	return []DashboardActionKind{ActionPromote, ActionIgnore, ActionMerge}
+	return []DashboardActionKind{ActionPromote, ActionIgnore, ActionMerge, ActionCurate}
 }
 
 // DashboardAction is one writer action, recorded in the dashboard body so a later poll replays it.
@@ -78,8 +80,7 @@ type DashboardAction struct {
 	URL string
 }
 
-// DashboardProposal is a Curator proposal shown under Proposed merges. The Curator builds these in a
-// later ticket; the dashboard only parses and draws them.
+// DashboardProposal is a Curator proposal shown under Proposed merges.
 type DashboardProposal struct {
 	// ID identifies the proposal, so a writer can reject it by id.
 	ID string
@@ -89,17 +90,41 @@ type DashboardProposal struct {
 	Reason string
 }
 
+// DashboardLink is a Curator link between groups, which needs no writer command. A link may cross
+// targets, where a merge may not.
+type DashboardLink struct {
+	// ID identifies the link, so a repeat updates it rather than adding another.
+	ID string
+	// Groups are the two groups the link relates.
+	Groups []GroupID
+	// Reason says why they are related, in one line.
+	Reason string
+}
+
+// DashboardCurator is what the dashboard records about Curator runs: when one last ran, and the
+// claim a poll takes when it queues one so a second is never queued at the same time.
+type DashboardCurator struct {
+	// LastRun is when the last Curator run finished.
+	LastRun time.Time
+	// Claim is when a poll queued a Curator run that has not finished yet.
+	Claim time.Time
+}
+
 // DashboardState is what the dashboard body records beyond the retro log: what writers have done and
-// what the Curator has proposed. It is the seam the writer-command and Curator work fills.
+// what the Curator has proposed.
 type DashboardState struct {
 	// Actions are the writer actions, oldest first.
 	Actions []DashboardAction
 	// Proposals are the Curator's merge proposals, in the order it filed them.
 	Proposals []DashboardProposal
+	// Links are the Curator's links between groups.
+	Links []DashboardLink
 	// Rejected are the proposals writers refused for good.
 	Rejected []DashboardRejection
 	// Published are the private lessons writers published to the factory repo.
 	Published []DashboardPublication
+	// Curator records the Curator's last run and any run a poll has queued.
+	Curator DashboardCurator
 	// Handled are the command comments foreman has already dealt with, oldest first.
 	Handled []int64
 }
@@ -185,6 +210,8 @@ type DashboardView struct {
 	Ready []DashboardGroup
 	// Proposals are the Curator's proposals no writer has rejected or merged away.
 	Proposals []DashboardProposal
+	// Links are the Curator's links no writer has merged away.
+	Links []DashboardLink
 	// Watching are the groups not ready yet, newest report first.
 	Watching []DashboardGroup
 	// Promoted are the groups a writer promoted and no later report mentions.
@@ -205,7 +232,7 @@ func BuildDashboard(reports []DashboardReport, state DashboardState, now time.Ti
 	groups := groupReports(mergedReports(reports, state.Actions))
 	actions := lastActions(state.Actions)
 	view := DashboardView{
-		Proposals: liveProposals(state), Published: state.Published, State: state,
+		Proposals: liveProposals(state), Links: liveLinks(state), Published: state.Published, State: state,
 	}
 	seen := make(map[string]bool, len(groups))
 
@@ -253,6 +280,8 @@ func (v *DashboardView) addEntry(g DashboardGroup, action DashboardAction) {
 		} else {
 			v.Promoted = append(v.Promoted, entry)
 		}
+	case ActionCurate:
+		// A request for a Curator run names no group, so it draws in no section.
 	}
 }
 
@@ -422,6 +451,29 @@ func proposalRejected(rejections []DashboardRejection, p DashboardProposal) bool
 	})
 }
 
+// liveLinks keeps the links whose groups no writer merged away.
+func liveLinks(state DashboardState) []DashboardLink {
+	merged := mergeAliases(state.Actions)
+
+	links := make([]DashboardLink, 0, len(state.Links))
+
+	for _, l := range state.Links {
+		if slices.ContainsFunc(l.Groups, func(g GroupID) bool {
+			return merged[g.String()] != GroupID{}
+		}) {
+			continue
+		}
+
+		links = append(links, l)
+	}
+
+	if len(links) == 0 {
+		return nil
+	}
+
+	return links
+}
+
 // sameGroups reports whether two non-empty sets name the same groups, in any order.
 func sameGroups(a, b []GroupID) bool {
 	if len(a) == 0 || len(a) != len(b) {
@@ -503,9 +555,24 @@ type dashboardWire struct {
 	Version   int                        `json:"version"`
 	Actions   []dashboardActionWire      `json:"actions"`
 	Proposals []dashboardProposalWire    `json:"proposals"`
+	Links     []dashboardLinkWire        `json:"links,omitempty"`
 	Rejected  []dashboardRejectionWire   `json:"rejected,omitempty"`
 	Published []dashboardPublicationWire `json:"published,omitempty"`
+	Curator   *dashboardCuratorWire      `json:"curator,omitempty"`
 	Handled   []int64                    `json:"handled,omitempty"`
+}
+
+// dashboardCuratorWire is the Curator's run record on the wire.
+type dashboardCuratorWire struct {
+	LastRun string `json:"last_run,omitempty"`
+	Claim   string `json:"claim,omitempty"`
+}
+
+// dashboardLinkWire is one Curator link on the wire.
+type dashboardLinkWire struct {
+	ID     string        `json:"id"`
+	Groups []groupIDWire `json:"groups"`
+	Reason string        `json:"reason"`
 }
 
 // dashboardRejectionWire is one rejected proposal on the wire.
@@ -563,7 +630,7 @@ func RenderDashboard(view DashboardView) (string, error) {
 		"It never comments here.\n")
 
 	renderReady(&b, view.Ready)
-	renderProposals(&b, view.Proposals)
+	renderProposals(&b, view.Proposals, view.Links)
 	renderWatching(&b, view.Watching)
 	renderEntries(&b, "Promoted", view.Promoted, view.Published)
 	renderEntries(&b, "Ignored", view.Ignored, nil)
@@ -680,24 +747,40 @@ func distinctClaims(reports []DashboardReport) int {
 	return len(claims)
 }
 
-// renderProposals draws the Proposed merges section.
-func renderProposals(b *strings.Builder, proposals []DashboardProposal) {
+// renderProposals draws the Proposed merges section, and the links the Curator found beneath it.
+func renderProposals(b *strings.Builder, proposals []DashboardProposal, links []DashboardLink) {
 	fmt.Fprintf(b, "\n## Proposed merges (%d)\n", len(proposals))
 
 	if len(proposals) == 0 {
 		b.WriteString("\n_None._\n")
+	} else {
+		for _, p := range proposals {
+			groups := make([]string, 0, len(p.Groups))
+			for _, g := range p.Groups {
+				groups = append(groups, "`"+g.String()+"`")
+			}
 
+			fmt.Fprintf(b, "\n- `%s`: merge %s — %s", p.ID, strings.Join(groups, " and "),
+				Truncate(p.Reason, dashboardClaimChars))
+		}
+
+		b.WriteString("\n")
+	}
+
+	if len(links) == 0 {
 		return
 	}
 
-	for _, p := range proposals {
-		groups := make([]string, 0, len(p.Groups))
-		for _, g := range p.Groups {
+	fmt.Fprintf(b, "\n### Links (%d)\n\nA link needs no command; it says two groups are related.\n", len(links))
+
+	for _, l := range links {
+		groups := make([]string, 0, len(l.Groups))
+		for _, g := range l.Groups {
 			groups = append(groups, "`"+g.String()+"`")
 		}
 
-		fmt.Fprintf(b, "\n- `%s`: merge %s — %s", p.ID, strings.Join(groups, " and "),
-			Truncate(p.Reason, dashboardClaimChars))
+		fmt.Fprintf(b, "\n- `%s`: %s — %s", l.ID, strings.Join(groups, " and "),
+			Truncate(l.Reason, dashboardClaimChars))
 	}
 
 	b.WriteString("\n")
@@ -735,6 +818,8 @@ func actionVerb(kind DashboardActionKind) string {
 		return "ignored"
 	case ActionPromote:
 		return "promoted"
+	case ActionCurate:
+		return "curated"
 	}
 
 	return "promoted"
@@ -824,6 +909,11 @@ func parseDashboardState(text string) (DashboardState, error) {
 		return DashboardState{}, fmt.Errorf("dashboard state needs version %d", dashboardVersion)
 	}
 
+	return dashboardStateOf(wire)
+}
+
+// dashboardStateOf validates a decoded state block's parts.
+func dashboardStateOf(wire dashboardWire) (DashboardState, error) {
 	actions, err := parseDashboardActions(wire.Actions)
 	if err != nil {
 		return DashboardState{}, err
@@ -834,12 +924,7 @@ func parseDashboardState(text string) (DashboardState, error) {
 		return DashboardState{}, err
 	}
 
-	rejected, err := parseDashboardRejections(wire.Rejected)
-	if err != nil {
-		return DashboardState{}, err
-	}
-
-	published, err := parseDashboardPublications(wire.Published)
+	extras, err := parseDashboardExtras(wire)
 	if err != nil {
 		return DashboardState{}, err
 	}
@@ -850,8 +935,41 @@ func parseDashboardState(text string) (DashboardState, error) {
 	}
 
 	return DashboardState{
-		Actions: actions, Proposals: proposals, Rejected: rejected, Published: published, Handled: handled,
+		Actions: actions, Proposals: proposals, Links: extras.links, Rejected: extras.rejected,
+		Published: extras.published, Curator: extras.curator, Handled: handled,
 	}, nil
+}
+
+// dashboardExtras are a state block's optional parts.
+type dashboardExtras struct {
+	links     []DashboardLink
+	rejected  []DashboardRejection
+	published []DashboardPublication
+	curator   DashboardCurator
+}
+
+// parseDashboardExtras validates the links, rejections, publications and Curator record.
+func parseDashboardExtras(wire dashboardWire) (dashboardExtras, error) {
+	links, err := parseDashboardLinks(wire.Links)
+	if err != nil {
+		return dashboardExtras{}, err
+	}
+
+	rejected, err := parseDashboardRejections(wire.Rejected)
+	if err != nil {
+		return dashboardExtras{}, err
+	}
+
+	published, err := parseDashboardPublications(wire.Published)
+	if err != nil {
+		return dashboardExtras{}, err
+	}
+
+	curator, err := parseDashboardCurator(wire.Curator)
+
+	return dashboardExtras{
+		links: links, rejected: rejected, published: published, curator: curator,
+	}, err
 }
 
 // parseDashboardActions validates every recorded action.
@@ -876,18 +994,14 @@ func parseDashboardActions(wires []dashboardActionWire) ([]DashboardAction, erro
 
 // parseDashboardAction validates one recorded action.
 func parseDashboardAction(w dashboardActionWire) (DashboardAction, error) {
-	if !slices.Contains(DashboardActionKinds(), w.Kind) {
+	want, ok := actionGroupCount(w.Kind)
+	if !ok {
 		return DashboardAction{}, fmt.Errorf("unknown dashboard action %q", w.Kind)
 	}
 
 	groups, err := parseGroupIDs(w.Groups)
 	if err != nil {
 		return DashboardAction{}, err
-	}
-
-	want := 1
-	if w.Kind == ActionMerge {
-		want = 2
 	}
 
 	if len(groups) != want || len(w.Groups) != want {
@@ -911,6 +1025,20 @@ func parseDashboardAction(w dashboardActionWire) (DashboardAction, error) {
 	}
 
 	return DashboardAction{Kind: w.Kind, Groups: groups, By: w.By, At: at, URL: w.URL}, nil
+}
+
+// actionGroupCount is how many groups an action names, or false for an unknown action.
+func actionGroupCount(kind DashboardActionKind) (int, bool) {
+	switch kind {
+	case ActionCurate:
+		return 0, true
+	case ActionIgnore, ActionPromote:
+		return 1, true
+	case ActionMerge:
+		return mergeGroups, true
+	}
+
+	return 0, false
 }
 
 // parseDashboardProposals validates every Curator proposal.
@@ -967,6 +1095,71 @@ func parseGroupIDs(wires []groupIDWire) ([]GroupID, error) {
 	}
 
 	return groups, nil
+}
+
+// parseDashboardLinks validates every Curator link. A link names two groups of different targets: it
+// relates them without merging them.
+func parseDashboardLinks(wires []dashboardLinkWire) ([]DashboardLink, error) {
+	if len(wires) == 0 {
+		return nil, nil
+	}
+
+	links := make([]DashboardLink, 0, len(wires))
+
+	for _, w := range wires {
+		if !retroNameRE.MatchString(w.ID) {
+			return nil, fmt.Errorf("dashboard link id %q is not valid", w.ID)
+		}
+
+		groups, err := parseGroupIDs(w.Groups)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(groups) != 2 || len(w.Groups) != 2 {
+			return nil, errors.New("a dashboard link names exactly two groups")
+		}
+
+		if groups[0].Target == groups[1].Target {
+			return nil, errors.New("a dashboard link must cross targets")
+		}
+
+		if err := validDashboardText("link reason", w.Reason); err != nil {
+			return nil, err
+		}
+
+		links = append(links, DashboardLink{ID: w.ID, Groups: groups, Reason: w.Reason})
+	}
+
+	return links, nil
+}
+
+// parseDashboardCurator reads the Curator's run record, if the state has one.
+func parseDashboardCurator(w *dashboardCuratorWire) (DashboardCurator, error) {
+	if w == nil {
+		return DashboardCurator{}, nil
+	}
+
+	last, err := parseOptionalDashboardTime("curator last run", w.LastRun)
+	if err != nil {
+		return DashboardCurator{}, err
+	}
+
+	claim, err := parseOptionalDashboardTime("curator claim", w.Claim)
+	if err != nil {
+		return DashboardCurator{}, err
+	}
+
+	return DashboardCurator{LastRun: last, Claim: claim}, nil
+}
+
+// parseOptionalDashboardTime reads an absent date as the zero time, or a malformed one as an error.
+func parseOptionalDashboardTime(field, text string) (time.Time, error) {
+	if text == "" {
+		return time.Time{}, nil
+	}
+
+	return parseDashboardTime(field, text)
 }
 
 // parseDashboardRejections validates every rejected proposal.
@@ -1130,6 +1323,13 @@ func marshalDashboardState(state DashboardState) (string, error) {
 		})
 	}
 
+	for _, l := range state.Links {
+		wire.Links = append(wire.Links, dashboardLinkWire{
+			ID: l.ID, Groups: groupIDWires(l.Groups), Reason: l.Reason,
+		})
+	}
+
+	wire.Curator = dashboardCuratorWireOf(state.Curator)
 	wire.Handled = state.Handled
 
 	raw, err := json.Marshal(wire)
@@ -1143,6 +1343,24 @@ func marshalDashboardState(state DashboardState) (string, error) {
 	}
 
 	return string(raw), nil
+}
+
+// dashboardCuratorWireOf encodes the Curator's run record, or nil when it has none.
+func dashboardCuratorWireOf(c DashboardCurator) *dashboardCuratorWire {
+	if c.LastRun.IsZero() && c.Claim.IsZero() {
+		return nil
+	}
+
+	w := &dashboardCuratorWire{}
+	if !c.LastRun.IsZero() {
+		w.LastRun = c.LastRun.Format(time.RFC3339Nano)
+	}
+
+	if !c.Claim.IsZero() {
+		w.Claim = c.Claim.Format(time.RFC3339Nano)
+	}
+
+	return w
 }
 
 // groupIDWires encodes group ids.

@@ -253,6 +253,9 @@ var _ = Describe("the retro dashboard", func() {
 						Target: skillTarget, Key: groupKey,
 					}},
 					By: "o", At: now.Add(-time.Hour), URL: "https://github.com/o/r/issues/99",
+				}, {
+					Kind: workflow.ActionCurate, By: "o", At: now.Add(-30 * time.Minute),
+					URL: "https://github.com/o/r/issues/99#issuecomment-2",
 				}},
 				Proposals: []workflow.DashboardProposal{{
 					ID: "p1",
@@ -262,6 +265,17 @@ var _ = Describe("the retro dashboard", func() {
 					},
 					Reason: "same guide problem",
 				}},
+				Links: []workflow.DashboardLink{{
+					ID: "l1",
+					Groups: []workflow.GroupID{
+						{Target: skillTarget, Key: groupKey},
+						{Target: workflow.RetroTarget{Kind: workflow.TargetDocs, Name: "AGENTS.md"}, Key: "no-lab"},
+					},
+					Reason: "the docs and the guide disagree",
+				}},
+				Curator: workflow.DashboardCurator{
+					LastRun: now.Add(-2 * time.Hour), Claim: now.Add(-time.Minute),
+				},
 			}
 
 			rendered, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, state, now))
