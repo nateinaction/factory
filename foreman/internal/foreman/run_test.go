@@ -546,6 +546,21 @@ var _ = Describe("Run", func() {
 			Expect(h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/pulls/%d/requested_reviewers", pr))).To(BeEmpty())
 		})
 
+		It("gives a review whose output file was rejected a retro", func() {
+			h.reviewerGH(nil)
+			h.opencodeWrites("code-review", h.reviewOut(),
+				`{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[]}`)
+			h.opencodeWrites("--session", h.retroOut(workflow.Reviewer), validRetro)
+
+			code, err := run(workflow.Reviewer)
+			Expect(err).To(HaveOccurred())
+			Expect(code).To(Equal(workflow.ExitReported))
+			Expect(h.reportComments()).To(ContainElement(ContainSubstring("output file was rejected")))
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty(), "posted a rejected verdict")
+			Expect(h.retroComments()).To(ConsistOf(
+				ContainSubstring("<!-- factory:retro issue=5 role=reviewer key=sha-head -->")))
+		})
+
 		It("keys the retro by the PR head SHA it reviewed", func() {
 			h.reviewerGH(nil)
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {

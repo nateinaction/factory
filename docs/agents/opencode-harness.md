@@ -10,7 +10,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Skills: only the factory's own, exactly the role's list | `agent.<role>.permission.skill` allows the role's skills and denies the rest; `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
 | Permissions: deny by default, never `ask` | `permission.*` in `opencode.json`, rendered per agent role from `group_vars` |
 | No repository config | `OPENCODE_DISABLE_PROJECT_CONFIG=1` |
-| Fresh state, deleted after the run and its retro | `OPENCODE_DB` in `<work root>/state-<role>-<issue>/`; `:memory:` for the Reviewer |
+| Fresh state, deleted after the run and its retro | `OPENCODE_DB` in the run's state directory, so the retro can resume the run's session by id and the state goes with the run directory |
 | Step cap and deadline per agent role | `agent.<role>.steps` from `factory_agent_limits`, and foreman's own count and timeout; see below |
 | Retro in the run's session | `--session <id>` from the run's JSON stream, never `--continue` |
 | The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's egress proxy, which forwards `/api/v1` to the loopback key proxy that adds `Authorization` |

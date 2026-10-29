@@ -24,9 +24,6 @@ func Backoff(attempt int) time.Duration {
 	return [MaxModelAttempts - 1]time.Duration{10 * time.Second, 30 * time.Second}[attempt-1]
 }
 
-// InMemoryDB is OPENCODE_DB's value for a run whose state never touches the disk.
-const InMemoryDB = ":memory:"
-
 // FailureKind says why a model run failed. Its text is safe to put in a comment: it names the kind and
 // carries nothing from the response.
 type FailureKind string

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -77,12 +76,9 @@ func (f sandboxFiles) remove() error {
 	return errors.Join(os.RemoveAll(f.dir), os.RemoveAll(f.toolchain))
 }
 
-// db is the run's opencode state database. The Reviewer's state never touches the disk.
-func (f sandboxFiles) db(role workflow.Role) string {
-	if role == workflow.Reviewer {
-		return opencode.InMemoryDB
-	}
-
+// db is the run's opencode state database, in the run directory so the retro can resume the run's
+// session by id and the run's state is gone with that directory afterwards.
+func (f sandboxFiles) db() string {
 	return filepath.Join(f.state, "opencode.db")
 }
 
