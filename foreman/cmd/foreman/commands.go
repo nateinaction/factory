@@ -54,7 +54,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(*cobra.Command, []string) error {
-			return errors.New("a command is required: poll, start, run, status or logs")
+			return errors.New("a command is required: poll, start, run, status, logs or history")
 		},
 		PersistentPreRunE: func(*cobra.Command, []string) error {
 			s, err := config.SettingsFrom(settings)
@@ -76,7 +76,10 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		return nil, fmt.Errorf("bind settings flags: %w", err)
 	}
 
-	root.AddCommand(pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d))
+	root.AddCommand(
+		pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d),
+		historyCommand(d),
+	)
 
 	return root, nil
 }
@@ -254,6 +257,31 @@ func logsCommand(d *foreman.Deps) *cobra.Command {
 	cmd.Flags().BoolVar(&follow, "follow", false, "keep printing new output until the run ends")
 
 	return cmd
+}
+
+// historyCommand is `foreman history`: each issue's lifecycle in one assigned repository, read from
+// GitHub.
+func historyCommand(d *foreman.Deps) *cobra.Command {
+	return &cobra.Command{
+		Use:   "history <owner/repo>",
+		Short: "show each issue's time in every state, human gate wait, rework rounds and outcome, from GitHub",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := workflow.ParseRepo(args[0])
+			if err != nil {
+				return err
+			}
+
+			cfg, err := config.Load(d.Settings.ConfigFile)
+			if err != nil {
+				return &exitError{code: 1, err: err}
+			}
+
+			code, err := foreman.History(cmd.Context(), *d, cfg, repo)
+
+			return result(code, err)
+		},
+	}
 }
 
 // result carries a command's exit code through cobra. A failure without a code exits 1.

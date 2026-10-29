@@ -1,0 +1,24 @@
+---
+- name: Restart prometheus
+  ansible.builtin.systemd_service:
+    name: prometheus
+    state: restarted
+    daemon_reload: true
+
+- name: Restart tempo
+  ansible.builtin.systemd_service:
+    name: tempo
+    state: restarted
+    daemon_reload: true
+
+- name: Restart loki
+  ansible.builtin.systemd_service:
+    name: loki
+    state: restarted
+    daemon_reload: true
+
+- name: Restart grafana
+  ansible.builtin.systemd_service:
+    name: grafana
+    state: restarted
+    daemon_reload: true

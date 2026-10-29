@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,6 +221,46 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.out.String()).NotTo(ContainSubstring(testToken))
 	})
 
+	DescribeTable("redacts every secret the run holds from both of the model's streams",
+		func(secret string, onStdout bool) {
+			line := "echo " + secret + " done\n"
+			if onStdout {
+				h.answerOpencodeStreams(line, "")
+			} else {
+				h.answerOpencodeStreams("", line)
+			}
+
+			// The run's outcome is not under test, only what reached a log.
+			_, _ = h.runImpl(testAgent())
+			Expect(h.logs.String()).NotTo(ContainSubstring(secret))
+			Expect(h.out.String()).NotTo(ContainSubstring(secret))
+			Expect(h.errOut.String()).NotTo(ContainSubstring(secret))
+			Expect(h.logs.String() + h.errOut.String()).To(ContainSubstring("[redacted]"))
+		},
+		Entry("OpenRouter key on stdout", "or-key", true),
+		Entry("OpenRouter key on stderr", "or-key", false),
+		Entry("proxy token on stdout", testToken, true),
+		Entry("proxy token on stderr", testToken, false),
+		Entry("read-only GitHub token on stdout", "read-only-token-implementer", true),
+		Entry("read-only GitHub token on stderr", "read-only-token-implementer", false),
+	)
+
+	It("redacts a secret that arrives split across two stderr writes", func() {
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if !isModel(c) {
+				return base(c)
+			}
+
+			_, _ = io.WriteString(c.Stderr, "token run-prox")
+			_, _ = io.WriteString(c.Stderr, "y-token end\n")
+
+			return "", nil
+		})
+		_, _ = h.runImpl(testAgent())
+		Expect(h.errOut.String()).NotTo(ContainSubstring("run-proxy-token"))
+		Expect(h.errOut.String()).To(ContainSubstring("token [redacted] end"))
+	})
+
 	It("mints a fresh random proxy token for each run", func() {
 		first, err := (Deps{}).token()
 		Expect(err).NotTo(HaveOccurred())
@@ -245,7 +286,10 @@ var _ = Describe("the opencode adapter", func() {
 
 				return proxy, nil
 			}
-			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
+			egress := &fakeEgress{
+				url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"},
+				refused: []string{"blocked.example"},
+			}
 			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
@@ -262,6 +306,8 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
 			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
+			Expect(lines[0]).To(HaveKeyWithValue("refused_domains", []any{"blocked.example"}),
+				"refused domains are listed apart from allowed ones")
 		})
 
 		It("is one JSON line per run, summed over the run and its retro", func() {
