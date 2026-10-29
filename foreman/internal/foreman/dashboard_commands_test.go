@@ -396,14 +396,14 @@ var _ = Describe("the dashboard's writer commands", func() {
 	It("takes a Curator proposal with a writer's merge", func() {
 		h.graphql(true)
 
-		proposal := workflow.DashboardProposal{
+		proposal := workflow.GroupRelation{
 			ID:     "p1",
 			Groups: []workflow.GroupID{skillGroup, {Target: skillGroup.Target, Key: "guide-skips-review"}},
 			Reason: "one guide problem, split in two",
 		}
 
 		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil,
-			workflow.DashboardState{Proposals: []workflow.DashboardProposal{proposal}}, time.Now()))
+			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)
@@ -421,14 +421,14 @@ var _ = Describe("the dashboard's writer commands", func() {
 	It("refuses a Curator proposal for good", func() {
 		h.graphql(true)
 
-		proposal := workflow.DashboardProposal{
+		proposal := workflow.GroupRelation{
 			ID:     "p1",
 			Groups: []workflow.GroupID{skillGroup, {Target: skillGroup.Target, Key: "guide-skips-review"}},
 			Reason: "one guide problem, split in two",
 		}
 
 		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil,
-			workflow.DashboardState{Proposals: []workflow.DashboardProposal{proposal}}, time.Now()))
+			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)

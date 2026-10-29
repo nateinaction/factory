@@ -135,7 +135,7 @@ var _ = Describe("writer commands change the dashboard", func() {
 			Rejected: []workflow.DashboardRejection{{
 				ID: "p1", Groups: []workflow.GroupID{group, other}, By: "o", At: now.Add(-time.Hour),
 			}},
-			Proposals: []workflow.DashboardProposal{
+			Proposals: []workflow.GroupRelation{
 				{ID: "p1", Groups: []workflow.GroupID{group, other}, Reason: "same problem"},
 				{ID: "p2", Groups: []workflow.GroupID{other, group}, Reason: "same problem again"},
 				{ID: "p3", Groups: []workflow.GroupID{group, {Target: skillTarget, Key: "third"}}, Reason: "another problem"},
@@ -151,7 +151,7 @@ var _ = Describe("writer commands change the dashboard", func() {
 	})
 
 	It("records a rejection and drops the proposal", func() {
-		state := workflow.DashboardState{Proposals: []workflow.DashboardProposal{
+		state := workflow.DashboardState{Proposals: []workflow.GroupRelation{
 			{ID: "p1", Groups: []workflow.GroupID{group, other}, Reason: "same problem"},
 			{ID: "p2", Groups: []workflow.GroupID{group}, Reason: "another problem"},
 		}}

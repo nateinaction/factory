@@ -181,35 +181,17 @@ func parseRetroFinding(f retroFindingWire) (RetroFinding, error) {
 		return RetroFinding{}, fmt.Errorf("unknown retro severity %q", f.Severity)
 	}
 
-	if err := validRetroText("claim", f.Claim, true); err != nil {
+	if err := validText("retro claim", f.Claim, true); err != nil {
 		return RetroFinding{}, err
 	}
 
-	if err := validRetroText("evidence", f.Evidence, false); err != nil {
+	if err := validText("retro evidence", f.Evidence, false); err != nil {
 		return RetroFinding{}, err
 	}
 
 	return RetroFinding{
 		Target: target, Group: f.Group, Severity: f.Severity, Claim: f.Claim, Evidence: f.Evidence,
 	}, nil
-}
-
-// validRetroText rejects text that is empty, carries a factory marker, or, for a claim, spans lines.
-func validRetroText(field, text string, oneLine bool) error {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return fmt.Errorf("retro %s is empty", field)
-	}
-
-	if strings.Contains(text, MarkerPrefix) {
-		return fmt.Errorf("retro %s carries a factory marker", field)
-	}
-
-	if oneLine && strings.ContainsAny(trimmed, "\r\n") {
-		return fmt.Errorf("retro %s must be one line", field)
-	}
-
-	return nil
 }
 
 // Marker prefixes of a retro comment.

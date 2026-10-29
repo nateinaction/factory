@@ -14,8 +14,8 @@ func (s DashboardState) WithAction(a DashboardAction) DashboardState {
 
 // WithProposal records one Curator merge proposal. A proposal with the same id, or naming the same
 // pair of groups, is replaced rather than shown twice.
-func (s DashboardState) WithProposal(p DashboardProposal) DashboardState {
-	kept := make([]DashboardProposal, 0, len(s.Proposals)+1)
+func (s DashboardState) WithProposal(p GroupRelation) DashboardState {
+	kept := make([]GroupRelation, 0, len(s.Proposals)+1)
 
 	for _, old := range s.Proposals {
 		if old.ID == p.ID || sameGroups(old.Groups, p.Groups) {
@@ -31,8 +31,8 @@ func (s DashboardState) WithProposal(p DashboardProposal) DashboardState {
 }
 
 // WithLink records one Curator link, replacing a link with the same id or between the same groups.
-func (s DashboardState) WithLink(l DashboardLink) DashboardState {
-	kept := make([]DashboardLink, 0, len(s.Links)+1)
+func (s DashboardState) WithLink(l GroupRelation) DashboardState {
+	kept := make([]GroupRelation, 0, len(s.Links)+1)
 
 	for _, old := range s.Links {
 		if old.ID == l.ID || sameGroups(old.Groups, l.Groups) {
@@ -65,7 +65,7 @@ func (s DashboardState) WithCuratorRun(at time.Time) DashboardState {
 // pointing at a group that is gone. It also drops one naming a group a writer merged away, and any
 // link through those groups.
 func (s DashboardState) DropProposals(groups []GroupID) DashboardState {
-	kept := make([]DashboardProposal, 0, len(s.Proposals))
+	kept := make([]GroupRelation, 0, len(s.Proposals))
 
 	for _, p := range s.Proposals {
 		if slices.ContainsFunc(p.Groups, func(g GroupID) bool { return slices.Contains(groups, g) }) {
@@ -81,7 +81,7 @@ func (s DashboardState) DropProposals(groups []GroupID) DashboardState {
 
 	s.Proposals = kept
 
-	links := make([]DashboardLink, 0, len(s.Links))
+	links := make([]GroupRelation, 0, len(s.Links))
 
 	for _, l := range s.Links {
 		if slices.ContainsFunc(l.Groups, func(g GroupID) bool { return slices.Contains(groups, g) }) {
@@ -105,7 +105,7 @@ func (s DashboardState) DropProposals(groups []GroupID) DashboardState {
 func (s DashboardState) WithRejection(r DashboardRejection) DashboardState {
 	s.Rejected = append(slices.Clone(s.Rejected), r)
 
-	kept := make([]DashboardProposal, 0, len(s.Proposals))
+	kept := make([]GroupRelation, 0, len(s.Proposals))
 
 	for _, p := range s.Proposals {
 		if p.ID == r.ID || sameGroups(p.Groups, r.Groups) {
@@ -148,12 +148,12 @@ func (s DashboardState) WithHandled(id int64) (DashboardState, bool) {
 }
 
 // Proposal returns the Curator proposal with id.
-func (s DashboardState) Proposal(id string) (DashboardProposal, bool) {
+func (s DashboardState) Proposal(id string) (GroupRelation, bool) {
 	for _, p := range s.Proposals {
 		if p.ID == id {
 			return p, true
 		}
 	}
 
-	return DashboardProposal{}, false
+	return GroupRelation{}, false
 }

@@ -27,26 +27,6 @@ const (
 	curatorEvidenceChars = 1_000
 )
 
-// CuratorMerge is one merge proposal: two groups of one target, folded into the first.
-type CuratorMerge struct {
-	// ID keys the proposal, so applying the same file twice changes nothing.
-	ID string
-	// Groups are the two groups the merge names; the first is the one kept.
-	Groups []GroupID
-	// Reason is the proposal in one line.
-	Reason string
-}
-
-// CuratorLink is one link proposal: two groups of different targets that describe one problem.
-type CuratorLink struct {
-	// ID keys the link.
-	ID string
-	// Groups are the two groups the link relates.
-	Groups []GroupID
-	// Reason says why they are related, in one line.
-	Reason string
-}
-
 // CuratorIssueDraft is the issue one ready group becomes. Body is the public draft's text; a private
 // repository's draft carries Lesson and PrivateEvidence instead, so only the lesson can be published.
 type CuratorIssueDraft struct {
@@ -65,9 +45,9 @@ type CuratorIssueDraft struct {
 // CuratorOutput is curator-output.json.
 type CuratorOutput struct {
 	// Merges are the merge proposals, each within one target.
-	Merges []CuratorMerge
+	Merges []GroupRelation
 	// Links are the link proposals, which may cross targets.
-	Links []CuratorLink
+	Links []GroupRelation
 	// Issues is one issue draft per group to promote.
 	Issues []CuratorIssueDraft
 }
@@ -96,48 +76,26 @@ type curatorIssueWire struct {
 	PrivateEvidence string `json:"private_evidence"`
 }
 
-// ParseCuratorOutput reads curator-output.json strictly, all or nothing.
+// ParseCuratorOutput reads curator-output.json strictly, all or nothing. It parses each part once,
+// collecting values and problems together, so every problem is named and no value is built on the
+// say-so of an earlier check.
 func ParseCuratorOutput(text string) (CuratorOutput, error) {
 	var wire curatorWire
 
 	problems := decodeStrict(text, &wire)
-	problems = append(problems, curatorProblems(wire)...)
+	out, more := curatorOutputOf(wire)
+	problems = append(problems, more...)
 
 	if len(problems) > 0 {
 		return CuratorOutput{}, &OutputError{File: CuratorOutputFile, Problems: problems}
 	}
 
-	out := CuratorOutput{
-		Merges: make([]CuratorMerge, 0, len(*wire.Merges)),
-		Links:  make([]CuratorLink, 0, len(*wire.Links)),
-		Issues: make([]CuratorIssueDraft, 0, len(*wire.Issues)),
-	}
-
-	// Every field was checked by curatorProblems, so these parses cannot fail.
-	for _, m := range *wire.Merges {
-		out.Merges = append(out.Merges, CuratorMerge{
-			ID: m.ID, Groups: mustGroupIDs(m.Groups), Reason: m.Reason,
-		})
-	}
-
-	for _, l := range *wire.Links {
-		out.Links = append(out.Links, CuratorLink{
-			ID: l.ID, Groups: mustGroupIDs(l.Groups), Reason: l.Reason,
-		})
-	}
-
-	for _, d := range *wire.Issues {
-		group, _ := ParseGroupID(d.Group)
-		out.Issues = append(out.Issues, CuratorIssueDraft{
-			Group: group, Title: d.Title, Body: d.Body, Lesson: d.Lesson, PrivateEvidence: d.PrivateEvidence,
-		})
-	}
-
 	return out, nil
 }
 
-// curatorProblems checks every field an output file carries beyond the strict decode.
-func curatorProblems(w curatorWire) []string {
+// curatorOutputOf parses every part of a decoded output file, returning what parsed and every
+// problem found. The values are only meant to be used when there are no problems.
+func curatorOutputOf(w curatorWire) (CuratorOutput, []string) {
 	var problems []string
 
 	if w.Merges == nil {
@@ -153,45 +111,45 @@ func curatorProblems(w curatorWire) []string {
 	}
 
 	seenIDs := map[string]bool{}
-	merges, mergeProblems := curatorProposalProblems(w.Merges, true, seenIDs)
-	links, linkProblems := curatorProposalProblems(w.Links, false, seenIDs)
+	merges, mergeProblems := curatorRelations(w.Merges, true, seenIDs)
+	links, linkProblems := curatorRelations(w.Links, false, seenIDs)
 
 	problems = append(problems, mergeProblems...)
 	problems = append(problems, linkProblems...)
 
-	if merges+links > MaxCuratorProposals {
+	if n := len(merges) + len(links); n > MaxCuratorProposals {
 		problems = append(problems, fmt.Sprintf("merges and links name %d proposals, at most %d are allowed",
-			merges+links, MaxCuratorProposals))
+			n, MaxCuratorProposals))
 	}
 
-	return append(problems, curatorIssueProblems(w.Issues)...)
+	issues, issueProblems := curatorIssues(w.Issues)
+
+	return CuratorOutput{Merges: merges, Links: links, Issues: issues}, append(problems, issueProblems...)
 }
 
-// curatorProposalProblems checks merge or link proposals, counting the ones that parse. A merge stays
-// within one target, a link crosses targets, and every id is unique across both lists.
-func curatorProposalProblems(
+// curatorRelations parses merge or link proposals, keeping the ones that parse. A merge stays within
+// one target, a link crosses targets, and every id is unique across both lists.
+func curatorRelations(
 	wires *[]curatorProposalWire, merge bool, seenIDs map[string]bool,
-) (int, []string) {
+) ([]GroupRelation, []string) {
+	relations := []GroupRelation{}
+
 	if wires == nil {
-		return 0, nil
+		return relations, nil
 	}
 
-	var (
-		valid    int
-		problems []string
-	)
+	var problems []string
 
 	for i, w := range *wires {
-		at := proposalLabel(merge, i)
-		proposalProblems := curatorProposalProblem(w, at, merge, seenIDs)
-		problems = append(problems, proposalProblems...)
+		relation, relationProblems := curatorRelation(w, proposalLabel(merge, i), merge, seenIDs)
+		problems = append(problems, relationProblems...)
 
-		if len(proposalProblems) == 0 {
-			valid++
+		if len(relationProblems) == 0 {
+			relations = append(relations, relation)
 		}
 	}
 
-	return valid, problems
+	return relations, problems
 }
 
 // proposalLabel names a proposal in an error: merges[0] or links[1].
@@ -203,28 +161,28 @@ func proposalLabel(merge bool, index int) string {
 	return fmt.Sprintf("links[%d]", index)
 }
 
-// curatorProposalProblem checks one merge or link.
-func curatorProposalProblem(
+// curatorRelation parses one merge or link, returning it with every problem found.
+func curatorRelation(
 	w curatorProposalWire, at string, merge bool, seenIDs map[string]bool,
-) []string {
+) (GroupRelation, []string) {
 	problems := curatorProposalIDProblems(w, at, seenIDs)
 
 	groups, err := groupIDsOf(w.Groups)
 	if err != nil {
-		return append(problems, at+".groups: "+err.Error())
+		return GroupRelation{}, append(problems, at+".groups: "+err.Error())
 	}
 
 	if len(groups) != mergeGroups {
-		return append(problems, at+".groups must name exactly two groups")
+		return GroupRelation{}, append(problems, at+".groups must name exactly two groups")
 	}
 
 	problems = append(problems, curatorProposalGroupProblems(groups, at, merge)...)
 
-	if err := validCuratorText(at+".reason", w.Reason, true); err != nil {
+	if err := validText(at+".reason", w.Reason, true); err != nil {
 		problems = append(problems, err.Error())
 	}
 
-	return problems
+	return GroupRelation{ID: w.ID, Groups: groups, Reason: w.Reason}, problems
 }
 
 // curatorProposalIDProblems checks a proposal's id is a key nobody else claimed.
@@ -261,15 +219,17 @@ func curatorProposalGroupProblems(groups []GroupID, at string, merge bool) []str
 	return problems
 }
 
-// curatorIssueProblems checks every issue draft: one per ready group, with a title and exactly one
-// body shape.
-func curatorIssueProblems(wires *[]curatorIssueWire) []string {
+// curatorIssues parses every issue draft: one per ready group, with a title and exactly one body
+// shape. It keeps the drafts that parse.
+func curatorIssues(wires *[]curatorIssueWire) ([]CuratorIssueDraft, []string) {
+	drafts := []CuratorIssueDraft{}
+
 	if wires == nil {
-		return nil
+		return drafts, nil
 	}
 
 	if len(*wires) > MaxCuratorIssues {
-		return []string{fmt.Sprintf("issues names %d drafts, at most %d are allowed",
+		return drafts, []string{fmt.Sprintf("issues names %d drafts, at most %d are allowed",
 			len(*wires), MaxCuratorIssues)}
 	}
 
@@ -278,26 +238,41 @@ func curatorIssueProblems(wires *[]curatorIssueWire) []string {
 	var problems []string
 
 	for i, w := range *wires {
-		at := fmt.Sprintf("issues[%d]", i)
+		draft, draftProblems := curatorIssue(fmt.Sprintf("issues[%d]", i), w, seen)
+		problems = append(problems, draftProblems...)
 
-		if _, err := ParseGroupID(w.Group); err != nil {
-			problems = append(problems, at+".group: "+err.Error())
-		} else if seen[w.Group] {
-			problems = append(problems, at+".group repeats another draft's group")
+		if len(draftProblems) == 0 {
+			drafts = append(drafts, draft)
 		}
-
-		seen[w.Group] = true
-
-		if err := validCuratorText(at+".title", w.Title, true); err != nil {
-			problems = append(problems, err.Error())
-		} else if utf8.RuneCountInString(w.Title) > MaxCuratorTitle {
-			problems = append(problems, fmt.Sprintf("%s.title is over %d characters", at, MaxCuratorTitle))
-		}
-
-		problems = append(problems, curatorDraftProblems(at, w)...)
 	}
 
-	return problems
+	return drafts, problems
+}
+
+// curatorIssue parses one issue draft, returning it with every problem found.
+func curatorIssue(at string, w curatorIssueWire, seen map[string]bool) (CuratorIssueDraft, []string) {
+	var problems []string
+
+	group, err := ParseGroupID(w.Group)
+	if err != nil {
+		problems = append(problems, at+".group: "+err.Error())
+	} else if seen[w.Group] {
+		problems = append(problems, at+".group repeats another draft's group")
+	}
+
+	seen[w.Group] = true
+
+	if err := validText(at+".title", w.Title, true); err != nil {
+		problems = append(problems, err.Error())
+	} else if utf8.RuneCountInString(w.Title) > MaxCuratorTitle {
+		problems = append(problems, fmt.Sprintf("%s.title is over %d characters", at, MaxCuratorTitle))
+	}
+
+	problems = append(problems, curatorDraftProblems(at, w)...)
+
+	return CuratorIssueDraft{
+		Group: group, Title: w.Title, Body: w.Body, Lesson: w.Lesson, PrivateEvidence: w.PrivateEvidence,
+	}, problems
 }
 
 // curatorDraftProblems checks the body shape of one draft: a public body or a private lesson, never
@@ -318,24 +293,6 @@ func curatorDraftProblems(at string, w curatorIssueWire) []string {
 	return nil
 }
 
-// validCuratorText rejects empty or marker-carrying text, and a title or reason that spans lines.
-func validCuratorText(field, text string, oneLine bool) error {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return fmt.Errorf("%s is empty", field)
-	}
-
-	if strings.Contains(text, MarkerPrefix) {
-		return fmt.Errorf("%s carries a factory marker", field)
-	}
-
-	if oneLine && strings.ContainsAny(trimmed, "\r\n") {
-		return fmt.Errorf("%s must be one line", field)
-	}
-
-	return nil
-}
-
 // groupIDsOf parses a list of group ids, naming the first that is not valid.
 func groupIDsOf(texts []string) ([]GroupID, error) {
 	groups := make([]GroupID, 0, len(texts))
@@ -350,13 +307,6 @@ func groupIDsOf(texts []string) ([]GroupID, error) {
 	}
 
 	return groups, nil
-}
-
-// mustGroupIDs parses group ids that curatorProblems already checked.
-func mustGroupIDs(texts []string) []GroupID {
-	groups, _ := groupIDsOf(texts) //nolint:errcheck // curatorProblems already rejected every bad group
-
-	return groups
 }
 
 // CuratorPlan is what foreman applies from one curator-output.json.
@@ -381,11 +331,11 @@ func PlanCurator(
 
 	for _, m := range out.Merges {
 		if !curatorMayTouch(m.Groups, known, merged) ||
-			proposalRejected(state.Rejected, DashboardProposal{Groups: m.Groups}) {
+			proposalRejected(state.Rejected, GroupRelation{Groups: m.Groups}) {
 			continue
 		}
 
-		plan.State = plan.State.WithProposal(DashboardProposal(m))
+		plan.State = plan.State.WithProposal(m)
 	}
 
 	for _, l := range out.Links {
@@ -393,7 +343,7 @@ func PlanCurator(
 			continue
 		}
 
-		plan.State = plan.State.WithLink(DashboardLink(l))
+		plan.State = plan.State.WithLink(l)
 	}
 
 	for _, d := range out.Issues {
@@ -530,7 +480,7 @@ func curatorRequested(state DashboardState) bool {
 // A private draft's lesson and evidence stay in separate sections, so `publish` can copy only the
 // lesson out.
 func RenderCuratorDraft(g GroupID, d CuratorIssueDraft, private bool) (title, body string, err error) {
-	if err := validCuratorText("title", d.Title, true); err != nil {
+	if err := validText("title", d.Title, true); err != nil {
 		return "", "", err
 	}
 
@@ -562,7 +512,7 @@ func RenderCuratorDraft(g GroupID, d CuratorIssueDraft, private bool) (title, bo
 
 // renderCuratorPrivate draws a private draft's lesson and evidence in separate sections.
 func renderCuratorPrivate(b *strings.Builder, d CuratorIssueDraft) error {
-	if err := validCuratorText("lesson", d.Lesson, false); err != nil {
+	if err := validText("lesson", d.Lesson, false); err != nil {
 		return err
 	}
 
@@ -573,7 +523,7 @@ func renderCuratorPrivate(b *strings.Builder, d CuratorIssueDraft) error {
 		return nil
 	}
 
-	if err := validCuratorText("private evidence", evidence, false); err != nil {
+	if err := validText("private evidence", evidence, false); err != nil {
 		return err
 	}
 
@@ -584,7 +534,7 @@ func renderCuratorPrivate(b *strings.Builder, d CuratorIssueDraft) error {
 
 // renderCuratorPublic draws a public draft's body under its lesson heading.
 func renderCuratorPublic(b *strings.Builder, d CuratorIssueDraft) error {
-	if err := validCuratorText("body", d.Body, false); err != nil {
+	if err := validText("body", d.Body, false); err != nil {
 		return err
 	}
 

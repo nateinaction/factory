@@ -392,6 +392,26 @@ func RenderReplies(sha string, replies []Reply) string {
 	return Truncate(strings.Join(lines, "\n"), CommentLimitChars)
 }
 
+// validText is the one check for model-written or recorded free text: it rejects text that is
+// empty or carries a factory marker, and, for a one-line field, text that spans lines. The retro,
+// the Curator and the dashboard state all use it.
+func validText(field, text string, oneLine bool) error {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fmt.Errorf("%s is empty", field)
+	}
+
+	if strings.Contains(text, MarkerPrefix) {
+		return fmt.Errorf("%s carries a factory marker", field)
+	}
+
+	if oneLine && strings.ContainsAny(trimmed, "\r\n") {
+		return fmt.Errorf("%s must be one line", field)
+	}
+
+	return nil
+}
+
 // decodeStrict checks what every output file shares, then decodes it into out with unknown fields
 // refused. It returns every problem, so a rejected file names all of them at once.
 func decodeStrict(text string, out any) []string {

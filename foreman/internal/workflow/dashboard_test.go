@@ -181,7 +181,7 @@ var _ = Describe("the retro dashboard", func() {
 		})
 
 		It("shows a Curator proposal with its id, groups and reason", func() {
-			state := workflow.DashboardState{Proposals: []workflow.DashboardProposal{{
+			state := workflow.DashboardState{Proposals: []workflow.GroupRelation{{
 				ID: "p1",
 				Groups: []workflow.GroupID{
 					{Target: skillTarget, Key: groupKey},
@@ -257,7 +257,7 @@ var _ = Describe("the retro dashboard", func() {
 					Kind: workflow.ActionCurate, By: "o", At: now.Add(-30 * time.Minute),
 					URL: "https://github.com/o/r/issues/99#issuecomment-2",
 				}},
-				Proposals: []workflow.DashboardProposal{{
+				Proposals: []workflow.GroupRelation{{
 					ID: "p1",
 					Groups: []workflow.GroupID{
 						{Target: skillTarget, Key: groupKey},
@@ -265,7 +265,7 @@ var _ = Describe("the retro dashboard", func() {
 					},
 					Reason: "same guide problem",
 				}},
-				Links: []workflow.DashboardLink{{
+				Links: []workflow.GroupRelation{{
 					ID: "l1",
 					Groups: []workflow.GroupID{
 						{Target: skillTarget, Key: groupKey},
@@ -285,6 +285,93 @@ var _ = Describe("the retro dashboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(parsed).To(Equal(state))
 		})
+
+		It("round-trips a full state exactly, with every optional part", func() {
+			state := workflow.DashboardState{
+				Actions: []workflow.DashboardAction{{
+					Kind: workflow.ActionMerge,
+					Groups: []workflow.GroupID{
+						{Target: skillTarget, Key: groupKey},
+						{Target: skillTarget, Key: "guide-skips-review"},
+					},
+					By: "o", At: now.Add(-time.Hour).Add(123 * time.Nanosecond),
+				}},
+				Rejected: []workflow.DashboardRejection{{
+					ID: "p9", By: "o", At: now.Add(-3 * time.Hour), URL: "https://github.com/o/r/issues/1",
+					Groups: []workflow.GroupID{
+						{Target: skillTarget, Key: groupKey},
+						{Target: skillTarget, Key: "guide-skips-review"},
+					},
+				}},
+				Published: []workflow.DashboardPublication{{
+					Group: workflow.GroupID{Target: skillTarget, Key: groupKey},
+					By:    "o", At: now.Add(-4 * time.Hour), URL: "https://github.com/o/r/issues/2",
+				}},
+				Handled: []int64{7, 3},
+			}
+
+			raw, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, state, now))
+			Expect(err).NotTo(HaveOccurred())
+
+			parsed, err := workflow.ParseDashboard(raw)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parsed).To(Equal(state))
+
+			again, err := workflow.RenderDashboard(workflow.BuildDashboard(nil, parsed, now))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(again).To(Equal(raw))
+		})
+
+		const (
+			groupG = `{"target":"skill:x","group":"g"}`
+			groupH = `{"target":"skill:x","group":"h"}`
+		)
+
+		DescribeTable("fails closed on any malformed field of the state block",
+			func(fields string) {
+				_, err := workflow.ParseDashboard(
+					workflow.DashboardMarker + "\n\n<!-- factory:dashboard-json\n{" + fields + "}\n-->")
+				Expect(err).To(HaveOccurred(), fields)
+			},
+			Entry("no version", `"actions":[],"proposals":[]`),
+			Entry("a future version", `"version":2,"actions":[],"proposals":[]`),
+			Entry("an unknown field", `"version":1,"actions":[],"proposals":[],"extra":1`),
+			Entry("trailing data", `"version":1,"actions":[],"proposals":[]}{`),
+			Entry("an unknown action kind", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"burn","groups":[],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("an action with the wrong group count", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"promote","groups":[],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("an action with no date", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"curate","groups":[],"by":"o"}]`),
+			Entry("an action with a malformed date", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"curate","groups":[],"by":"o","at":"yesterday"}]`),
+			Entry("an action with no author", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"curate","groups":[],"at":"2026-10-01T10:00:00Z"}]`),
+			Entry("an action link over several lines", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"curate","groups":[],"by":"o","at":"2026-10-01T10:00:00Z","url":"a\nb"}]`),
+			Entry("a group with a bad target", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"ignore","groups":[{"target":"skill:../x","group":"g"}],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("a group with a bad key", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"ignore","groups":[{"target":"skill:x","group":"G G"}],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("a group that is null", `"version":1,"proposals":[],"actions":[`+
+				`{"kind":"ignore","groups":[null],"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("a proposal of one group", `"version":1,"actions":[],"proposals":[`+
+				`{"id":"p","groups":[`+groupG+`],"reason":"r"}]`),
+			Entry("a proposal with a bad id", `"version":1,"actions":[],"proposals":[`+
+				`{"id":"P!","groups":[`+groupG+`,`+groupH+`],"reason":"r"}]`),
+			Entry("a proposal with an empty reason", `"version":1,"actions":[],"proposals":[`+
+				`{"id":"p","groups":[`+groupG+`,`+groupH+`],"reason":" "}]`),
+			Entry("a link within one target", `"version":1,"actions":[],"proposals":[],"links":[`+
+				`{"id":"l","groups":[`+groupG+`,`+groupH+`],"reason":"r"}]`),
+			Entry("a rejection with no date", `"version":1,"actions":[],"proposals":[],"rejected":[`+
+				`{"id":"p","groups":[`+groupG+`,`+groupH+`],"by":"o"}]`),
+			Entry("a publication with no group", `"version":1,"actions":[],"proposals":[],"published":[`+
+				`{"by":"o","at":"2026-10-01T10:00:00Z"}]`),
+			Entry("a malformed curator date", `"version":1,"actions":[],"proposals":[],`+
+				`"curator":{"last_run":"soon"}`),
+			Entry("a handled id of zero", `"version":1,"actions":[],"proposals":[],"handled":[0]`),
+			Entry("a repeated handled id", `"version":1,"actions":[],"proposals":[],"handled":[4,4]`),
+		)
 
 		It("is deterministic: the same log and state render the same body", func() {
 			first, err := workflow.RenderDashboard(view())

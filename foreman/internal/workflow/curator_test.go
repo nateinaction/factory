@@ -126,14 +126,14 @@ var _ = Describe("planning a Curator run", func() {
 		}
 	}
 
-	proposal := func(id string, groups ...workflow.GroupID) workflow.CuratorMerge {
-		return workflow.CuratorMerge{ID: id, Groups: groups, Reason: "one problem"}
+	proposal := func(id string, groups ...workflow.GroupID) workflow.GroupRelation {
+		return workflow.GroupRelation{ID: id, Groups: groups, Reason: "one problem"}
 	}
 
 	It("records merge proposals and links in the dashboard state", func() {
 		out := workflow.CuratorOutput{
-			Merges: []workflow.CuratorMerge{proposal("m1", guide, review)},
-			Links: []workflow.CuratorLink{
+			Merges: []workflow.GroupRelation{proposal("m1", guide, review)},
+			Links: []workflow.GroupRelation{
 				{ID: "l1", Groups: []workflow.GroupID{guide, agents}, Reason: "the docs disagree"},
 			},
 		}
@@ -153,7 +153,7 @@ var _ = Describe("planning a Curator run", func() {
 		}}}
 
 		plan := workflow.PlanCurator(workflow.CuratorOutput{
-			Merges: []workflow.CuratorMerge{proposal("new", guide, review)},
+			Merges: []workflow.GroupRelation{proposal("new", guide, review)},
 		}, readyReports(), state, false)
 
 		Expect(plan.State.Proposals).To(BeEmpty())
@@ -165,8 +165,8 @@ var _ = Describe("planning a Curator run", func() {
 		}}}
 
 		plan := workflow.PlanCurator(workflow.CuratorOutput{
-			Merges: []workflow.CuratorMerge{proposal("m1", guide, agents)},
-			Links:  []workflow.CuratorLink{{ID: "l1", Groups: []workflow.GroupID{review, agents}, Reason: "r"}},
+			Merges: []workflow.GroupRelation{proposal("m1", guide, agents)},
+			Links:  []workflow.GroupRelation{{ID: "l1", Groups: []workflow.GroupID{review, agents}, Reason: "r"}},
 		}, readyReports(), state, false)
 
 		Expect(plan.State.Proposals).To(BeEmpty())
@@ -199,13 +199,13 @@ var _ = Describe("planning a Curator run", func() {
 
 	It("keeps a proposal and link the dashboard already shows, without repeating it", func() {
 		state := workflow.DashboardState{
-			Proposals: []workflow.DashboardProposal{{ID: "m1", Groups: []workflow.GroupID{guide, review}, Reason: "old"}},
-			Links:     []workflow.DashboardLink{{ID: "l1", Groups: []workflow.GroupID{guide, agents}, Reason: "old"}},
+			Proposals: []workflow.GroupRelation{{ID: "m1", Groups: []workflow.GroupID{guide, review}, Reason: "old"}},
+			Links:     []workflow.GroupRelation{{ID: "l1", Groups: []workflow.GroupID{guide, agents}, Reason: "old"}},
 		}
 
 		plan := workflow.PlanCurator(workflow.CuratorOutput{
-			Merges: []workflow.CuratorMerge{proposal("m1", guide, review)},
-			Links:  []workflow.CuratorLink{{ID: "l1", Groups: []workflow.GroupID{guide, agents}, Reason: "the docs disagree"}},
+			Merges: []workflow.GroupRelation{proposal("m1", guide, review)},
+			Links:  []workflow.GroupRelation{{ID: "l1", Groups: []workflow.GroupID{guide, agents}, Reason: "the docs disagree"}},
 		}, readyReports(), state, false)
 
 		Expect(plan.State.Proposals).To(HaveLen(1))
