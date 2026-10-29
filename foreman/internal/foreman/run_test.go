@@ -87,6 +87,33 @@ var _ = Describe("Run", func() {
 			h.expectLeakFree("repo-token", "or-key")
 		})
 
+		It("shows the retro the groups other issues reported on the same target", func() {
+			h.implementerWrites(firstRunOutput)
+			h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+
+			earlier := h.createAs("o", nil, "An earlier issue")
+
+			body, err := workflow.RenderRetro(
+				workflow.RetroMarker(earlier, workflow.Implementer, "sha-earlier"),
+				[]workflow.RetroFinding{{
+					Target:   workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Group:    "guide-misses-tests",
+					Severity: workflow.SeverityLow,
+					Claim:    "the guide never mentions tests",
+					Evidence: "an earlier issue's evidence",
+				}})
+			Expect(err).NotTo(HaveOccurred())
+			h.comment(earlier, appLogin(workflow.Implementer), body)
+
+			Expect(run(workflow.Implementer)).To(BeZero())
+
+			retro := h.runner.find("--session")
+			Expect(retro).To(HaveLen(1))
+			Expect(joined(retro[0])).To(ContainSubstring("`guide-misses-tests`: the guide never mentions tests"))
+			Expect(joined(retro[0])).NotTo(ContainSubstring("an earlier issue's evidence"),
+				"the retro read another retro's evidence")
+		})
+
 		It("keys the retro by the commit the run produced, not the one it started from", func() {
 			heads := []string{"sha-start\n", "sha-new\n"}
 
