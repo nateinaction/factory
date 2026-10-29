@@ -328,6 +328,32 @@ var _ = Describe("Client", func() {
 		})
 	})
 
+	Describe("UpsertComment", func() {
+		It("leaves one comment when the same marked comment is posted twice", func() {
+			number := issue()
+			marker := "<!-- factory:test key=1 -->"
+
+			Expect(c.UpsertComment(ctx, ref(number), marker, marker+"\n\nfirst")).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), marker, marker+"\n\nsecond")).To(Succeed())
+
+			comments, err := emulator.Comments(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(1))
+			Expect(comments[0].Body).To(ContainSubstring("second"))
+		})
+
+		It("keeps comments with different markers apart", func() {
+			number := issue()
+
+			Expect(c.UpsertComment(ctx, ref(number), "<!-- a -->", "<!-- a -->\none")).To(Succeed())
+			Expect(c.UpsertComment(ctx, ref(number), "<!-- b -->", "<!-- b -->\ntwo")).To(Succeed())
+
+			comments, err := emulator.Comments(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(2))
+		})
+	})
+
 	Describe("PostRetro", func() {
 		body := func(number int, claim string) string {
 			text, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Reviewer, "abc"),

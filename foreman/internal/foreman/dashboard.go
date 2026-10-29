@@ -22,7 +22,7 @@ func redrawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
 	repo workflow.Repo, roles []workflow.Role, busy map[workflow.Role]bool, role workflow.Role,
 ) error {
-	issues, err := c.ListIssues(ctx, repo, github.StateAll)
+	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
 		return fmt.Errorf("list the dashboard's issues: %w", err)
 	}
@@ -184,7 +184,7 @@ func findDashboardIssue(
 		return number, body, found, nil
 	}
 
-	oldest, err := c.ListOldestIssues(ctx, repo, github.StateAll)
+	oldest, err := c.ListIssues(ctx, repo, github.StateAll, github.Oldest)
 	if err != nil {
 		return 0, "", false, fmt.Errorf("list the dashboard's issues: %w", err)
 	}

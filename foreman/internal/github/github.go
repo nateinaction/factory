@@ -47,10 +47,10 @@ const (
 	directionParam = "direction"
 	// sortCreated sorts by creation time.
 	sortCreated = "created"
-	// ascending is the oldest-first sort direction.
-	ascending = "asc"
-	// descending is the newest-first sort direction.
-	descending = "desc"
+	// Oldest is the oldest-first sort direction of an issue listing.
+	Oldest = "asc"
+	// Newest is the newest-first sort direction of an issue listing.
+	Newest = "desc"
 )
 
 // Client calls GitHub's REST API with one token.
@@ -241,7 +241,7 @@ func Paged[T any](ctx context.Context, c Client, path string) ([]T, error) {
 func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
 		stateParam: {stateOpen}, "labels": {label}, sortParam: {sortCreated},
-		directionParam: {ascending}, "per_page": {fmt.Sprint(IssuesPerPage)},
+		directionParam: {Oldest}, "per_page": {fmt.Sprint(IssuesPerPage)},
 	}
 
 	var issues []workflow.Issue
@@ -254,24 +254,17 @@ func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label strin
 // ListOpenIssues lists every open issue, oldest first. Pull requests are included in the answer and
 // the caller skips them.
 func (c Client) ListOpenIssues(ctx context.Context, repo workflow.Repo) ([]workflow.Issue, error) {
-	q := url.Values{stateParam: {stateOpen}, sortParam: {sortCreated}, directionParam: {ascending}}
-
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
+	return c.ListIssues(ctx, repo, stateOpen, Oldest)
 }
 
-// ListIssues lists a repository's issues in state ("open", "closed" or StateAll), newest first. Pull
+// ListIssues lists a repository's issues in state ("open", "closed" or StateAll), ordered by creation
+// in direction (Newest or Oldest). Oldest first keeps an issue that has been there since the
+// repository was assigned in reach on a repository with more issues than one scan holds. Pull
 // requests are included in the answer and the caller skips them.
-func (c Client) ListIssues(ctx context.Context, repo workflow.Repo, state string) ([]workflow.Issue, error) {
-	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {descending}}
-
-	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
-}
-
-// ListOldestIssues lists a repository's issues in state, oldest first, so an issue that has been there
-// since the repository was assigned is still found on a repository with more issues than one scan
-// holds.
-func (c Client) ListOldestIssues(ctx context.Context, repo workflow.Repo, state string) ([]workflow.Issue, error) {
-	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {ascending}}
+func (c Client) ListIssues(
+	ctx context.Context, repo workflow.Repo, state, direction string,
+) ([]workflow.Issue, error) {
+	q := url.Values{stateParam: {state}, sortParam: {sortCreated}, directionParam: {direction}}
 
 	return Paged[workflow.Issue](ctx, c, "/repos/"+repo.String()+"/issues?"+q.Encode())
 }
@@ -342,12 +335,7 @@ func (c Client) OpenBlockers(ctx context.Context, ref workflow.IssueRef) ([]work
 
 	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
 
-	err := c.Call(ctx, http.MethodGet, path, nil, &blocking)
-	if isStatus(err, http.StatusNotFound) {
-		return nil, false, nil
-	}
-
-	if err != nil {
+	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &blocking)); !supported {
 		return nil, false, err
 	}
 
@@ -395,6 +383,17 @@ func (c Client) CloseIssue(ctx context.Context, ref workflow.IssueRef) error {
 		issueStateRequest{State: stateClosed}, nil)
 }
 
+// endpointSupported reads the outcome of a call to an endpoint a repository may lack. A 404 means the
+// repository does not have the feature: unsupported, no error, so the caller falls back to the body's
+// convention. Any other failure is returned unsupported, so the caller fails closed.
+func endpointSupported(err error) (bool, error) {
+	if isStatus(err, http.StatusNotFound) {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
 // SubIssueNumbers lists the issues linked as sub-issues of parent. supported is false when the
 // repository has no sub-issues, so the caller can fall back to a "Part of #N" line.
 func (c Client) SubIssueNumbers(ctx context.Context, ref workflow.IssueRef) ([]int, bool, error) {
@@ -402,12 +401,7 @@ func (c Client) SubIssueNumbers(ctx context.Context, ref workflow.IssueRef) ([]i
 
 	path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues", ref.Repo, ref.Number)
 
-	err := c.Call(ctx, http.MethodGet, path, nil, &children)
-	if isStatus(err, http.StatusNotFound) {
-		return nil, false, nil
-	}
-
-	if err != nil {
+	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &children)); !supported {
 		return nil, false, err
 	}
 
@@ -466,12 +460,7 @@ func (c Client) BlockedByNumbers(ctx context.Context, ref workflow.IssueRef) ([]
 
 	path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by", ref.Repo, ref.Number)
 
-	err := c.Call(ctx, http.MethodGet, path, nil, &blockers)
-	if isStatus(err, http.StatusNotFound) {
-		return nil, false, nil
-	}
-
-	if err != nil {
+	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &blockers)); !supported {
 		return nil, false, err
 	}
 
@@ -488,12 +477,9 @@ func (c Client) BlockedByNumbers(ctx context.Context, ref workflow.IssueRef) ([]
 func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Issue, bool, error) {
 	var parent workflow.Issue
 
-	err := c.Call(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/parent", ref.Repo, ref.Number), nil, &parent)
-	if isStatus(err, http.StatusNotFound) {
-		return workflow.Issue{}, false, nil
-	}
+	path := fmt.Sprintf("/repos/%s/issues/%d/parent", ref.Repo, ref.Number)
 
-	if err != nil {
+	if supported, err := endpointSupported(c.Call(ctx, http.MethodGet, path, nil, &parent)); !supported {
 		return workflow.Issue{}, false, err
 	}
 
@@ -503,8 +489,12 @@ func (c Client) Parent(ctx context.Context, ref workflow.IssueRef) (workflow.Iss
 // PostResolution posts a research resolution, keyed by its findings branch. A repeat for the same
 // branch updates that comment rather than adding another.
 func (c Client) PostResolution(ctx context.Context, ref workflow.IssueRef, branch, text string) error {
-	marker := workflow.ResearchMarker(branch)
+	return c.UpsertComment(ctx, ref, workflow.ResearchMarker(branch), text)
+}
 
+// UpsertComment writes text as the one comment on ref that starts with marker: it edits that comment
+// when one exists and creates it otherwise, so writing the same marked comment again changes nothing.
+func (c Client) UpsertComment(ctx context.Context, ref workflow.IssueRef, marker, text string) error {
 	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return err
@@ -547,11 +537,6 @@ func (c Client) Comment(ctx context.Context, ref workflow.IssueRef, text string)
 
 // AddLabel adds one label to an issue.
 func (c Client) AddLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
-	return c.addLabel(ctx, ref, label)
-}
-
-// addLabel adds one label to an issue.
-func (c Client) addLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
 	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", ref.Repo, ref.Number),
 		labelsRequest{Labels: []string{label}}, nil)
 }
@@ -584,7 +569,7 @@ func (c Client) Claim(ctx context.Context, ref workflow.IssueRef, t workflow.Tra
 		return false, err
 	}
 
-	if err := c.addLabel(ctx, ref, string(t.To)); err != nil {
+	if err := c.AddLabel(ctx, ref, string(t.To)); err != nil {
 		return false, err
 	}
 
@@ -625,7 +610,7 @@ func (c Client) Finish(
 		return 0, err
 	}
 
-	return comment, c.addLabel(ctx, ref, string(t.To))
+	return comment, c.AddLabel(ctx, ref, string(t.To))
 }
 
 // CommentReturningID posts a comment and returns its id.
@@ -816,19 +801,7 @@ func (c Client) LatestReviewBody(ctx context.Context, ref workflow.IssueRef) (st
 func (c Client) PostRetro(
 	ctx context.Context, ref workflow.IssueRef, role workflow.Role, key string, body string,
 ) error {
-	marker := workflow.RetroMarker(ref.Number, role, key)
-
-	comments, err := c.ListComments(ctx, ref)
-	if err != nil {
-		return err
-	}
-
-	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
-			bodyRequest{Body: body}, nil)
-	}
-
-	return c.Comment(ctx, ref, body)
+	return c.UpsertComment(ctx, ref, workflow.RetroMarker(ref.Number, role, key), body)
 }
 
 // PostReview posts a native pull request review on a commit, carrying the verdict. A review GitHub
@@ -875,18 +848,5 @@ func (c Client) RequestReviewers(ctx context.Context, ref workflow.IssueRef, rev
 // PostReplies comments on the pull request, keyed by the commit the replies answer, so a repeat
 // updates that comment instead of adding another.
 func (c Client) PostReplies(ctx context.Context, ref workflow.IssueRef, sha, text string) error {
-	marker := workflow.RepliesMarker(sha)
-	path := fmt.Sprintf("/repos/%s/issues/%d/comments", ref.Repo, ref.Number)
-
-	comments, err := Paged[workflow.Item](ctx, c, path)
-	if err != nil {
-		return err
-	}
-
-	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
-		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", ref.Repo, mine[0].ID),
-			bodyRequest{Body: text}, nil)
-	}
-
-	return c.Comment(ctx, ref, text)
+	return c.UpsertComment(ctx, ref, workflow.RepliesMarker(sha), text)
 }

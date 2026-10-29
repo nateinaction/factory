@@ -105,7 +105,7 @@ func curatorInputs(
 		return nil, workflow.DashboardState{}, false, fmt.Errorf("read the dashboard body: %w", err)
 	}
 
-	issues, err := c.ListIssues(ctx, repo, github.StateAll)
+	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
 		return nil, workflow.DashboardState{}, false, fmt.Errorf("list the dashboard's issues: %w", err)
 	}
