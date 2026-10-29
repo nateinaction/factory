@@ -24,7 +24,7 @@ var _ = Describe("Run", func() {
 
 	// run runs role on issue 5 of o/r.
 	run := func(role workflow.Role) (int, error) {
-		return Run(context.Background(), h.deps, role, "o/r", testAgent(), 5)
+		return Run(context.Background(), h.deps, role, "o/r", testAgent(), testRetro(), 5)
 	}
 
 	Describe("the Implementer", func() {
@@ -53,7 +53,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
-			Expect(oc[0].Timeout).To(beNear(AgentTimeout))
+			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(joined(oc[0])).NotTo(ContainSubstring("Review:"), "first run carries review feedback")
 
 			push := h.runner.find("noreply.github.com push")
@@ -74,7 +74,7 @@ var _ = Describe("Run", func() {
 				ContainSubstring(`<!-- agent-retro:5:sha-head -->\n## Retro: #5\n\nlessons`)))
 			retro := h.runner.find("--session")
 			Expect(retro).To(HaveLen(1))
-			Expect(retro[0].Timeout).To(beNear(RetroTimeout))
+			Expect(retro[0].Timeout).To(beNear(testRetro().Deadline()))
 			h.expectLeakFree("repo-token", "or-key")
 		})
 
@@ -173,7 +173,7 @@ var _ = Describe("Run", func() {
 			oc := h.runner.find("opencode run --agent reviewer --format json Use the `code-review` skill")
 			Expect(oc).To(HaveLen(1))
 			Expect(oc[0].Dir).To(Equal(work))
-			Expect(oc[0].Timeout).To(beNear(ReviewTimeout))
+			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")

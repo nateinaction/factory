@@ -137,9 +137,9 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 			var code int
 
 			if verb == "start" {
-				code, err = foreman.Start(cmd.Context(), *d, role, args[1], number)
+				code, err = foreman.Start(cmd.Context(), *d, cfg, role, args[1], number)
 			} else {
-				code, err = foreman.Run(cmd.Context(), *d, role, args[1], cfg.Agents[string(role)], number)
+				code, err = foreman.Run(cmd.Context(), *d, role, args[1], cfg.Agents[string(role)], cfg.Retro, number)
 			}
 
 			return result(code, err)
