@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -10,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -130,6 +132,27 @@ var _ = Describe("poll telemetry", func() {
 		Expect(enqueue.Attributes()).To(ContainElement(attribute.String(telemetry.AttrAgentRole, "implementer")))
 		Expect(enqueue.Attributes()).To(ContainElement(attribute.String(telemetry.AttrRepo, "o/r")))
 		Expect(enqueue.Attributes()).To(ContainElement(attribute.Int(telemetry.AttrIssue, 5)))
+
+		// The enqueue hands its trace to the DAG as a W3C traceparent parameter, so the run it
+		// starts continues this span's trace.
+		enqueued := h.runner.find("enqueue")
+		Expect(enqueued).To(HaveLen(1))
+
+		var traceParent string
+
+		for _, arg := range enqueued[0].Argv {
+			if value, ok := strings.CutPrefix(arg, "TRACEPARENT="); ok {
+				traceParent = value
+			}
+		}
+
+		Expect(traceParent).NotTo(BeEmpty(), "the enqueue carries no trace context")
+		parentCtx, ok := telemetry.ContinueTrace(context.Background(), traceParent)
+		Expect(ok).To(BeTrue(), "the enqueued trace context is malformed")
+
+		parent := trace.SpanContextFromContext(parentCtx)
+		Expect(parent.TraceID()).To(Equal(enqueue.SpanContext().TraceID()))
+		Expect(parent.SpanID()).To(Equal(enqueue.SpanContext().SpanID()))
 
 		var rm metricdata.ResourceMetrics
 		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())

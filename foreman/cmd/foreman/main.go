@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -89,6 +90,13 @@ func executeTraced(
 ) int {
 	verb := verbOf(root, args)
 
+	// A run continues the trace its DAG parameter or environment carries. A missing context starts a
+	// new trace; a malformed one is ignored with a diagnostic, never an error.
+	ctx, ok := telemetry.ContinueTrace(ctx, traceParentOf(verb, args))
+	if !ok {
+		logger.WarnContext(ctx, "ignoring malformed trace context", "reason", "malformed traceparent")
+	}
+
 	ctx, span := tracer.Start(ctx, telemetry.RootSpanName(verb),
 		trace.WithAttributes(attribute.String(telemetry.AttrVerb, verb)))
 	defer span.End()
@@ -104,6 +112,43 @@ func executeTraced(
 	}
 
 	return code
+}
+
+// traceParentOf is the W3C trace context an invocation carries. `start` receives it from dagu as the
+// argument after the issue, the DAG's TRACEPARENT parameter. Every other verb reads the environment,
+// which is how `start` hands it to the factory half across sudo.
+func traceParentOf(verb string, args []string) string {
+	if verb == startVerb {
+		positional := positionalArgs(args)
+		if len(positional) == roleArgCount+2 && positional[roleArgCount+1] != "" {
+			return positional[roleArgCount+1]
+		}
+	}
+
+	return os.Getenv(telemetry.TraceParentVar)
+}
+
+// positionalArgs drops flags and their values, keeping the arguments cobra would treat as positional.
+// Every foreman flag takes a value, so a lone flag owns the next argument.
+func positionalArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		switch {
+		case arg == "--":
+			return append(out, args[i+1:]...)
+		case strings.HasPrefix(arg, "-"):
+			if !strings.Contains(arg, "=") {
+				i++
+			}
+		default:
+			out = append(out, arg)
+		}
+	}
+
+	return out
 }
 
 // unknownVerb names the span of an invocation that names no verb foreman has.

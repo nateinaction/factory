@@ -41,6 +41,12 @@ func (e *exitError) Unwrap() error {
 // issue.
 const roleArgCount = 3
 
+// The two verbs that run one agent role.
+const (
+	startVerb = "start"
+	runVerb   = "run"
+)
+
 // logsArgCount is how many positional arguments `logs` takes: repository, issue.
 const logsArgCount = 2
 
@@ -77,7 +83,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 	}
 
 	root.AddCommand(
-		pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d),
+		pollCommand(d), roleCommand(d, startVerb), roleCommand(d, runVerb), statusCommand(d), logsCommand(d),
 		historyCommand(d),
 	)
 
@@ -94,10 +100,11 @@ const sudoRunArgs = roleArgCount + 1
 // itself, and no other verb or an extra positional can run as the factory user.
 //
 // Refusing every flag is enough only because the settings a flag names also come from FACTORY_*
-// environment variables, and sudo's env_reset drops them: the sudoers file keeps DAG_RUN_ID and
-// nothing else, so a caller cannot pass an override in the environment instead.
+// environment variables, and sudo's env_reset drops them: the sudoers file keeps only DAG_RUN_ID and
+// TRACEPARENT, which name a run and link its trace, so a caller cannot pass an override in the
+// environment instead.
 func sudoRun(args []string) bool {
-	if len(args) != sudoRunArgs || args[0] != "run" {
+	if len(args) != sudoRunArgs || args[0] != runVerb {
 		return false
 	}
 
@@ -170,10 +177,16 @@ func pollCommand(d *foreman.Deps) *cobra.Command {
 
 // roleCommand is `foreman start` or `foreman run`: one agent role on one issue.
 func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
+	args := cobra.ExactArgs(roleArgCount)
+	if verb == startVerb {
+		// The DAG appends its TRACEPARENT parameter after the issue; a hand-run start omits it.
+		args = cobra.RangeArgs(roleArgCount, roleArgCount+1)
+	}
+
 	return &cobra.Command{
 		Use:   verb + " <agent-role> <owner/repo> <issue>",
 		Short: roleShort(verb),
-		Args:  cobra.ExactArgs(roleArgCount),
+		Args:  args,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			role, err := workflow.ParseRole(args[0])
 			if err != nil {
@@ -192,7 +205,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 
 			var code int
 
-			if verb == "start" {
+			if verb == startVerb {
 				code, err = foreman.Start(cmd.Context(), *d, cfg, role, ref)
 			} else {
 				d.Settings.FactoryRepo = cfg.FactoryRepo
@@ -209,7 +222,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 
 // roleShort is the one-line description of start or run.
 func roleShort(verb string) string {
-	if verb == "start" {
+	if verb == startVerb {
 		return "on the worker: give factory a token, run, record the outcome"
 	}
 
