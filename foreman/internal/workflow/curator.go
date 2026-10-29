@@ -80,17 +80,7 @@ type curatorIssueWire struct {
 // collecting values and problems together, so every problem is named and no value is built on the
 // say-so of an earlier check.
 func ParseCuratorOutput(text string) (CuratorOutput, error) {
-	var wire curatorWire
-
-	problems := decodeStrict(text, &wire)
-	out, more := curatorOutputOf(wire)
-	problems = append(problems, more...)
-
-	if len(problems) > 0 {
-		return CuratorOutput{}, &OutputError{File: CuratorOutputFile, Problems: problems}
-	}
-
-	return out, nil
+	return parseOutput(text, CuratorOutputFile, curatorOutputOf)
 }
 
 // curatorOutputOf parses every part of a decoded output file, returning what parsed and every

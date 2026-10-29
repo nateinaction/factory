@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nateinaction/factory/foreman/internal/proxy"
 	"github.com/nateinaction/factory/foreman/internal/proxyauth"
 )
 
@@ -28,18 +29,8 @@ const (
 	Loopback = "127.0.0.1:0"
 )
 
-// Ceilings on the proxy's own connections.
-const (
-	// dialTimeout bounds reaching OpenRouter.
-	dialTimeout = 10 * time.Second
-	// tlsTimeout bounds the TLS handshake.
-	tlsTimeout = 10 * time.Second
-	// headerTimeout bounds waiting for OpenRouter's response headers. The body may then stream for
-	// as long as the model run lasts.
-	headerTimeout = 60 * time.Second
-	// idleTimeout bounds a kept-alive connection between requests.
-	idleTimeout = 90 * time.Second
-)
+// tlsTimeout bounds the TLS handshake with OpenRouter.
+const tlsTimeout = 10 * time.Second
 
 // Proxy is a running forwarding proxy.
 type Proxy struct {
@@ -69,7 +60,7 @@ func start(key, token, addr, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("openrouter proxy: a per-run token is required")
 	}
 
-	if err := loopback(addr); err != nil {
+	if err := proxy.Address("openrouter", addr); err != nil {
 		return nil, err
 	}
 
@@ -84,44 +75,17 @@ func start(key, token, addr, upstream string) (*Proxy, error) {
 	}
 
 	p := &Proxy{key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest}
-	p.transport = transport()
+	// The transport ignores the proxy environment variables, so the key can never be sent anywhere
+	// but OpenRouter.
+	p.transport = proxy.Transport((&net.Dialer{Timeout: proxy.DialTimeout}).DialContext, tlsTimeout)
 	p.reverse = p.reverseProxy()
-	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: headerTimeout}
+	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: proxy.HeaderTimeout}
 
-	go func() {
-		// Serve returns ErrServerClosed when Close stops it, which is the only outcome: there is no
-		// error to report anywhere after the listener is closed.
-		_ = p.server.Serve(ln)
-	}()
+	// The serve loop reports anything but a clean stop through the default logger, as the reverse
+	// proxy's upstream failures are.
+	proxy.Serve(slog.Default(), "openrouter", p.server, ln)
 
 	return p, nil
-}
-
-// loopback checks that addr names a literal loopback IP, the only host the proxy may listen on.
-func loopback(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("proxy address %q: %w", addr, err)
-	}
-
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("proxy address %q: listens on loopback only", addr)
-	}
-
-	return nil
-}
-
-// transport is the proxy's client transport. It ignores the proxy environment variables, so the key
-// can never be sent anywhere but OpenRouter.
-func transport() *http.Transport {
-	return &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
-		TLSHandshakeTimeout:   tlsTimeout,
-		ResponseHeaderTimeout: headerTimeout,
-		IdleConnTimeout:       idleTimeout,
-	}
 }
 
 // reverseProxy forwards a request through the standard reverse proxy: it strips every hop-by-hop

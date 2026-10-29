@@ -15,7 +15,7 @@ type commandRun struct {
 	d     Deps
 	cfg   config.Config
 	c     github.Client
-	perms *permissions
+	perms permissions
 	repo  workflow.Repo
 	// role is the App that polls here: it files a promoted issue in another repository too.
 	role workflow.Role
@@ -395,7 +395,7 @@ func (r *commandRun) clientFor(ctx context.Context, repo workflow.Repo) (github.
 		return r.c, nil
 	}
 
-	token, err := r.d.mintToken(ctx, r.role, repo)
+	token, err := r.d.mint(ctx, r.role, repo, writableToken)
 	if err != nil {
 		return github.Client{}, fmt.Errorf("mint a token for %s: %w", repo, err)
 	}

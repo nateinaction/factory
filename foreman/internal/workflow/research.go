@@ -37,16 +37,9 @@ func ResearchBranch(name string) (string, error) {
 
 // ParseResearcherOutput reads researcher-output.json strictly.
 func ParseResearcherOutput(text string) (ResearcherOutput, error) {
-	var out ResearcherOutput
-
-	problems := decodeStrict(text, &out)
-	problems = append(problems, researcherProblems(out)...)
-
-	if len(problems) > 0 {
-		return ResearcherOutput{}, &OutputError{File: ResearcherOutputFile, Problems: problems}
-	}
-
-	return out, nil
+	return parseOutput(text, ResearcherOutputFile, func(out ResearcherOutput) (ResearcherOutput, []string) {
+		return out, researcherProblems(out)
+	})
 }
 
 // researcherProblems checks the fields a Researcher output carries beyond the strict decode.
