@@ -108,7 +108,8 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
 	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
 	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10,` +
+	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
 var _ = Describe("the foreman command", func() {
 	var h *cliHarness
@@ -185,6 +186,8 @@ var _ = Describe("the foreman command", func() {
 		Entry("no roles", `{"roles":[],"agents":{}}`),
 		Entry("roles missing", `{"agents":{}}`),
 		Entry("no dead-run margin", `{"roles":["implementer"],"agents":{},"dead_run_margin_minutes":0}`),
+		Entry("no review round limit", `{"roles":["implementer"],"agents":{},"review_round_limit":0}`),
+		Entry("no CI pending deadline", `{"roles":["implementer"],"agents":{},"ci_pending_deadline_minutes":0}`),
 		Entry("not JSON", `[`),
 	)
 

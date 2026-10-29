@@ -79,7 +79,7 @@ var _ = Describe("waking on a comment", func() {
 		// The Implementer's run reads the comment the writer left on the pull request.
 		h.writeToken(workflow.Implementer, "repo-token\n")
 		h.implementerWritesFor(1, reworkOutput)
-		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 1)).
+		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 3, 1)).
 			Error().NotTo(HaveOccurred())
 
 		oc := h.runner.find("opencode run --agent implementer --format json Use the")
@@ -168,7 +168,7 @@ var _ = Describe("waking on a comment", func() {
 		// The Implementer's run reads the guidance the writer left after the failure.
 		h.writeToken(workflow.Implementer, "repo-token\n")
 		h.implementerWritesFor(1, firstRunOutput)
-		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 1)).
+		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 3, 1)).
 			Error().NotTo(HaveOccurred())
 
 		oc := h.runner.find("opencode run --agent implementer --format json Use the")
