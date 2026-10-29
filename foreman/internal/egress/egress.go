@@ -1,7 +1,8 @@
 // Package egress is the loopback proxy every run's traffic crosses. srt blocks direct egress and
-// points the run at this proxy; the proxy enforces the agent role's allowlist, forwards the traffic,
-// and records every domain the run contacted for the usage line. It also serves the run's OpenRouter
-// API path, so the model's base URL is reachable through the one port srt bridges on every OS.
+// points the run at this proxy; the proxy enforces the agent role's allowlist, refuses every
+// destination that is not publicly routable, forwards the traffic, and records every domain the run
+// contacted for the usage line. It also serves the run's OpenRouter API path, so the model's base URL
+// is reachable through the one port srt bridges on every OS.
 package egress
 
 import (
@@ -52,21 +53,23 @@ const (
 
 // Proxy is a running egress proxy.
 type Proxy struct {
-	policy    sandbox.Network
-	api       *url.URL
-	token     string
-	server    *http.Server
-	listener  net.Listener
-	transport *http.Transport
-	forwarder *httputil.ReverseProxy
-	apiProxy  *httputil.ReverseProxy
-	mu        sync.Mutex
-	domains   map[string]struct{}
-	tunnels   map[net.Conn]struct{}
-	open      int
-	log       *slog.Logger
-	closeOnce sync.Once
-	closeErr  error
+	policy       sandbox.Network
+	api          *url.URL
+	token        string
+	server       *http.Server
+	listener     net.Listener
+	gateway      gateway
+	transport    *http.Transport
+	apiTransport *http.Transport
+	forwarder    *httputil.ReverseProxy
+	apiProxy     *httputil.ReverseProxy
+	mu           sync.Mutex
+	domains      map[string]struct{}
+	tunnels      map[net.Conn]struct{}
+	open         int
+	log          *slog.Logger
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // StartWithLogger binds a proxy for policy on addr. apiURL is the OpenRouter key proxy that
@@ -76,6 +79,18 @@ type Proxy struct {
 // without its proxy. logger records traffic the proxy refuses; nil discards those diagnostics.
 func StartWithLogger(
 	ctx context.Context, policy sandbox.Network, apiURL, token, addr string, logger *slog.Logger,
+) (*Proxy, error) {
+	return startProxy(ctx, policy, apiURL, token, addr, logger, gateway{
+		resolve: net.DefaultResolver, dial: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+	})
+}
+
+// startProxy binds a proxy that reaches destinations through g. The gateway is fixed before the
+// listener serves, so every request sees one destination decision. The per-run token is required:
+// an API call without it never reaches the key.
+func startProxy(
+	ctx context.Context, policy sandbox.Network, apiURL, token, addr string,
+	logger *slog.Logger, g gateway,
 ) (*Proxy, error) {
 	if token == "" {
 		return nil, fmt.Errorf("egress proxy: a per-run token is required")
@@ -100,12 +115,16 @@ func StartWithLogger(
 	}
 
 	p := &Proxy{
-		policy: policy, api: api, token: token, listener: ln, log: logger,
+		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
 		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
-	p.transport = transport()
-	p.forwarder = reverseProxy(p.transport, func(*httputil.ProxyRequest) {}, "egress proxy: upstream unavailable")
-	p.apiProxy = reverseProxy(p.transport, func(pr *httputil.ProxyRequest) {
+	plainDial := (&net.Dialer{Timeout: dialTimeout}).DialContext
+	p.transport = transport(p.gateway.dialContext)
+	// The key proxy is foreman's own loopback listener rather than a model-chosen destination, so
+	// its transport dials without the public-address check.
+	p.apiTransport = transport(plainDial)
+	p.forwarder = p.reverseProxy(p.transport, func(*httputil.ProxyRequest) {}, "egress proxy: upstream unavailable")
+	p.apiProxy = p.reverseProxy(p.apiTransport, func(pr *httputil.ProxyRequest) {
 		pr.Out.URL = p.apiURL(pr.In)
 		pr.Out.Host = ""
 	}, "egress proxy: model endpoint unavailable")
@@ -156,10 +175,10 @@ func parseAPI(apiURL string) (*url.URL, error) {
 
 // transport ignores the proxy environment variables, so traffic the run sends through this proxy is
 // never sent through another one.
-func transport() *http.Transport {
+func transport(dial dialFunc) *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		DialContext:           dial,
 		TLSHandshakeTimeout:   dialTimeout,
 		ResponseHeaderTimeout: headerTimeout,
 		IdleConnTimeout:       idleTimeout,
@@ -167,18 +186,18 @@ func transport() *http.Transport {
 }
 
 // reverseProxy is a forwarding handler over transport. rewrite names the outbound destination;
-// failure is what an unreachable upstream answers. The standard proxy strips every hop-by-hop
-// header, including those a Connection header names, and flushInterval -1 sends each streamed write
-// on as it arrives.
-func reverseProxy(
+// failure is what an upstream reachable in principle answers. The standard proxy strips every
+// hop-by-hop header, including those a Connection header names, and flushInterval -1 sends each
+// streamed write on as it arrives.
+func (p *Proxy) reverseProxy(
 	transport *http.Transport, rewrite func(*httputil.ProxyRequest), failure string,
 ) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite:       rewrite,
 		Transport:     transport,
 		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, failure, http.StatusBadGateway)
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			p.failed(w, r.URL.Hostname(), err, failure)
 		},
 	}
 }
@@ -224,6 +243,7 @@ func (p *Proxy) Close() error {
 		}
 
 		p.transport.CloseIdleConnections()
+		p.apiTransport.CloseIdleConnections()
 
 		if err := p.server.Close(); err != nil {
 			p.closeErr = fmt.Errorf("stop egress proxy: %w", err)
@@ -253,10 +273,27 @@ func (p *Proxy) record(host string) {
 	p.domains[strings.ToLower(host)] = struct{}{}
 }
 
-// refuse answers a destination the policy does not permit.
+// refuse answers a destination the proxy will not reach, recording it either way.
 func (p *Proxy) refuse(w http.ResponseWriter, host string) {
 	p.record(host)
 	http.Error(w, "egress proxy: destination not allowed", http.StatusForbidden)
+}
+
+// failed answers a dial that did not reach its destination: forbidden when the gateway refused the
+// address, failure for every other cause.
+func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure string) {
+	if refused, ok := refusal(err); ok {
+		p.log.Warn(
+			"egress proxy: destination is not publicly routable",
+			"host", host, "address", refused.addr.String(),
+		)
+		p.refuse(w, host)
+
+		return
+	}
+
+	p.log.Warn("egress proxy: upstream unavailable", "host", host, "error", err)
+	http.Error(w, failure, http.StatusBadGateway)
 }
 
 // tunnel carries a CONNECT to its destination.
@@ -291,9 +328,9 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 
 // relay reaches the tunnel's destination, hijacks the client connection and pipes both ways.
 func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string) {
-	upstream, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(r.Context(), "tcp", net.JoinHostPort(host, port))
+	upstream, err := p.gateway.dialContext(r.Context(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
-		http.Error(w, "egress proxy: upstream unavailable", http.StatusBadGateway)
+		p.failed(w, host, err, "egress proxy: upstream unavailable")
 
 		return
 	}

@@ -17,6 +17,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Usage | the key proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
 | Every model process runs under srt | `opencode run` is wrapped by `srt --settings <run>/srt-settings.json`; see `foreman/docs/sandbox.md` |
 | Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
+| No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
 
 ## The OpenRouter key proxy
 
