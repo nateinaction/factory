@@ -36,6 +36,8 @@ var _ = Describe("ParseResearcherOutput", func() {
 			`unknown field "labels"`),
 		Entry("repeated key", `{"version":1,"branch":"a","branch":"b","resolution":"r","decision_line":"d"}`,
 			"repeats"),
+		Entry("trailing data", `{"version":1,"branch":"b","resolution":"r","decision_line":"d"} null`,
+			"is not valid JSON"),
 		Entry("factory marker in the resolution",
 			`{"version":1,"branch":"b","resolution":"<!-- factory:handoff -->","decision_line":"d"}`, "marker"),
 		Entry("no branch", `{"version":1,"resolution":"r","decision_line":"d"}`, "branch"),

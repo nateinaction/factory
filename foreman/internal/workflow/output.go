@@ -1,11 +1,10 @@
 package workflow
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -412,31 +411,27 @@ func validText(field, text string, oneLine bool) error {
 	return nil
 }
 
-// decodeStrict checks what every output file shares, then decodes it into out with unknown fields
+// decodeStrict checks what every output file shares, then decodes it into out with unknown members
 // refused. It returns every problem, so a rejected file names all of them at once.
+//
+// encoding/json/v2 refuses a repeated member and trailing data itself. It stops at the first error
+// it finds, where the walker this replaced named every repeated key at once: rejecting the file is
+// what matters, and naming one place to start is enough to fix it.
 func decodeStrict(text string, out any) []string {
 	problems, object := sharedProblems(text)
 	if !object {
 		return problems
 	}
 
-	dec := json.NewDecoder(strings.NewReader(text))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(out); err != nil {
-		return append(problems, err.Error())
-	}
-
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		problems = append(problems, "has trailing data after the JSON object")
+	if err := json.Unmarshal([]byte(text), out, json.RejectUnknownMembers(true)); err != nil {
+		return append(problems, decodeProblem(err))
 	}
 
 	return problems
 }
 
-// sharedProblems checks the version, repeated keys and model text of every output file. object is
-// false when the text is empty, not JSON, or not a JSON object, so a typed decode would only repeat
-// the same failure.
+// sharedProblems checks the version and model text of every output file. object is false when the
+// text is empty, not JSON, or not a JSON object, so a typed decode would only repeat the failure.
 func sharedProblems(text string) ([]string, bool) {
 	if strings.TrimSpace(text) == "" {
 		return []string{"is empty"}, false
@@ -444,7 +439,7 @@ func sharedProblems(text string) ([]string, bool) {
 
 	var raw any
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return []string{"is not valid JSON: " + err.Error()}, false
+		return []string{syntaxProblem(err)}, false
 	}
 
 	object, ok := raw.(map[string]any)
@@ -454,18 +449,44 @@ func sharedProblems(text string) ([]string, bool) {
 
 	var problems []string
 
-	dups, err := repeatedKeys([]byte(text))
-	if err != nil {
-		problems = append(problems, "cannot check for repeated keys: "+err.Error())
-	} else if len(dups) > 0 {
-		problems = append(problems, "repeats the key at "+strings.Join(dups, ", "))
-	}
-
 	if version, ok := object["version"].(float64); !ok || version != OutputFileVersion {
 		problems = append(problems, fmt.Sprintf("version must be %d", OutputFileVersion))
 	}
 
 	return append(problems, markerProblems(raw, "")...), true
+}
+
+// syntaxProblem names why the text is not one JSON object foreman can read. A repeated member is
+// the model's mistake, so it is named by its JSON pointer.
+func syntaxProblem(err error) string {
+	if errors.Is(err, jsontext.ErrDuplicateName) {
+		return "repeats the key at " + string(jsonPointer(err))
+	}
+
+	return "is not valid JSON: " + err.Error()
+}
+
+// decodeProblem names why a JSON object does not fit the output's shape. encoding/json/v2 names a
+// shape mismatch after the Go type it was decoding, which is foreman's business, not the model's.
+func decodeProblem(err error) string {
+	if errors.Is(err, json.ErrUnknownName) {
+		return fmt.Sprintf("unknown field %q", jsonPointer(err).LastToken())
+	}
+
+	return err.Error()
+}
+
+// jsonPointer is the place in the JSON a decode error names, empty when it names none.
+func jsonPointer(err error) jsontext.Pointer {
+	if semantic, ok := errors.AsType[*json.SemanticError](err); ok {
+		return semantic.JSONPointer
+	}
+
+	if syntax, ok := errors.AsType[*jsontext.SyntacticError](err); ok {
+		return syntax.JSONPointer
+	}
+
+	return ""
 }
 
 // markerProblems names every place in a decoded file whose text carries a factory marker. foreman's
@@ -507,106 +528,4 @@ func fieldPath(parent, field string) string {
 	}
 
 	return parent + "." + field
-}
-
-// repeatedKeys lists where a JSON text repeats a key within one object, at any depth.
-func repeatedKeys(raw []byte) ([]string, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-
-	dups, err := walkKeys(dec, "")
-	if err != nil {
-		return nil, fmt.Errorf("read keys: %w", err)
-	}
-
-	return dups, nil
-}
-
-// walkKeys walks one JSON value and lists the repeated keys below it.
-func walkKeys(dec *json.Decoder, path string) ([]string, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, fmt.Errorf("read token: %w", err)
-	}
-
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil, nil //nolint:nilnil // a scalar holds no keys
-	}
-
-	switch delim {
-	case '{':
-		return walkObject(dec, path)
-	case '[':
-		return walkArray(dec, path)
-	case '}', ']':
-		return nil, fmt.Errorf("unbalanced %v", delim)
-	}
-
-	return nil, nil
-}
-
-// walkObject walks the members of one object, checking for repeated keys.
-func walkObject(dec *json.Decoder, path string) ([]string, error) {
-	var (
-		// A duplicate may appear anywhere; the walk cannot know how many before it reads them.
-		problems []string //nolint:prealloc // bounded by the file's size, which the read already bounds
-		seen     = map[string]bool{}
-	)
-
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return nil, fmt.Errorf("read key: %w", err)
-		}
-
-		key, ok := keyTok.(string)
-		if !ok {
-			return nil, errors.New("object key is not a string")
-		}
-
-		child := fieldPath(path, key)
-		if seen[key] {
-			problems = append(problems, child)
-		}
-
-		seen[key] = true
-
-		nested, err := walkKeys(dec, child)
-		if err != nil {
-			return nil, err
-		}
-
-		problems = append(problems, nested...)
-	}
-
-	if _, err := dec.Token(); err != nil { // the closing brace
-		return nil, fmt.Errorf("close object: %w", err)
-	}
-
-	return problems, nil
-}
-
-// walkArray walks the elements of one array.
-func walkArray(dec *json.Decoder, path string) ([]string, error) {
-	var (
-		// The walk cannot know an array's length before it reads the elements.
-		problems []string //nolint:prealloc // bounded by the file's size, which the read already bounds
-		index    int
-	)
-
-	for dec.More() {
-		nested, err := walkKeys(dec, fmt.Sprintf("%s[%d]", path, index))
-		if err != nil {
-			return nil, err
-		}
-
-		problems = append(problems, nested...)
-		index++
-	}
-
-	if _, err := dec.Token(); err != nil { // the closing bracket
-		return nil, fmt.Errorf("close array: %w", err)
-	}
-
-	return problems, nil
 }

@@ -2,9 +2,9 @@ package workflow
 
 import (
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -434,15 +434,8 @@ func StoredProposal(body string) (PlannerProposal, bool, error) {
 
 	var p PlannerProposal
 
-	dec := json.NewDecoder(strings.NewReader(text))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(&p); err != nil {
+	if err := jsonv2.Unmarshal([]byte(text), &p, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return PlannerProposal{}, true, fmt.Errorf("decode stored proposal: %w", err)
-	}
-
-	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return PlannerProposal{}, true, errors.New("stored proposal has trailing data")
 	}
 
 	if problems := proposalProblems(p); len(problems) > 0 {

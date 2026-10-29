@@ -81,6 +81,10 @@ var _ = Describe("curator-output.json", func() {
 				`"links":[` + proposal("p1", guide, agents) + `],"issues":[]}`,
 			// no version
 			`{"merges":[],"links":[],"issues":[]}`,
+			// a repeated member
+			`{"version":1,"version":1,"merges":[],"links":[],"issues":[]}`,
+			// trailing data
+			`{"version":1,"merges":[],"links":[],"issues":[]}{}`,
 			// an unknown field
 			`{"version":1,"merges":[],"links":[],"issues":[],"splits":[]}`,
 			// a factory marker in the model's text
