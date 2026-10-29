@@ -111,7 +111,17 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 
 	specPath := filepath.Join(rc.paths.scratch, "issue.md")
 
-	docs, err := writeSpec(specPath, rc.paths.workdir, rc.j.issue)
+	comments, err := rc.j.c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: rc.spec.ref.Number})
+	if err != nil {
+		return prepared{}, err
+	}
+
+	finalSpec, _, err := workflow.StoredSpec(comments)
+	if err != nil {
+		return prepared{}, err
+	}
+
+	docs, err := writeSpec(specPath, rc.paths.workdir, rc.j.issue, finalSpec)
 	if err != nil {
 		return prepared{}, err
 	}

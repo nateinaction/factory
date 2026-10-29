@@ -3,6 +3,7 @@ package workflow_test
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -180,56 +181,69 @@ var _ = Describe("retro comments", func() {
 	})
 
 	Describe("existing groups", func() {
-		It("keeps one key and claim per target from the same agent role, skipping the current run", func() {
-			first := comment("<!-- factory:retro issue=5 role=reviewer key=earlier -->", workflow.RetroFinding{
+		// report is one finding a retro posted, with where it came from.
+		report := func(
+			issue int, role workflow.Role, runKey string, at time.Time, group, claim, evidence string,
+		) workflow.DashboardReport {
+			return workflow.DashboardReport{
+				Issue: issue, Role: role, Key: runKey, At: at,
 				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
-				Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
-				Claim: "the guide never mentions tests", Evidence: "SECRET EVIDENCE",
-			})
-			repeat := comment("<!-- factory:retro issue=5 role=reviewer key=later -->", workflow.RetroFinding{
-				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
-				Group:  "guide-misses-tests", Severity: workflow.SeverityLow,
-				Claim: "same group, different wording", Evidence: "MORE SECRET EVIDENCE",
-			})
-			current := comment(marker, workflow.RetroFinding{
-				Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
-				Group:  "current-run", Severity: workflow.SeverityLow,
-				Claim: "this run", Evidence: "e",
-			})
+				Group:  group, Severity: workflow.SeverityLow, Claim: claim, Evidence: evidence,
+			}
+		}
 
-			groups, err := workflow.RetroGroups([]workflow.Item{first, repeat, current}, workflow.Reviewer, "sha-head")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(groups).To(Equal([]workflow.RetroGroup{{
-				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
-				Key:    "guide-misses-tests",
-				Claim:  "the guide never mentions tests",
-			}}))
+		It("shows a group another issue reported, with its claim but never its evidence", func() {
+			earlier := report(4, workflow.Reviewer, "sha-earlier", time.Unix(1_000, 0),
+				"guide-misses-tests", "the guide never mentions tests", "SECRET EVIDENCE")
+
+			Expect(workflow.RetroGroups([]workflow.DashboardReport{earlier}, workflow.Reviewer, "sha-head")).
+				To(Equal([]workflow.RetroGroup{{
+					Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Key:    "guide-misses-tests",
+					Claim:  "the guide never mentions tests",
+				}}))
+		})
+
+		It("keeps one key per target with the claim it got first, skipping the current run", func() {
+			first := report(4, workflow.Reviewer, "sha-earlier", time.Unix(1_000, 0),
+				"guide-misses-tests", "the guide never mentions tests", "SECRET EVIDENCE")
+			repeat := report(9, workflow.Reviewer, "sha-later", time.Unix(2_000, 0),
+				"guide-misses-tests", "same group, different wording", "MORE SECRET EVIDENCE")
+			current := workflow.DashboardReport{
+				Issue: 5, Role: workflow.Reviewer, Key: "sha-head", At: time.Unix(3_000, 0),
+				Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
+				Group:  "current-run", Severity: workflow.SeverityLow, Claim: "this run", Evidence: "e",
+			}
+
+			Expect(workflow.RetroGroups(
+				[]workflow.DashboardReport{repeat, first, current}, workflow.Reviewer, "sha-head")).
+				To(Equal([]workflow.RetroGroup{{
+					Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Key:    "guide-misses-tests",
+					Claim:  "the guide never mentions tests",
+				}}))
 		})
 
 		It("leaves another agent role's groups out", func() {
-			impl := comment("<!-- factory:retro issue=5 role=implementer key=abc -->", workflow.RetroFinding{
-				Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
-				Group:  "impl-only", Severity: workflow.SeverityLow, Claim: "c", Evidence: "IMPL EVIDENCE",
-			})
+			impl := report(4, workflow.Implementer, "abc", time.Unix(1_000, 0),
+				"impl-only", "c", "IMPL EVIDENCE")
 
-			groups, err := workflow.RetroGroups([]workflow.Item{impl}, workflow.Reviewer, "sha-head")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(groups).To(BeEmpty())
+			Expect(workflow.RetroGroups([]workflow.DashboardReport{impl}, workflow.Reviewer, "sha-head")).
+				To(BeEmpty())
 		})
 
 		It("sorts and bounds the groups it shows", func() {
-			items := make([]workflow.Item, 0, workflow.MaxRetroGroups+5)
+			reports := make([]workflow.DashboardReport, 0, workflow.MaxRetroGroups+5)
 			for i := range workflow.MaxRetroGroups + 5 {
 				key := fmt.Sprintf("group-%03d", i)
-				items = append(items, comment("<!-- factory:retro issue=5 role=reviewer key=k"+key+" -->",
-					workflow.RetroFinding{
-						Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
-						Group:  key, Severity: workflow.SeverityLow, Claim: key, Evidence: "e",
-					}))
+				reports = append(reports, workflow.DashboardReport{
+					Issue: 4, Role: workflow.Reviewer, Key: "k" + key, At: time.Unix(1_000, 0),
+					Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
+					Group:  key, Severity: workflow.SeverityLow, Claim: key, Evidence: "e",
+				})
 			}
 
-			groups, err := workflow.RetroGroups(items, workflow.Reviewer, "sha-head")
-			Expect(err).NotTo(HaveOccurred())
+			groups := workflow.RetroGroups(reports, workflow.Reviewer, "sha-head")
 			Expect(groups).To(HaveLen(workflow.MaxRetroGroups))
 			Expect(groups[0].Key).To(Equal("group-000"))
 		})

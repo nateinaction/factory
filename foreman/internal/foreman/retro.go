@@ -84,15 +84,20 @@ func (s session) retro(
 		return opencode.Usage{}, err
 	}
 
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
+	// A retro picks its group key from the target's groups across the whole repository, so a group two
+	// issues report is one the dashboard can count. The log read here is the same factory-authored one
+	// the dashboard draws from.
+	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
+	if err != nil {
+		return opencode.Usage{}, fmt.Errorf("list the repository's issues: %w", err)
+	}
+
+	reports, _, err := retroLog(ctx, s.d, c, repo, issues)
 	if err != nil {
 		return opencode.Usage{}, fmt.Errorf("read the retro log: %w", err)
 	}
 
-	groups, err := workflow.RetroGroups(comments, role, key)
-	if err != nil {
-		return opencode.Usage{}, fmt.Errorf("read the existing retro groups: %w", err)
-	}
+	groups := workflow.RetroGroups(reports, role, key)
 
 	res, err := s.agent(ctx, opencode.Run{
 		Role: role,

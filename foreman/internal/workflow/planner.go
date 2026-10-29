@@ -451,6 +451,33 @@ const (
 	wordBuild = "build"
 )
 
+// StoredSpec returns the spec of the latest stored proposal, when that proposal is a single. The
+// latest stored proposal wins: another shape keeps its spec where that shape puts it, not in the
+// final-round comment.
+func StoredSpec(comments []Item) (string, bool, error) {
+	var (
+		spec  string
+		final bool
+	)
+
+	for _, c := range comments {
+		if !FactoryAuthored(c.Author) {
+			continue
+		}
+
+		p, found, err := StoredProposal(c.Body)
+		if err != nil {
+			return "", false, err
+		}
+
+		if found {
+			spec, final = p.Spec, p.Shape == ShapeSingle
+		}
+	}
+
+	return spec, final, nil
+}
+
 // Approves reports whether text is a writer's explicit approval of a pending gate: a plain yes or a
 // request to build. A negated, questioning or conditional reply is not approval.
 func Approves(text string) bool {
