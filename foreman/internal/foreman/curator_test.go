@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -356,6 +357,28 @@ var _ = Describe("the poll's Curator trigger", func() {
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(1), "a curate bypassed the once-a-day limit")
+	})
+
+	It("queues nothing when the Curator DAG is already busy", func() {
+		number := h.createAs("o", nil, "An issue")
+		body, err := workflow.RenderRetro(workflow.RetroMarker(number, workflow.Implementer, "sha-a"),
+			[]workflow.RetroFinding{{
+				Target: curatorDocsTarget, Group: curatorDocsGroup.Key, Severity: workflow.SeverityHigh,
+				Claim: "no test command", Evidence: "searched and found none",
+			}})
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(number, "o", body)
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if len(c.Argv) > 1 && c.Argv[1] == "history" {
+				return `[{"name":"factory-curator","dagRunId":"r1","status":"queued"}]`, nil
+			}
+
+			return base(c)
+		})
+
+		Expect(poll()).Error().NotTo(HaveOccurred())
+		Expect(curatorEnqueues()).To(BeEmpty(), "queued a second run while the Curator DAG was busy")
 	})
 
 	It("queues nothing when the Curator App is not installed", func() {

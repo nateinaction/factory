@@ -173,8 +173,15 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	repos := assigned.Repos()
 	perms := newPermissions()
 
+	// Reading dagu first means a role whose DAG already has a run waiting or running is not queued for
+	// again, the Curator included.
+	busy, err := busyRoles(ctx, d, d.Settings.DAGPrefix)
+	if err != nil {
+		return 1, err
+	}
+
 	for _, repo := range repos {
-		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo]); err != nil {
+		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], busy); err != nil {
 			return 1, err
 		}
 	}
@@ -182,11 +189,6 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	// An agent role no worker host takes leaves its issues queued. One warning per poll, and nothing
 	// fails: the queue stays visible and pausable until a host takes the role.
 	warnUnhosted(d, cfg)
-
-	busy, err := busyRoles(ctx, d, d.Settings.DAGPrefix)
-	if err != nil {
-		return 1, err
-	}
 
 	for _, q := range pollQueues() {
 		if cfg.Unhosted(q.role) {
@@ -276,6 +278,7 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 // queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
 func prepareRepo(
 	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo string, roles []workflow.Role,
+	busy map[workflow.Role]bool,
 ) error {
 	role, ok := pollingRole(roles)
 	if !ok {
@@ -297,7 +300,7 @@ func prepareRepo(
 
 	// The dashboard is best effort: an issue cannot be handed off without the work below it, but a
 	// retro dashboard that cannot be drawn is retried on the next poll.
-	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, role); err != nil {
+	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, busy, role); err != nil {
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 
