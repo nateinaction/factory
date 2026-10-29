@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -262,8 +263,17 @@ var _ = Describe("applying an approved proposal", func() {
 
 		poll()
 
-		issues, err := emulator.Issues(context.Background(), "o/r")
+		all, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
+
+		var issues []ghtest.Issue
+
+		for _, issue := range all {
+			if issue.Title != workflow.DashboardTitle {
+				issues = append(issues, issue)
+			}
+		}
+
 		Expect(issues).To(HaveLen(2), "two slices; the original is closed")
 
 		slicesByKey := map[string]int{}
@@ -310,6 +320,6 @@ var _ = Describe("applying an approved proposal", func() {
 
 		again, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(again).To(HaveLen(len(issues)))
+		Expect(again).To(HaveLen(len(all)), "nothing new: no second slice and no second dashboard")
 	})
 })
