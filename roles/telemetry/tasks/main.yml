@@ -32,6 +32,8 @@
     - /etc/grafana
     - /etc/grafana/provisioning
     - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - /etc/grafana/dashboards
 
 # Prometheus scrapes nothing: every host's collector pushes OTLP to it.
 - name: Configure Prometheus
@@ -57,6 +59,8 @@
     - { src: loki.yaml.j2, dest: /etc/loki/loki.yaml, handler: loki }
     - { src: grafana.ini.j2, dest: /etc/grafana/grafana.ini, handler: grafana }
     - { src: datasources.yaml.j2, dest: /etc/grafana/provisioning/datasources/factory.yaml, handler: grafana }
+    - { src: dashboards.yaml.j2, dest: /etc/grafana/provisioning/dashboards/factory.yaml, handler: grafana }
+    - { src: host-health.json.j2, dest: /etc/grafana/dashboards/host-health.json, handler: grafana }
   loop_control:
     label: "{{ item.dest }}"
   notify: "Restart {{ item.handler }}"

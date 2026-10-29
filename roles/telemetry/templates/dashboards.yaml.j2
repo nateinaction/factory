@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Grafana loads every dashboard JSON in this directory at startup and every 30 seconds thereafter.
+# allowUiUpdates is false, so the files in this repository are the source of truth.
+apiVersion: 1
+providers:
+  - name: factory
+    orgId: 1
+    folder: Factory
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

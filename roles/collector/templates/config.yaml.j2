@@ -8,11 +8,35 @@ receivers:
         endpoint: {{ factory_collector_host }}:{{ factory_collector_grpc_port }}
       http:
         endpoint: {{ factory_collector_host }}:{{ factory_collector_http_port }}
+{% if factory_host_health | bool %}
+  # The host's own health, scraped on loopback. node_exporter supplies memory and filesystem use;
+  # its textfile collector carries the SoC temperature and the firmware's throttling bits, which a
+  # timer on the host writes. Keeping only the named families bounds cardinality and traffic.
+  prometheus/host_health:
+    config:
+      scrape_configs:
+        - job_name: host_health
+          scrape_interval: {{ factory_host_health_scrape_interval }}
+          static_configs:
+            - targets: ["{{ factory_host_health_host }}:{{ factory_host_health_port }}"]
+          metric_relabel_configs:
+            - action: keep
+              source_labels: [__name__]
+              regex: "{{ factory_host_health_metrics | join('|') }}"
+{% endif %}
 
 processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: {{ factory_collector_memory_limit_mib }}
+  # Every metric names the host that produced it, so the dashboard joins a run's duration to that
+  # host's health. The inventory name is the OS hostname base sets, which a run's span also carries.
+  transform/host:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["host.name"], "{{ inventory_hostname }}")
   # Anything not in allowed_keys is redacted, so a new attribute is dropped until it is added to
   # factory_collector_allowed_attributes. summary: info logs which keys were dropped, never values.
   redaction:
@@ -79,6 +103,9 @@ exporters:
 extensions:
   file_storage/queue:
     directory: /var/lib/otelcol/queue
+    # StateDirectory makes /var/lib/otelcol; the queue below it must exist before the collector
+    # starts, or it refuses the config and crash-loops.
+    create_directory: true
 
 {% endif %}
 service:
@@ -94,8 +121,8 @@ service:
       processors: [memory_limiter, redaction, batch]
       exporters: [spanmetrics, nop{% if factory_collector_backend_host | length > 0 %}, otlp_grpc/traces{% endif %}]
     metrics:
-      receivers: [otlp, spanmetrics]
-      processors: [memory_limiter, redaction, batch]
+      receivers: [otlp, spanmetrics{% if factory_host_health | bool %}, prometheus/host_health{% endif %}]
+      processors: [memory_limiter, transform/host, redaction, batch]
       exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/metrics{% endif %}]
     logs:
       receivers: [otlp]
