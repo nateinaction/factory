@@ -359,17 +359,70 @@ var _ = Describe("Poll", func() {
 			})
 		}
 
-		It("leaves an agent role queued while its DAG has a run waiting", func() {
+		// capped polls with the agent role's run capacity, which testConfig leaves at one.
+		capped := func(role workflow.Role, capacity int) (int, error) {
+			cfg := pollConfig(workflow.Implementer)
+			cfg.RoleCapacity[string(role)] = capacity
+
+			return Poll(context.Background(), h.deps, cfg)
+		}
+
+		It("leaves an agent role queued while its DAG has a run waiting for a worker", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}},
+			})
+			busyDagu(`[{"name":"factory-implementer","dagRunId":"r1","status":"queued"}]`)
+
+			code, err := capped(workflow.Implementer, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero())
+			Expect(h.runner.find("enqueue")).To(BeEmpty(), "claimed while the role's DAG was busy")
+			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplement), "a waiting issue lost its queued label")
+			Expect(h.markerComments(5)).To(BeEmpty())
+			Expect(h.logs.String()).To(ContainSubstring("while its DAG is busy"))
+		})
+
+		It("claims another run while one is in progress and the run cap has room", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}, {"number": 6}},
+			})
+			busyDagu(`[{"name":"factory-implementer","dagRunId":"r1","status":"running"}]`)
+
+			code, err := capped(workflow.Implementer, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero())
+
+			enqueued := h.runner.find("enqueue")
+			Expect(enqueued).To(HaveLen(1))
+			Expect(joined(enqueued[0])).To(ContainSubstring("ISSUE=5"), "a free slot went to the newest issue")
+			Expect(h.labels(6)).To(ContainElement(workflow.LabelImplement), "claimed past the run cap")
+		})
+
+		It("claims up to the run cap's free capacity in one poll", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 5}, {"number": 6}, {"number": 7}},
+			})
+
+			code, err := capped(workflow.Implementer, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero())
+
+			enqueued := h.runner.find("enqueue")
+			Expect(enqueued).To(HaveLen(2))
+			Expect(joined(enqueued[0])).To(ContainSubstring("ISSUE=5"))
+			Expect(joined(enqueued[1])).To(ContainSubstring("ISSUE=6"))
+			Expect(h.labels(7)).To(ContainElement(workflow.LabelImplement), "claimed past the run cap")
+		})
+
+		It("claims nothing for an agent role whose runs fill its run cap", func() {
 			h.queue(map[string][]map[string]any{
 				workflow.LabelImplement: {{"number": 5}},
 			})
 			busyDagu(`[{"name":"factory-implementer","dagRunId":"r1","status":"running"}]`)
 
 			expectNothingReady()
-			Expect(h.runner.find("enqueue")).To(BeEmpty(), "claimed while the role's DAG was busy")
-			Expect(h.labels(5)).To(ContainElement(workflow.LabelImplement), "a waiting issue lost its queued label")
-			Expect(h.markerComments(5)).To(BeEmpty())
-			Expect(h.logs.String()).To(ContainSubstring("while its DAG is busy"))
+			Expect(h.runner.find("enqueue")).To(BeEmpty(), "claimed past the run cap")
+			Expect(h.logs.String()).To(ContainSubstring("runs fill its capacity"))
 		})
 
 		It("still claims another agent role whose DAG is idle", func() {

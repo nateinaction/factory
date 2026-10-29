@@ -179,13 +179,16 @@ func testRetro() config.Budget { return config.Budget{Steps: 20, DeadlineMinutes
 // testConfig is a config file's worth of agent roles.
 func testConfig() config.Config {
 	agents := map[string]config.AgentConfig{}
+	capacity := map[string]int{}
+
 	for _, r := range workflow.KnownRoles() {
 		agents[string(r)] = testAgent()
+		capacity[string(r)] = 1
 	}
 
 	return config.Config{
 		Roles: workflow.KnownRoles(), Agents: agents, DeadRunMarginMinutes: 10,
-		ReviewRoundLimit: 3, CIPendingDeadlineMinutes: 60,
+		ReviewRoundLimit: 3, CIPendingDeadlineMinutes: 60, RoleCapacity: capacity,
 	}
 }
 
@@ -510,7 +513,8 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30,` +
 	`"retro":{"steps":20,"deadline_minutes":15}}},` +
 	`"dead_run_margin_minutes":10,` +
-	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
+	`"review_round_limit":3,"ci_pending_deadline_minutes":60,` +
+	`"role_capacity":{"planner":1,"researcher":1,"implementer":1,"reviewer":1,"curator":1}}`
 
 // writeToken leaves a token for the factory half of the agent role.
 func (h *harness) writeToken(role workflow.Role, token string) {

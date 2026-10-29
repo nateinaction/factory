@@ -219,6 +219,38 @@ var _ = Describe("Load", func() {
 		Expect(cfg.Unhosted(workflow.Implementer)).To(BeFalse())
 	})
 
+	It("reads how many runs of each agent role the fleet may run at once", func() {
+		raw, err := json.Marshal(map[string]any{
+			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+			"dead_run_margin_minutes": 10,
+			"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
+			"role_capacity": map[string]int{"implementer": 2},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg, err := config.Load(writeConfig(raw))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Capacity(workflow.Implementer)).To(Equal(2))
+		Expect(cfg.Capacity(workflow.Reviewer)).To(BeZero(), "an agent role the config does not name has no capacity")
+	})
+
+	DescribeTable("rejects a malformed role capacity",
+		func(capacity map[string]any) {
+			raw, err := json.Marshal(map[string]any{
+				"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+				"dead_run_margin_minutes": 10,
+				"review_round_limit":      3, "ci_pending_deadline_minutes": 60,
+				"role_capacity": capacity,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = config.Load(writeConfig(raw))
+			Expect(err).To(MatchError(ContainSubstring("role capacity")))
+		},
+		Entry("an agent role it does not know", map[string]any{"janitor": 1}),
+		Entry("a negative capacity", map[string]any{"implementer": -1}),
+	)
+
 	It("rejects an unhosted agent role it does not know", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),

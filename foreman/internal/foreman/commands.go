@@ -132,8 +132,23 @@ func pollQueues() []queueStep {
 	return out
 }
 
-// PollRunLimit bounds how many dagu runs a poll reads to know which agent roles are busy.
+// PollRunLimit bounds how many dagu runs a poll reads to know how many runs an agent role has.
 const PollRunLimit = 1000
+
+// runState is dagu's active runs counted by agent role: how many runs dagu can still move, and
+// whether one of them is waiting for a worker.
+type runState struct {
+	// active is how many runs the agent role's DAG has that dagu can still move.
+	active map[workflow.Role]int
+	// waiting is whether one of those runs is waiting for a worker.
+	waiting map[workflow.Role]bool
+}
+
+// free is how many more runs the agent role may start: its fleet-wide capacity less the runs dagu
+// can still move. It is never negative.
+func (s runState) free(role workflow.Role, capacity int) int {
+	return max(0, capacity-s.active[role])
+}
 
 // queuedIssue is one claimable issue, with the repository and client that found it.
 type queuedIssue struct {
@@ -165,25 +180,26 @@ func firstIssue(a, b queuedIssue) bool {
 }
 
 // Poll is deterministic and cheap: no model involved. It first brings every assigned repository's
-// labels, routing, waking and recovery up to date, and calls any dead run failed, then claims at most
-// one issue and queues its run. It looks only at repositories where one of the roles' Apps is
-// installed, and claims for an agent role only when that role's DAG has nothing waiting in dagu, in
-// scheduling order. Every claim uses its own agent role's token.
+// labels, routing, waking and recovery up to date, and calls any dead run failed, then claims issues
+// and queues their runs. It looks only at repositories where one of the roles' Apps is installed, and
+// works the queues in scheduling order. An agent role whose DAG has a run waiting for a worker is not
+// claimed for; one whose runs are all in progress is claimed for while its fleet-wide run capacity
+// has room, so one poll fills a run cap above one. Every claim uses its own agent role's token.
 func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	assigned := Assigned(ctx, d, cfg.Roles)
 
 	repos := assigned.Repos()
 	perms := newPermissions()
 
-	// Reading dagu first means an agent role whose DAG already has a run waiting or running is not
+	// Reading dagu first means an agent role whose DAG already has a run waiting for a worker is not
 	// queued for again, the Curator included.
-	busy, err := busyRoles(ctx, d, d.Settings.DAGPrefix)
+	runs, err := readRuns(ctx, d, d.Settings.DAGPrefix)
 	if err != nil {
 		return 1, err
 	}
 
 	for _, repo := range repos {
-		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], busy); err != nil {
+		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo], runs.waiting); err != nil {
 			return 1, err
 		}
 	}
@@ -197,15 +213,23 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 			continue
 		}
 
-		// An agent role whose DAG has a run waiting or running is not claimed for, so a running label
-		// always means a run is happening.
-		if busy[q.role] {
+		// A run waiting for a worker is not a run in progress, so an agent role with one is not claimed
+		// for yet: its queued issue is what the worker takes next.
+		if runs.waiting[q.role] {
 			d.log().Info("leaving an agent role's queue while its DAG is busy", "role", q.role)
 
 			continue
 		}
 
-		code, done, err := claimFromQueue(ctx, d, cfg, perms, assigned, repos, q)
+		// Runs in progress still leave room while the fleet-wide capacity is not full.
+		slots := runs.free(q.role, cfg.Capacity(q.role))
+		if slots == 0 {
+			d.log().Info("leaving an agent role's queue while its runs fill its capacity", "role", q.role)
+
+			continue
+		}
+
+		code, done, err := claimFromQueue(ctx, d, cfg, perms, assigned, repos, q, slots)
 		if done || err != nil {
 			return code, err
 		}
@@ -224,24 +248,24 @@ func warnUnhosted(d Deps, cfg config.Config) {
 	}
 }
 
-// busyRoles reads dagu's active runs, read-only, and names the agent roles whose DAG dagu can still
-// move. A dagu read that fails is an error: the poll must never claim while it cannot tell.
-func busyRoles(ctx context.Context, d Deps, prefix string) (map[workflow.Role]bool, error) {
+// readRuns reads dagu's active runs, read-only, and counts them by agent role. A dagu read that
+// fails is an error: the poll must never claim while it cannot tell.
+func readRuns(ctx context.Context, d Deps, prefix string) (runState, error) {
 	out, err := d.run(ctx, proc.Cmd{
 		Argv: dagu.ActiveHistoryArgv(d.Settings.Dagu, PollRunLimit), Capture: true, Timeout: DaguTimeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the busy agent roles from dagu: %w", err)
+		return runState{}, fmt.Errorf("read the agent roles' runs from dagu: %w", err)
 	}
 
-	runs, err := dagu.ParseHistory([]byte(out))
+	history, err := dagu.ParseHistory([]byte(out))
 	if err != nil {
-		return nil, err
+		return runState{}, err
 	}
 
-	busy := map[workflow.Role]bool{}
+	state := runState{active: map[workflow.Role]int{}, waiting: map[workflow.Role]bool{}}
 
-	for _, run := range runs {
+	for _, run := range history {
 		name, ok := strings.CutPrefix(run.Name, prefix)
 		if !ok || !run.Active() {
 			continue
@@ -252,10 +276,14 @@ func busyRoles(ctx context.Context, d Deps, prefix string) (map[workflow.Role]bo
 			continue // another DAG that happens to share the prefix
 		}
 
-		busy[role] = true
+		state.active[role]++
+
+		if run.Waiting() {
+			state.waiting[role] = true
+		}
 	}
 
-	return busy, nil
+	return state, nil
 }
 
 // pollingRole is the App that places new issues in their first queue: the first installed agent role
@@ -280,7 +308,7 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 // queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
 func prepareRepo(
 	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo workflow.Repo, roles []workflow.Role,
-	busy map[workflow.Role]bool,
+	waiting map[workflow.Role]bool,
 ) error {
 	role, ok := pollingRole(roles)
 	if !ok {
@@ -302,7 +330,7 @@ func prepareRepo(
 
 	// The dashboard is best effort: an issue cannot be handed off without the work below it, but a
 	// retro dashboard that cannot be drawn is retried on the next poll.
-	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, busy, role); err != nil {
+	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, waiting, role); err != nil {
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 
@@ -627,12 +655,12 @@ func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 }
 
 // claimFromQueue gathers every eligible issue in one agent role's queue across the repositories where
-// its App is installed, then claims the oldest one. A repository whose token cannot be minted is
-// unassigned for this agent role. done is true when the poll is over: an issue was claimed or lost,
-// or the CI gate moved one.
+// its App is installed, then claims up to slots of the oldest ones, oldest first. A repository whose
+// token cannot be minted is unassigned for this agent role. done is true when the poll is over: an
+// issue was claimed or lost, or the CI gate moved one.
 func claimFromQueue(
 	ctx context.Context, d Deps, cfg config.Config, perms *permissions, assigned Assignment,
-	repos []workflow.Repo, q queueStep,
+	repos []workflow.Repo, q queueStep, slots int,
 ) (code int, done bool, err error) {
 	candidates := make([]queuedIssue, 0)
 
@@ -663,45 +691,53 @@ func claimFromQueue(
 		}
 	}
 
-	return claimOldest(ctx, d, cfg, q, candidates)
+	return claimOldest(ctx, d, cfg, q, candidates, slots)
 }
 
-// claimOldest claims the oldest candidate in one agent role's queue. The Reviewer's CI gate runs
-// first: pending CI leaves that issue queued for a later candidate, while an issue the gate moved ends
-// the poll with no model run.
+// claimOldest claims the oldest candidates in one agent role's queue, up to the slots the role's run
+// capacity leaves free. The Reviewer's CI gate runs first: pending CI leaves that issue queued for a
+// later candidate, while an issue the gate moved ends the poll with no model run. A lost claim ends it
+// too, so a second poll never takes the issue this one just lost.
 func claimOldest(
-	ctx context.Context, d Deps, cfg config.Config, q queueStep, candidates []queuedIssue,
+	ctx context.Context, d Deps, cfg config.Config, q queueStep, candidates []queuedIssue, slots int,
 ) (code int, done bool, err error) {
 	slices.SortStableFunc(candidates, compareIssues)
 
+	claimed := 0
+
 	for _, candidate := range candidates {
-		if q.role != workflow.Reviewer {
-			code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
+		if claimed == slots {
+			break
+		}
 
+		if q.role == workflow.Reviewer {
+			claim, moved, gateErr := ciGate(ctx, d, cfg, candidate.client, candidate.repo, candidate.issue)
+			if gateErr != nil {
+				d.log().Warn("skipping an issue whose CI cannot be read",
+					"repo", candidate.repo, "issue", candidate.issue.Number, "error", gateErr)
+
+				continue
+			}
+
+			if moved {
+				return 0, true, nil
+			}
+
+			if !claim {
+				// Pending CI leaves the issue queued; a later issue may still be claimable.
+				continue
+			}
+		}
+
+		won, code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
+		if err != nil || !won {
 			return code, true, err
 		}
 
-		claim, moved, gateErr := ciGate(ctx, d, cfg, candidate.client, candidate.repo, candidate.issue)
-		if gateErr != nil {
-			d.log().Warn("skipping an issue whose CI cannot be read",
-				"repo", candidate.repo, "issue", candidate.issue.Number, "error", gateErr)
-
-			continue
-		}
-
-		if moved {
-			return 0, true, nil
-		}
-
-		if claim {
-			code, err := claimAndEnqueue(ctx, d, candidate.client, candidate.repo, candidate.issue, q)
-
-			return code, true, err
-		}
-		// Pending CI leaves the issue queued; a later issue may still be claimable.
+		claimed++
 	}
 
-	return 0, false, nil
+	return 0, claimed > 0, nil
 }
 
 // compareIssues orders two candidates for sorting: firstIssue's order as a three-way comparison.
@@ -944,25 +980,25 @@ func headSHA(ctx context.Context, c github.Client, ref workflow.IssueRef) (strin
 	return pr.Head.SHA, nil
 }
 
-// claimAndEnqueue claims the issue, then queues its run. A queue failure fails the issue rather than
-// leaving it claimed.
+// claimAndEnqueue claims the issue, then queues its run. won is false when another run claimed the
+// issue first. A queue failure fails the issue rather than leaving it claimed.
 func claimAndEnqueue(
 	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue, q queueStep,
-) (int, error) {
+) (won bool, code int, err error) {
 	sha, err := headSHA(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
-		return 1, err
+		return false, 1, err
 	}
 
 	t := workflow.Transition{Role: q.role, RunID: d.runID(), From: q.src, To: q.dst, SHA: sha}
 
-	won, err := c.Claim(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t)
+	won, err = c.Claim(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t)
 	if err != nil {
-		return 1, err
+		return false, 1, err
 	}
 
 	if !won {
-		return 0, writeLine(d.Out, fmt.Sprintf("issue %d was claimed by someone else", issue.Number))
+		return false, 0, writeLine(d.Out, fmt.Sprintf("issue %d was claimed by someone else", issue.Number))
 	}
 
 	_, err = d.run(ctx, proc.Cmd{Argv: []string{
@@ -978,10 +1014,10 @@ func claimAndEnqueue(
 
 		_, err = c.Finish(ctx, ref, t, "Could not queue the agent run; see the dagu log.")
 
-		return 1, err
+		return false, 1, err
 	}
 
-	return 0, nil
+	return true, 0, nil
 }
 
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.

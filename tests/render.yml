@@ -69,7 +69,8 @@
         content: >-
           {{ {'worker_labels': dagu_worker_labels, 'hosted_roles': factory_agent_hosted_roles,
               'unhosted_roles': factory_agent_unhosted_roles, 'run_cap': factory_agent_run_cap,
-              'queue_capacity': factory_agent_queue_capacity} | to_nice_json }}
+              'queue_capacity': factory_agent_queue_capacity,
+              'role_capacity': factory_agent_role_capacity} | to_nice_json }}
         dest: "{{ lookup('env', 'RENDER_DIR') }}/scheduling.json"
         mode: "0644"
 
