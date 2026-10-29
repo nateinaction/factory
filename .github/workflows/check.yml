@@ -1,4 +1,4 @@
-name: go
+name: check
 on:
   push:
   pull_request:
@@ -8,16 +8,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - name: go fix, go mod tidy, golangci-lint and tests
-        run: nix develop --command scripts/check-go
+      # The same hooks the git hook runs, from .pre-commit-config.yaml.
+      - name: pre-commit
+        run: nix develop --command pre-commit run --all-files
       # Needs the vulnerability database, so it runs in CI rather than the hook.
       - name: govulncheck
         working-directory: foreman
         run: nix develop --command govulncheck ./...
-  ansible:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: syntax check and Ansible tests
-        run: nix develop --command scripts/check-ansible

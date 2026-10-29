@@ -1,0 +1,50 @@
+# One definition of the repo's checks, shared by the git hook, CI and manual
+# runs (`pre-commit run --all-files`). The tools come from the Nix dev shell,
+# so every hook is `language: system`; pre-commit manages no environments.
+#
+# A hook that changes a file fails the run, which keeps the old "go fix and
+# go mod tidy must leave the tree alone" behavior.
+repos:
+  - repo: local
+    hooks:
+      - id: go-fix
+        name: go fix
+        entry: bash -c 'cd foreman && go fix ./...'
+        language: system
+        files: ^foreman/.*\.go$
+        pass_filenames: false
+
+      - id: go-mod-tidy
+        name: go mod tidy
+        entry: bash -c 'cd foreman && go mod tidy'
+        language: system
+        files: ^foreman/(go\.mod|go\.sum|.*\.go)$
+        pass_filenames: false
+
+      - id: golangci-lint
+        name: golangci-lint
+        entry: bash -c 'cd foreman && golangci-lint run ./...'
+        language: system
+        files: ^foreman/.*\.go$
+        pass_filenames: false
+
+      - id: go-test
+        name: go test (ginkgo)
+        entry: bash -c 'cd foreman && go tool ginkgo -r --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'
+        language: system
+        files: ^foreman/.*\.go$
+        pass_filenames: false
+
+      - id: ansible-syntax
+        name: ansible syntax check
+        entry: ansible-playbook --syntax-check site.yml
+        language: system
+        files: ^(site\.yml|ansible\.cfg|(roles|group_vars|inventory|tests)/.*\.ya?ml)$
+        pass_filenames: false
+
+      - id: ansible-test
+        name: ansible tests
+        entry: bash -c 'set -euo pipefail; for t in tests/*.test; do echo "== $t"; "$t"; done'
+        language: system
+        files: ^(roles/|tests/|group_vars/|inventory/|site\.yml|ansible\.cfg)
+        pass_filenames: false

@@ -32,11 +32,15 @@
             pkgs.go_1_27
             pkgs.golangci-lint
             pkgs.govulncheck
+            # Pinned to 4.7.0 by the locked nixpkgs revision (see flake.lock).
+            pkgs.pre-commit
           ];
-          # Install the pre-commit hook by pointing git at the tracked hooks.
+          # Install the git hook from .pre-commit-config.yaml. A leftover hooksPath
+          # would take precedence over the hook pre-commit writes, so clear it.
           shellHook = ''
             if git rev-parse --git-dir >/dev/null 2>&1; then
-              git config core.hooksPath scripts/hooks
+              git config --unset-all core.hooksPath || true
+              pre-commit install
             fi
           '';
         };
