@@ -2,6 +2,7 @@ package foreman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -209,12 +210,17 @@ func applyProposal(
 		return applySingle(ctx, c, repo, from, d.runID())
 	case workflow.ShapeSlices:
 		return applySlices(ctx, c, repo, from, d.runID(), specComment, p)
-	case workflow.ShapeMap, workflow.ShapeResolution:
-		return fmt.Errorf("proposal shape %s is not implemented yet", p.Shape)
+	case workflow.ShapeMap:
+		return applyMap(ctx, c, repo, from, d.runID(), p)
+	case workflow.ShapeResolution:
+		return applyResolution(ctx, c, repo, from, d.runID(), p)
 	default:
 		return fmt.Errorf("unknown proposal shape %q", p.Shape)
 	}
 }
+
+// closedState is how GitHub answers an issue that is closed.
+const closedState = "closed"
 
 // applySingle hands the issue itself to the Implementer. The spec stays in the final-round comment.
 func applySingle(ctx context.Context, c github.Client, repo string, from int, runID string) error {
@@ -244,7 +250,9 @@ func applySlices(
 	ctx context.Context, c github.Client, repo string, from int, runID string, specComment int64,
 	p workflow.PlannerProposal,
 ) error {
-	existing, err := plannedIssues(ctx, c, repo, from)
+	existing, err := planTickets(ctx, c, repo, from, p.Issues,
+		func(planned workflow.PlannedIssue) string { return sliceBody(repo, from, specComment, planned) },
+		implementLabels)
 	if err != nil {
 		return err
 	}
@@ -252,30 +260,274 @@ func applySlices(
 	refs := make([]workflow.SliceRef, 0, len(p.Issues))
 
 	for _, planned := range p.Issues {
-		issue, ok := existing[planned.Key]
-		if !ok {
-			issue, err = c.CreateIssue(ctx, repo, planned.Title,
-				sliceBody(repo, from, specComment, planned),
-				[]string{workflow.LabelImplement})
-			if err != nil {
-				return fmt.Errorf("create slice %s: %w", planned.Key, err)
-			}
+		issue := existing[planned.Key]
+		refs = append(refs, workflow.SliceRef{Key: planned.Key, Title: planned.Title, Number: issue.Number})
+	}
 
-			existing[planned.Key] = issue
+	if err := linkTickets(ctx, c, repo, from, existing, p.Issues); err != nil {
+		return err
+	}
+
+	return finishSlices(ctx, c, repo, from, runID, refs)
+}
+
+// applyMap rewrites an approved map's issue in the wayfinder layout, routes its tickets under it and
+// moves the issue to factory:done. A repeat reuses every issue, link and comment it made.
+func applyMap(
+	ctx context.Context, c github.Client, repo string, from int, runID string, p workflow.PlannerProposal,
+) error {
+	if p.Map == nil {
+		return errors.New("a map proposal carries no map")
+	}
+
+	issue, err := c.GetIssue(ctx, repo, from)
+	if err != nil {
+		return err
+	}
+
+	if err := ensureTicketLabels(ctx, c, repo, p.Issues); err != nil {
+		return err
+	}
+
+	existing, err := planTickets(ctx, c, repo, from, p.Issues, ticketBodyFor(from), ticketLabels)
+	if err != nil {
+		return err
+	}
+
+	if err := linkTickets(ctx, c, repo, from, existing, p.Issues); err != nil {
+		return err
+	}
+
+	if err := rewriteMapBody(ctx, c, repo, issue, *p.Map); err != nil {
+		return err
+	}
+
+	if err := c.AddLabel(ctx, repo, from, workflow.LabelMap); err != nil {
+		return err
+	}
+
+	return finishMap(ctx, c, repo, from, runID)
+}
+
+// rewriteMapBody lays the map out over the writer's text, once. It also creates the wayfinder:map
+// label the issue is about to carry.
+func rewriteMapBody(
+	ctx context.Context, c github.Client, repo string, issue workflow.Issue, m workflow.PlannerMap,
+) error {
+	if !isMapBody(issue) {
+		if err := c.UpdateIssueBody(ctx, repo, issue.Number, workflow.RenderMap(issue.Body, m)); err != nil {
+			return fmt.Errorf("rewrite #%d as a map: %w", issue.Number, err)
+		}
+	}
+
+	return c.EnsureLabels(ctx, repo, []string{workflow.LabelMap})
+}
+
+// finishMap moves the map to factory:done once, keyed by its applied marker.
+func finishMap(ctx context.Context, c github.Client, repo string, from int, runID string) error {
+	comments, err := c.ListComments(ctx, repo, from)
+	if err != nil {
+		return err
+	}
+
+	if hasMarker(comments, workflow.AppliedMarker(from)) {
+		return nil
+	}
+
+	t := workflow.Transition{
+		Role: workflow.Planner, RunID: runID, From: workflow.Waiting, To: workflow.Done,
+	}
+
+	text := workflow.AppliedMarker(from) +
+		"\n\nThe map is approved. Its tickets are sub-issues of this map."
+
+	_, err = c.Finish(ctx, repo, from, t, text)
+
+	return err
+}
+
+// isMapBody reports whether the issue already carries the map layout, so an apply never wraps the
+// writer's text in a second map.
+func isMapBody(issue workflow.Issue) bool {
+	return workflow.HasLabel(issue, workflow.LabelMap) || strings.Contains(issue.Body, "## Original request")
+}
+
+// applyResolution records an approved decision ticket: its tickets go under the ticket's map, its
+// decision line joins the map's Decisions so far, and the ticket is closed. Every step is keyed, so
+// applying the same resolution again changes nothing.
+func applyResolution(
+	ctx context.Context, c github.Client, repo string, from int, runID string, p workflow.PlannerProposal,
+) error {
+	if p.Resolution == nil {
+		return errors.New("a resolution proposal carries no resolution")
+	}
+
+	issue, err := c.GetIssue(ctx, repo, from)
+	if err != nil {
+		return err
+	}
+
+	parent, err := parentMap(ctx, c, repo, issue)
+	if err != nil {
+		return err
+	}
+
+	if err := ensureTicketLabels(ctx, c, repo, p.Issues); err != nil {
+		return err
+	}
+
+	existing, err := planTickets(ctx, c, repo, from, p.Issues, ticketBodyFor(from), ticketLabels)
+	if err != nil {
+		return err
+	}
+
+	if err := linkTickets(ctx, c, repo, parent.Number, existing, p.Issues); err != nil {
+		return err
+	}
+
+	if err := appendDecision(ctx, c, repo, parent, issue, p.Resolution.DecisionLine); err != nil {
+		return err
+	}
+
+	if err := postResolution(ctx, c, repo, from, p.Resolution.Answer); err != nil {
+		return err
+	}
+
+	if issue.State == closedState {
+		return nil
+	}
+
+	return c.CloseResolved(ctx, repo, from, workflow.Transition{
+		Role: workflow.Planner, RunID: runID, From: workflow.Waiting, To: workflow.Closed,
+	})
+}
+
+// appendDecision adds the ticket's entry to its map's Decisions so far, writing only when the line
+// is new.
+func appendDecision(
+	ctx context.Context, c github.Client, repo string, parent, ticket workflow.Issue, line string,
+) error {
+	entry := workflow.DecisionEntry(ticket.Title, workflow.IssueURL(repo, ticket.Number), line)
+
+	body, err := workflow.AppendDecision(parent.Body, entry)
+	if err != nil {
+		return fmt.Errorf("append the decision to #%d: %w", parent.Number, err)
+	}
+
+	if body == parent.Body {
+		return nil
+	}
+
+	return c.UpdateIssueBody(ctx, repo, parent.Number, body)
+}
+
+// postResolution posts the resolution comment once, keyed to the ticket it resolves.
+func postResolution(ctx context.Context, c github.Client, repo string, from int, answer string) error {
+	comments, err := c.ListComments(ctx, repo, from)
+	if err != nil {
+		return err
+	}
+
+	marker := workflow.AppliedMarker(from)
+	if hasMarker(comments, marker) {
+		return nil
+	}
+
+	return c.Comment(ctx, repo, from, marker+"\n\n"+answer)
+}
+
+// ticketBody is a wayfinder ticket's body: its idempotency marker, then the ticket the Planner wrote.
+func ticketBody(from int, planned workflow.PlannedIssue) string {
+	return workflow.PlannedMarker(from, planned.Key) + "\n\n" + planned.Body
+}
+
+// ticketBodyFor is ticketBody for one map or resolution, ready for planTickets.
+func ticketBodyFor(from int) func(workflow.PlannedIssue) string {
+	return func(planned workflow.PlannedIssue) string { return ticketBody(from, planned) }
+}
+
+// ticketLabels derives a wayfinder ticket's labels from its type. The model never picks them.
+func ticketLabels(planned workflow.PlannedIssue) ([]string, error) {
+	return workflow.TicketLabels(planned.Type)
+}
+
+// implementLabels queues a slice for the Implementer.
+func implementLabels(workflow.PlannedIssue) ([]string, error) {
+	return []string{workflow.LabelImplement}, nil
+}
+
+// ensureTicketLabels creates every label the proposal's tickets carry the first time it sees them.
+func ensureTicketLabels(ctx context.Context, c github.Client, repo string, issues []workflow.PlannedIssue) error {
+	var labels []string
+
+	for _, planned := range issues {
+		derived, err := ticketLabels(planned)
+		if err != nil {
+			return err
 		}
 
-		refs = append(refs, workflow.SliceRef{Key: planned.Key, Title: planned.Title, Number: issue.Number})
+		for _, label := range derived {
+			if !slices.Contains(labels, label) {
+				labels = append(labels, label)
+			}
+		}
+	}
 
-		if err := ensureSubIssue(ctx, c, repo, from, issue); err != nil {
+	if len(labels) == 0 {
+		return nil
+	}
+
+	return c.EnsureLabels(ctx, repo, labels)
+}
+
+// planTickets creates each proposed issue that is not planned yet, returning every one keyed by its
+// slug. body and labels are the shape's rules for an issue.
+func planTickets(
+	ctx context.Context, c github.Client, repo string, from int, issues []workflow.PlannedIssue,
+	body func(workflow.PlannedIssue) string, labels func(workflow.PlannedIssue) ([]string, error),
+) (map[string]workflow.Issue, error) {
+	existing, err := plannedIssues(ctx, c, repo, from)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, planned := range issues {
+		if _, ok := existing[planned.Key]; ok {
+			continue
+		}
+
+		issueLabels, err := labels(planned)
+		if err != nil {
+			return nil, err
+		}
+
+		issue, err := c.CreateIssue(ctx, repo, planned.Title, body(planned), issueLabels)
+		if err != nil {
+			return nil, fmt.Errorf("create issue %s: %w", planned.Key, err)
+		}
+
+		existing[planned.Key] = issue
+	}
+
+	return existing, nil
+}
+
+// linkTickets links every planned issue under parent and adds its blocking edges.
+func linkTickets(
+	ctx context.Context, c github.Client, repo string, parent int,
+	planned map[string]workflow.Issue, issues []workflow.PlannedIssue,
+) error {
+	for _, p := range issues {
+		if err := ensureSubIssue(ctx, c, repo, parent, planned[p.Key]); err != nil {
 			return err
 		}
 	}
 
-	for _, planned := range p.Issues {
-		child := existing[planned.Key]
+	for _, p := range issues {
+		child := planned[p.Key]
 
-		for _, blocker := range planned.BlockedBy {
-			number, err := blockerNumber(blocker, existing)
+		for _, blocker := range p.BlockedBy {
+			number, err := blockerNumber(blocker, planned)
 			if err != nil {
 				return err
 			}
@@ -286,7 +538,7 @@ func applySlices(
 		}
 	}
 
-	return finishSlices(ctx, c, repo, from, runID, refs)
+	return nil
 }
 
 // sliceBody is a slice's body: its idempotency marker, a link to the approved spec comment, then the
