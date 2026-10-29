@@ -129,6 +129,31 @@ var _ = Describe("Poll", func() {
 			Expect(h.labels(number)).To(BeEmpty(), "routed an issue whose author it could not read")
 			Expect(h.logs.String()).To(ContainSubstring("failing closed"))
 		})
+
+		It("reads each login's permission once for the whole poll", func() {
+			number := h.createAs("factory", nil, "A promoted group")
+			h.comment(number, "factory", "first")
+			h.comment(number, "factory", "second")
+			h.comment(number, "o", "please work on this")
+
+			permissionReads := func(login string) int {
+				reads := 0
+
+				for _, call := range h.gh.Summary() {
+					if call == "GET /repos/o/r/collaborators/"+login+"/permission" {
+						reads++
+					}
+				}
+
+				return reads
+			}
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+			Expect(h.labels(number)).To(ContainElement(workflow.LabelPlan))
+
+			Expect(permissionReads("factory")).To(Equal(1), "read a non-writer's permission more than once")
+			Expect(permissionReads("o")).To(Equal(1), "read a writer's permission more than once")
+		})
 	})
 
 	Describe("claiming", func() {

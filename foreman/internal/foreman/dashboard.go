@@ -19,7 +19,7 @@ import (
 // routed. When a retro added findings, a group became ready or a writer asked with `curate`, it queues
 // one Curator run for the repository, at most one at a time and once a day.
 func redrawDashboard(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
 	repo workflow.Repo, roles []workflow.Role, waiting map[workflow.Role]bool, role workflow.Role,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
