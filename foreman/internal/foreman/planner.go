@@ -42,7 +42,7 @@ func applyPlannerRound(
 // to build opens the gate. It returns false when the latest round is not a waiting Planner round or
 // the reply does not approve, so the ordinary wake rule runs instead.
 func approvePending(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	thread []workflow.Item, latest workflow.Marker,
 ) (bool, error) {
 	if latest.Role != workflow.Planner || latest.To != workflow.Waiting {
@@ -72,7 +72,7 @@ func approvePending(
 		return false, nil
 	}
 
-	token, err := d.mintToken(ctx, workflow.Planner, repo)
+	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the Planner's token; leaving the approved proposal unapplied",
 			"repo", repo, "issue", issue.Number, "error", err)
@@ -90,7 +90,7 @@ func approvePending(
 // pending. It uses the Planner's token, which owns the transition, and is keyed by the applied
 // marker, so a repeated poll moves nothing twice.
 func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue) (bool, error) {
-	token, err := d.mintToken(ctx, workflow.Planner, repo)
+	token, err := d.mint(ctx, workflow.Planner, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the Planner's token; leaving the gate closed",
 			"repo", repo, "issue", issue.Number, "error", err)
@@ -102,12 +102,13 @@ func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Is
 
 	c := d.client(token)
 
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
+	posted, err := markerPosted(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number},
+		workflow.AppliedMarker(issue.Number))
 	if err != nil {
 		return false, err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(issue.Number), repo.Owner()) {
+	if posted {
 		return true, nil
 	}
 
@@ -125,7 +126,7 @@ func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Is
 
 // lastWriterComment is the latest comment by a writer after marker, which the human gate reads.
 func lastWriterComment(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo,
 	thread []workflow.Item, marker workflow.Marker,
 ) (workflow.Item, bool) {
 	var (
@@ -164,12 +165,13 @@ func applyProposal(
 
 // applySingle hands the issue itself to the Implementer. The spec stays in the final-round comment.
 func applySingle(ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string) error {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: from})
+	posted, err := markerPosted(ctx, c, workflow.IssueRef{Repo: repo, Number: from},
+		workflow.AppliedMarker(from))
 	if err != nil {
 		return err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(from), repo.Owner()) {
+	if posted {
 		return nil
 	}
 
@@ -190,9 +192,11 @@ func applySlices(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string, specComment int64,
 	p workflow.PlannerProposal,
 ) error {
-	existing, err := planTickets(ctx, c, repo, from, p.Issues,
-		func(planned workflow.PlannedIssue) string { return sliceBody(repo, from, specComment, planned) },
-		implementLabels)
+	body := func(from int, planned workflow.PlannedIssue) string {
+		return sliceBody(repo, from, specComment, planned)
+	}
+
+	existing, err := planTickets(ctx, c, repo, from, p.Issues, body, implementLabels)
 	if err != nil {
 		return err
 	}
@@ -225,16 +229,7 @@ func applyMap(
 		return err
 	}
 
-	if err := ensureTicketLabels(ctx, c, repo, p.Issues); err != nil {
-		return err
-	}
-
-	existing, err := planTickets(ctx, c, repo, from, p.Issues, ticketBodyFor(from), ticketLabels)
-	if err != nil {
-		return err
-	}
-
-	if err := linkTickets(ctx, c, repo, from, existing, p.Issues); err != nil {
+	if err := planTicketTree(ctx, c, repo, from, from, p.Issues, ticketBody, ticketLabels); err != nil {
 		return err
 	}
 
@@ -267,12 +262,13 @@ func rewriteMapBody(
 
 // finishMap moves the map to factory:done once, keyed by its applied marker.
 func finishMap(ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string) error {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: from})
+	posted, err := markerPosted(ctx, c, workflow.IssueRef{Repo: repo, Number: from},
+		workflow.AppliedMarker(from))
 	if err != nil {
 		return err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(from), repo.Owner()) {
+	if posted {
 		return nil
 	}
 
@@ -314,16 +310,7 @@ func applyResolution(
 		return err
 	}
 
-	if err := ensureTicketLabels(ctx, c, repo, p.Issues); err != nil {
-		return err
-	}
-
-	existing, err := planTickets(ctx, c, repo, from, p.Issues, ticketBodyFor(from), ticketLabels)
-	if err != nil {
-		return err
-	}
-
-	if err := linkTickets(ctx, c, repo, parent.Number, existing, p.Issues); err != nil {
+	if err := planTicketTree(ctx, c, repo, from, parent.Number, p.Issues, ticketBody, ticketLabels); err != nil {
 		return err
 	}
 
@@ -367,27 +354,25 @@ func appendDecision(
 
 // postResolution posts the resolution comment once, keyed to the ticket it resolves.
 func postResolution(ctx context.Context, c github.Client, repo workflow.Repo, from int, answer string) error {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: from})
+	ref := workflow.IssueRef{Repo: repo, Number: from}
+	marker := workflow.AppliedMarker(from)
+
+	posted, err := markerPosted(ctx, c, ref, marker)
 	if err != nil {
 		return err
 	}
 
-	marker := workflow.AppliedMarker(from)
-	if hasMarker(comments, marker, repo.Owner()) {
+	if posted {
 		return nil
 	}
 
-	return c.Comment(ctx, workflow.IssueRef{Repo: repo, Number: from}, marker+"\n\n"+answer)
+	return c.Comment(ctx, ref, marker+"\n\n"+answer)
 }
 
-// ticketBody is a wayfinder ticket's body: its idempotency marker, then the ticket the Planner wrote.
+// ticketBody is a wayfinder ticket's body planned from issue from: its idempotency marker, then the
+// ticket the Planner wrote.
 func ticketBody(from int, planned workflow.PlannedIssue) string {
 	return workflow.PlannedMarker(from, planned.Key) + "\n\n" + planned.Body
-}
-
-// ticketBodyFor is ticketBody for one map or resolution, ready for planTickets.
-func ticketBodyFor(from int) func(workflow.PlannedIssue) string {
-	return func(planned workflow.PlannedIssue) string { return ticketBody(from, planned) }
 }
 
 // ticketLabels derives a wayfinder ticket's labels from its type. The model never picks them.
@@ -400,37 +385,61 @@ func implementLabels(workflow.PlannedIssue) ([]string, error) {
 	return []string{workflow.LabelImplement}, nil
 }
 
+// planTicketTree creates an approved proposal's tickets, each carrying its type's labels, and links
+// every one under parent: a map and a resolution plan their tickets the same way. from is the issue
+// the proposal was planned from; body and labels are the shape's rules for a ticket. Every step is
+// keyed, so applying the same proposal again changes nothing.
+func planTicketTree(
+	ctx context.Context, c github.Client, repo workflow.Repo, from, parent int,
+	issues []workflow.PlannedIssue, body func(from int, planned workflow.PlannedIssue) string,
+	labels func(workflow.PlannedIssue) ([]string, error),
+) error {
+	if err := ensureTicketLabels(ctx, c, repo, issues, labels); err != nil {
+		return err
+	}
+
+	existing, err := planTickets(ctx, c, repo, from, issues, body, labels)
+	if err != nil {
+		return err
+	}
+
+	return linkTickets(ctx, c, repo, parent, existing, issues)
+}
+
 // ensureTicketLabels creates every label the proposal's tickets carry the first time it sees them.
+// labels is the shape's rule for a ticket.
 func ensureTicketLabels(
 	ctx context.Context, c github.Client, repo workflow.Repo, issues []workflow.PlannedIssue,
+	labels func(workflow.PlannedIssue) ([]string, error),
 ) error {
-	var labels []string
+	var all []string
 
 	for _, planned := range issues {
-		derived, err := ticketLabels(planned)
+		derived, err := labels(planned)
 		if err != nil {
 			return err
 		}
 
 		for _, label := range derived {
-			if !slices.Contains(labels, label) {
-				labels = append(labels, label)
+			if !slices.Contains(all, label) {
+				all = append(all, label)
 			}
 		}
 	}
 
-	if len(labels) == 0 {
+	if len(all) == 0 {
 		return nil
 	}
 
-	return c.EnsureLabels(ctx, repo, labels)
+	return c.EnsureLabels(ctx, repo, all)
 }
 
 // planTickets creates each proposed issue that is not planned yet, returning every one keyed by its
 // slug. body and labels are the shape's rules for an issue.
 func planTickets(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int, issues []workflow.PlannedIssue,
-	body func(workflow.PlannedIssue) string, labels func(workflow.PlannedIssue) ([]string, error),
+	body func(from int, planned workflow.PlannedIssue) string,
+	labels func(workflow.PlannedIssue) ([]string, error),
 ) (map[string]workflow.Issue, error) {
 	existing, err := plannedIssues(ctx, c, repo, from)
 	if err != nil {
@@ -447,7 +456,7 @@ func planTickets(
 			return nil, err
 		}
 
-		issue, err := c.CreateIssue(ctx, repo, planned.Title, body(planned), issueLabels)
+		issue, err := c.CreateIssue(ctx, repo, planned.Title, body(from, planned), issueLabels)
 		if err != nil {
 			return nil, fmt.Errorf("create issue %s: %w", planned.Key, err)
 		}
@@ -503,24 +512,24 @@ func sliceBody(repo workflow.Repo, from int, specComment int64, planned workflow
 func finishSlices(
 	ctx context.Context, c github.Client, repo workflow.Repo, from int, runID string, refs []workflow.SliceRef,
 ) error {
-	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: from})
+	ref := workflow.IssueRef{Repo: repo, Number: from}
+
+	posted, err := markerPosted(ctx, c, ref, workflow.SlicesMarker(from))
 	if err != nil {
 		return err
 	}
 
-	if !hasMarker(comments, workflow.SlicesMarker(from), repo.Owner()) {
+	if !posted {
 		t := workflow.Transition{
 			Role: workflow.Planner, RunID: runID, From: workflow.Waiting, To: workflow.Done,
 		}
-
-		ref := workflow.IssueRef{Repo: repo, Number: from}
 
 		if _, err := c.Finish(ctx, ref, t, workflow.RenderSlices(from, refs)); err != nil {
 			return err
 		}
 	}
 
-	return c.CloseIssue(ctx, workflow.IssueRef{Repo: repo, Number: from})
+	return c.CloseIssue(ctx, ref)
 }
 
 // plannedIssues finds the issues already created from from, by their idempotency markers.
@@ -638,8 +647,13 @@ func ensureBodyLine(ctx context.Context, c github.Client, ref workflow.IssueRef,
 	return c.UpdateIssueBody(ctx, ref, line+"\n\n"+issue.Body)
 }
 
-// hasMarker reports whether a factory App's comment starts with marker. Another author's marker is
-// ignored, so an outsider can neither block an apply nor stand in for one.
-func hasMarker(comments []workflow.Item, marker string, owner string) bool {
-	return len(workflow.FactoryStartsWith(comments, marker, owner)) > 0
+// markerPosted reports whether a factory App's comment on ref already starts with marker. Another
+// author's marker is ignored, so an outsider can neither block an apply nor stand in for one.
+func markerPosted(ctx context.Context, c github.Client, ref workflow.IssueRef, marker string) (bool, error) {
+	comments, err := c.ListComments(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+
+	return len(workflow.FactoryStartsWith(comments, marker, ref.Repo.Owner())) > 0, nil
 }

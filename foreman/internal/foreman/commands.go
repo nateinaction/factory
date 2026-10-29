@@ -23,36 +23,25 @@ const MaxAssignedRepos = 200
 // supervisorGitRuns is how many git ceilings the supervisor adds around a run: the clone and the push.
 const supervisorGitRuns = 2
 
-// tokenArgs is the helper command line that mints one agent role's token for one repository. A
-// read-only token is restricted to reading the issue, its pull request and its contents.
-func tokenArgs(role workflow.Role, repo workflow.Repo, readOnly bool) []string {
-	args := []string{"token", "--app", string(role), "--repo", repo.String()}
+// The two tokens mint asks the helper for: the writable one foreman writes with, and the read-only
+// one the model gets.
+const (
+	writableToken = false
+	readOnlyToken = true
+)
+
+// mint asks the helper for one token of an agent role: its own App, scoped to the repository. A
+// read-only token is the same App and repository with only read permissions, so the model can read
+// GitHub but never write to it. There is no fallback: if this App can't mint, no other App's token
+// stands in for it.
+func (d Deps) mint(ctx context.Context, role workflow.Role, repo workflow.Repo, readOnly bool) (string, error) {
+	args := []string{d.Settings.TokenHelper, "token", "--app", string(role), "--repo", repo.String()}
 	if readOnly {
 		args = append(args, "--read-only")
 	}
 
-	return args
-}
-
-// mintToken asks the helper for a token of the agent role's own App, scoped to the repository.
-// There is no fallback: if this App can't mint, no other App's token stands in for it.
-func (d Deps) mintToken(ctx context.Context, role workflow.Role, repo workflow.Repo) (string, error) {
-	return d.mint(ctx, role, repo, false)
-}
-
-// mintReadOnlyToken asks the helper for the token the model gets: the same App and repository, with
-// only read permissions, so the model can read GitHub but never write to it.
-func (d Deps) mintReadOnlyToken(ctx context.Context, role workflow.Role, repo workflow.Repo) (string, error) {
-	return d.mint(ctx, role, repo, true)
-}
-
-// mint runs the helper for one token.
-func (d Deps) mint(ctx context.Context, role workflow.Role, repo workflow.Repo, readOnly bool) (string, error) {
 	// stderr is inherited so the helper's error reaches the dagu log; it never prints the token there.
-	out, err := d.run(ctx, proc.Cmd{
-		Argv:    append([]string{d.Settings.TokenHelper}, tokenArgs(role, repo, readOnly)...),
-		Capture: true, Timeout: MintTimeout,
-	})
+	out, err := d.run(ctx, proc.Cmd{Argv: args, Capture: true, Timeout: MintTimeout})
 	if err != nil {
 		return "", fmt.Errorf("mint %s token for %s: %w", role, repo, err)
 	}
@@ -307,7 +296,7 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 // latest marker, wakes an issue a writer has commented on, and routes new issues to their first
 // queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
 func prepareRepo(
-	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo workflow.Repo, roles []workflow.Role,
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, repo workflow.Repo, roles []workflow.Role,
 	waiting map[workflow.Role]bool,
 ) error {
 	role, ok := pollingRole(roles)
@@ -315,7 +304,7 @@ func prepareRepo(
 		return nil
 	}
 
-	token, err := d.mintToken(ctx, role, repo)
+	token, err := d.mint(ctx, role, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint token; treating the repository as unassigned",
 			"agent_role", role, "repo", repo, "error", err)
@@ -355,7 +344,7 @@ func prepareRepo(
 
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
 func settleIssue(
-	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
 	repo workflow.Repo, issue workflow.Issue,
 ) error {
 	dead, err := failDeadRun(ctx, d, cfg, c, repo, issue)
@@ -403,7 +392,7 @@ func failDeadRun(
 		return false, nil
 	}
 
-	token, err := d.mintToken(ctx, role, repo)
+	token, err := d.mint(ctx, role, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the dead run's own token; leaving the issue claimed",
 			"agent_role", role, "repo", repo, "issue", issue.Number, "error", err)
@@ -426,7 +415,7 @@ func failDeadRun(
 
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
 func prepareIssue(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, perms permissions, repo workflow.Repo, issue workflow.Issue,
 ) error {
 	comments, err := issueComments(ctx, c, repo, issue)
 	if err != nil {
@@ -477,7 +466,7 @@ func repairIssue(
 		return fmt.Errorf("repair #%d: the marker names no agent role", issue.Number)
 	}
 
-	token, err := d.mintToken(ctx, t.Role, repo)
+	token, err := d.mint(ctx, t.Role, repo, writableToken)
 	if err != nil {
 		return fmt.Errorf("repair #%d as %s: %w", issue.Number, t.Role, err)
 	}
@@ -492,7 +481,7 @@ func repairIssue(
 // to the agent role that failed. A done issue is woken by a comment on its pull request; the others
 // by a comment on the issue. The wake is made with the token of the agent role it queues for.
 func wakeIssue(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker, found bool,
 ) (bool, error) {
 	if !found {
@@ -520,7 +509,7 @@ func wakeIssue(
 		return false, nil
 	}
 
-	token, err := d.mintToken(ctx, role, repo)
+	token, err := d.mint(ctx, role, repo, writableToken)
 	if err != nil {
 		d.log().Warn("cannot mint the waking agent role's token; leaving the issue where it is",
 			"agent_role", role, "repo", repo, "issue", issue.Number, "error", err)
@@ -567,7 +556,7 @@ func wakeThread(
 
 // written reports whether a writer commented after the latest marker.
 func written(
-	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo,
+	ctx context.Context, d Deps, perms permissions, c github.Client, repo workflow.Repo,
 	thread []workflow.Item, latest workflow.Marker,
 ) bool {
 	for _, comment := range workflow.AfterMarker(thread, latest, repo.Owner()) {
@@ -590,25 +579,24 @@ func issueComments(
 	return c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 }
 
-// permissions caches, for one poll, whether each login may write to the repository. A permission it
-// cannot read is cached as not-a-writer, so every decision fails closed.
-type permissions struct {
-	write map[string]bool
-}
+// permissions caches, for one poll, whether each login may write to the repository, keyed by
+// "repo\x00login". A permission it cannot read is cached as not-a-writer, so every decision fails
+// closed. It is a map so every reader of one poll's cache shares the one cache.
+type permissions map[string]bool
 
 // newPermissions starts an empty permission cache.
-func newPermissions() *permissions {
-	return &permissions{write: map[string]bool{}}
+func newPermissions() permissions {
+	return permissions{}
 }
 
 // isWriter reports whether login has write access. An unreadable permission is not write access.
-func (p *permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string) bool {
+func (p permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string) bool {
 	if login == "" {
 		return false
 	}
 
 	key := repo.String() + "\x00" + login
-	if writer, ok := p.write[key]; ok {
+	if writer, ok := p[key]; ok {
 		return writer
 	}
 
@@ -617,19 +605,19 @@ func (p *permissions) isWriter(ctx context.Context, d Deps, c github.Client, rep
 		d.log().Warn("cannot read a collaborator's permission; failing closed",
 			"repo", repo, "login", login, "error", err)
 
-		p.write[key] = false
+		p[key] = false
 
 		return false
 	}
 
-	p.write[key] = workflow.WriterPermission(permission)
+	p[key] = workflow.WriterPermission(permission)
 
-	return p.write[key]
+	return p[key]
 }
 
 // counted reports whether an issue counts: its author is a writer, or a writer has commented on it.
 func counted(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo,
+	ctx context.Context, d Deps, c github.Client, perms permissions, repo workflow.Repo,
 	issue workflow.Issue, comments []workflow.Item,
 ) bool {
 	if perms.isWriter(ctx, d, c, repo, issue.Author) {
@@ -677,7 +665,7 @@ func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 // token cannot be minted is unassigned for this agent role. done is true when the poll is over: an
 // issue was claimed or lost, or the CI gate moved one.
 func claimFromQueue(
-	ctx context.Context, d Deps, cfg config.Config, perms *permissions, assigned Assignment,
+	ctx context.Context, d Deps, cfg config.Config, perms permissions, assigned Assignment,
 	repos []workflow.Repo, q queueStep, slots int,
 ) (code int, done bool, err error) {
 	candidates := make([]queuedIssue, 0)
@@ -687,7 +675,7 @@ func claimFromQueue(
 			continue // that agent role isn't here: its issues wait in the queue
 		}
 
-		token, err := d.mintToken(ctx, q.role, repo)
+		token, err := d.mint(ctx, q.role, repo, writableToken)
 		if err != nil {
 			d.log().Warn("cannot mint token; treating the repository as unassigned",
 				"agent_role", q.role, "repo", repo, "error", err)
@@ -773,7 +761,7 @@ func compareIssues(a, b queuedIssue) int {
 // eligible reports whether the poll may work an issue at all: not a pull request, not paused, not
 // already claimed, counted, and unblocked. A read it cannot make leaves the issue alone, never claims it.
 func eligible(
-	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, perms permissions, repo workflow.Repo, issue workflow.Issue,
 ) bool {
 	if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) || claimed(issue) {
 		return false
@@ -1084,7 +1072,7 @@ func finishRun(
 ) error {
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
-	token, err := d.mintToken(ctx, role, ref.Repo)
+	token, err := d.mint(ctx, role, ref.Repo, writableToken)
 	if err == nil {
 		c := d.client(token)
 		if dst == workflow.Closed {
@@ -1116,7 +1104,7 @@ func finishRun(
 			continue
 		}
 
-		otherToken, mintErr := d.mintToken(ctx, other, ref.Repo)
+		otherToken, mintErr := d.mint(ctx, other, ref.Repo, writableToken)
 		if mintErr != nil {
 			continue // that App isn't installed here or has no credential: try the next
 		}
@@ -1150,7 +1138,7 @@ func runAsFactory(
 ) (code int, err error) {
 	repo, number := ref.Repo, ref.Number
 
-	token, err := d.mintToken(ctx, role, repo)
+	token, err := d.mint(ctx, role, repo, writableToken)
 	if err != nil {
 		return 0, err
 	}

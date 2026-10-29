@@ -126,16 +126,9 @@ type ReviewerOutput struct {
 // request, so it answers a review and needs a reply per finding; review is the latest rendered review
 // it is answering, empty when there is none. A first run needs the pull request text instead.
 func ParseImplementerOutput(text string, rework bool, review string) (ImplementerOutput, error) {
-	var out ImplementerOutput
-
-	problems := decodeStrict(text, &out)
-	problems = append(problems, implementerProblems(out, rework, review)...)
-
-	if len(problems) > 0 {
-		return ImplementerOutput{}, &OutputError{File: ImplementerOutputFile, Problems: problems}
-	}
-
-	return out, nil
+	return parseOutput(text, ImplementerOutputFile, func(out ImplementerOutput) (ImplementerOutput, []string) {
+		return out, implementerProblems(out, rework, review)
+	})
 }
 
 // implementerProblems checks the fields an Implementer output carries beyond the strict decode.
@@ -280,16 +273,9 @@ func answers(reply string, finding ReviewFinding) bool {
 
 // ParseReviewerOutput reads reviewer-output.json strictly.
 func ParseReviewerOutput(text string) (ReviewerOutput, error) {
-	var out ReviewerOutput
-
-	problems := decodeStrict(text, &out)
-	problems = append(problems, reviewerProblems(out)...)
-
-	if len(problems) > 0 {
-		return ReviewerOutput{}, &OutputError{File: ReviewerOutputFile, Problems: problems}
-	}
-
-	return out, nil
+	return parseOutput(text, ReviewerOutputFile, func(out ReviewerOutput) (ReviewerOutput, []string) {
+		return out, reviewerProblems(out)
+	})
 }
 
 // reviewerProblems checks the verdict against the findings, and every field of every finding.
@@ -410,6 +396,27 @@ func validText(field, text string, oneLine bool) error {
 	}
 
 	return nil
+}
+
+// parseOutput is the one parser behind every agent role's output file. It decodes the file strictly,
+// with the checks they all share, then lets check read the decoded file for what only that file has
+// to satisfy. check returns the value and every problem it found; the two lists are reported
+// together, so a rejected file names all of its problems at once. Nothing built from a rejected
+// file is returned.
+func parseOutput[D, O any](text, file string, check func(D) (O, []string)) (O, error) {
+	var decoded D
+
+	problems := decodeStrict(text, &decoded)
+	out, more := check(decoded)
+	problems = append(problems, more...)
+
+	if len(problems) > 0 {
+		var none O
+
+		return none, &OutputError{File: file, Problems: problems}
+	}
+
+	return out, nil
 }
 
 // decodeStrict checks what every output file shares, then decodes it into out with unknown members
