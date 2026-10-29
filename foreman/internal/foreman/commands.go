@@ -474,6 +474,9 @@ func failDeadRun(
 		role, agent.Deadline(), margin, role)
 
 	_, err = d.client(token).Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
+	if err == nil {
+		newAlertInstruments(d).runReaped(ctx, role, repo)
+	}
 
 	return true, err
 }

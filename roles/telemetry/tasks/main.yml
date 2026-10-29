@@ -35,13 +35,27 @@
     - /etc/grafana/provisioning/dashboards
     - /etc/grafana/dashboards
 
-# Prometheus scrapes nothing: every host's collector pushes OTLP to it.
+# Prometheus scrapes nothing: every host's collector pushes OTLP to it. It evaluates the alert rules
+# below on its own clock and lists what is firing at /alerts.
 - name: Configure Prometheus
   ansible.builtin.copy:
     content: |
       # {{ ansible_managed }}
       global: {}
+      rule_files:
+        - /etc/prometheus/alerts.yaml
     dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart prometheus
+
+# The alert rules read the metrics the collectors forward. Every threshold and the cost budget come
+# from group_vars, so an operator changes a number without editing a rule.
+- name: Configure Prometheus alert rules
+  ansible.builtin.template:
+    src: alerts.yaml.j2
+    dest: /etc/prometheus/alerts.yaml
     owner: root
     group: root
     mode: "0644"

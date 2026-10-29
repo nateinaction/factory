@@ -127,6 +127,15 @@ links to the run's diagnostics (Loki) and metrics (Prometheus); in Loki, `{} | t
 finds the diagnostics directly. Retention is `factory_telemetry_*_retention*`; the memory the stack
 may use is `factory_telemetry_memory_budget_mib`.
 
+Prometheus evaluates the alert rules in `roles/telemetry/templates/alerts.yaml.j2`: egress refused a
+non-public address, a request to either proxy without the run token, an output file carrying a factory
+marker, an agent role's failure rate, the daily model cost and a dead run reaped by a poll. Each alert
+names the agent role and repository and links to the run's trace in Grafana, whose spans name the
+issue: an issue number is a span attribute, never a metric label. Every threshold, window and the cost
+budget is a `factory_alerts_*` setting in `group_vars/factory.yml`. The rules fire into Prometheus's
+own list at `http://127.0.0.1:9090/alerts` on the server; no Alertmanager is configured, so they are
+read there or in Grafana rather than pushed.
+
 Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
 host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk
 use, so a slow run can be told apart from a hot or throttled host. The run-duration panel matches

@@ -52,6 +52,9 @@
             pkgs.ansible
             pkgs.ansible-lint
             pkgs.yamllint
+            # promtool checks and unit-tests the Prometheus alert rules tests/alerts.test renders. It is
+            # the package's `cli` output; `out` carries the server binary the host installs.
+            pkgs.prometheus.cli
             pkgs.go_1_27
             pkgs.golangci-lint
             pkgs.govulncheck

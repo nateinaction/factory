@@ -109,5 +109,6 @@ var _ = Describe("the OpenRouter proxy's security events", func() {
 		))
 		Expect(logged.String()).NotTo(ContainSubstring(testToken))
 		Expect(logged.String()).NotTo(ContainSubstring("another-run-token"))
+		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedBadToken: 1}))
 	})
 })

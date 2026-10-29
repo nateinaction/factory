@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -59,6 +60,7 @@ type Proxy struct {
 	mu           sync.Mutex
 	domains      map[string]struct{}
 	refused      map[string]struct{}
+	refusals     map[security.Outcome]int
 	tunnels      map[net.Conn]struct{}
 	open         int
 	log          *slog.Logger
@@ -110,7 +112,8 @@ func startProxy(
 
 	p := &Proxy{
 		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
-		domains: map[string]struct{}{}, refused: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
+		domains: map[string]struct{}{}, refused: map[string]struct{}{},
+		refusals: map[security.Outcome]int{}, tunnels: map[net.Conn]struct{}{},
 	}
 	plainDial := (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext
 	// Both transports ignore the proxy environment variables, so traffic the run sends through this
@@ -196,6 +199,18 @@ func (p *Proxy) Refused() []string {
 	return sortedHosts(p.refused)
 }
 
+// Refusals counts every refused request by outcome. It is the run's record of what the proxy turned
+// away and why, which the alert rules read; the event's destination stays out of a metric.
+func (p *Proxy) Refusals() map[security.Outcome]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make(map[security.Outcome]int, len(p.refusals))
+	maps.Copy(out, p.refusals)
+
+	return out
+}
+
 // sortedHosts is the keys of hosts, sorted. It is never nil.
 func sortedHosts(hosts map[string]struct{}) []string {
 	out := make([]string, 0, len(hosts))
@@ -259,6 +274,7 @@ func (p *Proxy) record(host string) {
 func (p *Proxy) deny(host string, outcome security.Outcome) {
 	p.mu.Lock()
 	p.refused[strings.ToLower(host)] = struct{}{}
+	p.refusals[outcome]++
 	p.mu.Unlock()
 
 	security.Emit(p.log, security.EventEgressRefused, outcome, host)

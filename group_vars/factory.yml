@@ -273,6 +273,11 @@ factory_collector_allowed_attributes:
   - host.name
   - factory.agent_role
   - factory.outcome
+  # The alert rules' own dimensions: the security event a measurement counts, and the repository and
+  # model a run belongs to. An issue number never leaves the host as a metric label.
+  - factory.event
+  - factory.repo
+  - factory.model
   - factory.worker_host
   # Host health's metric attributes: the disk's mountpoint, device and filesystem type, and the
   # throttling bit's kind and state (now or since boot).
@@ -332,6 +337,24 @@ factory_telemetry_memory_max_mib:
   tempo: 192
   loki: 192
   grafana: 160
+# Alerts: the signals that need a human. The rules live in the telemetry role; every threshold, window
+# and the cost budget is set here, never written into a rule. Each alert names the agent role and
+# repository from its metric's labels and links to the run's trace, which carries the issue number:
+# an issue is a span attribute, never a metric label.
+# Where an alert's trace link points: the tailnet HTTPS address Grafana is served at.
+factory_alerts_grafana_url: "https://{{ inventory_hostname }}:{{ factory_telemetry_grafana_port }}"
+# How far back the security alerts look for a refused request or a rejected output.
+factory_alerts_security_window: 15m
+# A dead run a poll reaped is rare; any one in this window is worth a look.
+factory_alerts_dead_run_window: 1h
+# An agent role and repository whose failed share of finished runs exceeds the threshold, over at
+# least the minimum number of runs, is failing too often.
+factory_alerts_failure_rate_window: 6h
+factory_alerts_failure_rate_threshold: 0.3
+factory_alerts_failure_rate_min_runs: 4
+# What one agent role in one repository may spend on model calls in a day, in US dollars.
+factory_alerts_cost_window: 24h
+factory_alerts_daily_cost_budget_usd: 5
 # A foreman run's root span name (telemetry.RootSpanName("run")). The spanmetrics connector turns
 # every span into traces_span_metrics_duration (in Prometheus,
 # traces_span_metrics_duration_bucket); the dashboard's run-duration panel keeps only this name, so

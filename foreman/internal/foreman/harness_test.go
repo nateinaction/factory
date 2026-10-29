@@ -26,6 +26,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -952,10 +953,11 @@ func baseURL(c proc.Cmd) string {
 
 // fakeProxy is a stand-in for the run's OpenRouter proxy.
 type fakeProxy struct {
-	url    string
-	usage  openrouter.Usage
-	key    string
-	closed bool
+	url      string
+	usage    openrouter.Usage
+	refusals map[security.Outcome]int
+	key      string
+	closed   bool
 }
 
 // URL is the base URL the key proxy serves.
@@ -963,6 +965,9 @@ func (p *fakeProxy) URL() string { return p.url }
 
 // Usage is what the proxy read.
 func (p *fakeProxy) Usage() openrouter.Usage { return p.usage }
+
+// Refusals counts the requests the proxy refused, by outcome.
+func (p *fakeProxy) Refusals() map[security.Outcome]int { return p.refusals }
 
 // Close records that the run stopped the proxy.
 func (p *fakeProxy) Close() error {
@@ -973,12 +978,13 @@ func (p *fakeProxy) Close() error {
 
 // fakeEgress is a stand-in for the run's egress proxy.
 type fakeEgress struct {
-	url     string
-	address string
-	domains []string
-	refused []string
-	policy  sandbox.Network
-	closed  bool
+	url      string
+	address  string
+	domains  []string
+	refused  []string
+	refusals map[security.Outcome]int
+	policy   sandbox.Network
+	closed   bool
 }
 
 // URL is the model's OpenRouter base URL.
@@ -992,6 +998,9 @@ func (p *fakeEgress) Domains() []string { return p.domains }
 
 // Refused is every domain the run was refused.
 func (p *fakeEgress) Refused() []string { return p.refused }
+
+// Refusals counts the requests the proxy refused, by outcome.
+func (p *fakeEgress) Refusals() map[security.Outcome]int { return p.refusals }
 
 // Close records that the run stopped the proxy.
 func (p *fakeEgress) Close() error {
