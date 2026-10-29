@@ -243,6 +243,19 @@ var _ = Describe("Client", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(won).To(BeFalse())
 		})
+
+		It("fails closed when the claim did not stick", func() {
+			number := issue(workflow.LabelImplement)
+
+			// The label write succeeds, but the read-back shows the issue never carried it.
+			p.JSON("GET /repos/o/r/issues/"+itoa(number), map[string]any{
+				"number": number, "labels": []string{},
+			})
+
+			won, err := c.Claim(ctx, ref(number), transition)
+			Expect(err).To(MatchError(ContainSubstring("did not stick")))
+			Expect(won).To(BeFalse())
+		})
 	})
 
 	Describe("Finish", func() {
@@ -563,6 +576,28 @@ var _ = Describe("Client", func() {
 
 			raw := p.Bodies("POST", "/repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by")
 			Expect(raw).To(ConsistOf(ContainSubstring(strconv.FormatInt(id, 10))))
+		})
+
+		It("treats an existing sub-issue link as already applied", func() {
+			parent := issue()
+			id, err := c.IssueID(ctx, ref(issue()))
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(parent)+"/sub_issues",
+				http.StatusUnprocessableEntity)
+
+			Expect(c.AddSubIssue(ctx, ref(parent), id)).To(Succeed())
+		})
+
+		It("treats an existing blocked-by edge as already applied", func() {
+			child := issue()
+			id, err := c.IssueID(ctx, ref(issue()))
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by",
+				http.StatusUnprocessableEntity)
+
+			Expect(c.AddBlockedBy(ctx, ref(child), id)).To(Succeed())
 		})
 	})
 

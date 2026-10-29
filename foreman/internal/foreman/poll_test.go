@@ -391,6 +391,19 @@ var _ = Describe("Poll", func() {
 			Expect(h.runner.find("enqueue")).To(BeEmpty())
 			Expect(h.logs.String()).To(ContainSubstring("blockers cannot be read"))
 		})
+
+		It("does not claim an issue whose fallback blocker cannot be read", func() {
+			h.queue(map[string][]map[string]any{
+				workflow.LabelImplement: {{"number": 3, "body": "Blocked by: #2"}},
+			})
+			// A repository without native dependencies falls back to the issue body.
+			h.gh.Status("GET /repos/o/r/issues/3/dependencies/blocked_by", http.StatusNotFound)
+			h.gh.Status("GET /repos/o/r/issues/2", http.StatusInternalServerError)
+
+			expectNothingReady()
+			Expect(h.runner.find("enqueue")).To(BeEmpty())
+			Expect(h.logs.String()).To(ContainSubstring("blockers cannot be read"))
+		})
 	})
 
 	Describe("scheduling across hosts", func() {
@@ -489,14 +502,36 @@ var _ = Describe("Poll", func() {
 			h.queueRepo("o/oldest-b", map[string][]map[string]any{
 				workflow.LabelImplement: {{"number": 5}},
 			})
-
-			// Give the second repository's issue a later creation time, so only creation order can
-			// pick o/b.
-			time.Sleep(5 * time.Millisecond)
-
 			h.queueRepo("o/oldest-a", map[string][]map[string]any{
 				workflow.LabelImplement: {{"number": 1}},
 			})
+
+			// Pin each repository's creation time on the claim's list read. The emulator dates an
+			// issue with the wall clock, which must never decide the order.
+			created := map[string]string{
+				"o/oldest-a": "2026-01-02T00:00:00Z",
+				"o/oldest-b": "2026-01-01T00:00:00Z",
+			}
+
+			for repo, at := range created {
+				h.gh.Handle("GET /repos/"+repo+"/issues", func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Query().Get("labels") == "" {
+						h.gh.Forward(w, r)
+
+						return
+					}
+
+					var issues []map[string]any
+					Expect(emulator.Do(context.Background(), http.MethodGet, r.URL.RequestURI(),
+						ghtest.AdminToken, nil, &issues)).To(Succeed())
+
+					for _, issue := range issues {
+						issue["created_at"] = at
+					}
+
+					ghtest.WriteJSON(w, issues)
+				})
+			}
 
 			Expect(poll()).Error().NotTo(HaveOccurred())
 

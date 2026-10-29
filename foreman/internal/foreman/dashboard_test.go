@@ -26,10 +26,18 @@ type dashboardIssue struct {
 }
 
 var _ = Describe("the retro dashboard", func() {
-	var h *harness
+	var (
+		h     *harness
+		clock time.Time
+	)
 
 	BeforeEach(func() {
 		h = newHarness()
+
+		// One fixed clock per spec, just ahead of the emulator's wall-clock stamps, so a
+		// test's events never land after it: nothing advances it while the test runs.
+		clock = time.Now().Add(time.Hour)
+		h.deps.Now = func() time.Time { return clock }
 	})
 
 	// poll polls the Implementer's and the Reviewer's queues.
@@ -106,7 +114,7 @@ var _ = Describe("the retro dashboard", func() {
 		GinkgoHelper()
 
 		body, err := workflow.RenderDashboard(
-			workflow.BuildDashboard(nil, workflow.DashboardState{}, time.Now()))
+			workflow.BuildDashboard(nil, workflow.DashboardState{}, clock))
 		Expect(err).NotTo(HaveOccurred())
 
 		return body
@@ -241,12 +249,12 @@ var _ = Describe("the retro dashboard", func() {
 		issue := h.createAs("o", nil, "An issue")
 		seedRetro(issue, workflow.Implementer, "sha-a", finding(workflow.SeverityMedium, "no tests"))
 
-		h.deps.Now = func() time.Time { return time.Now().Add(59 * 24 * time.Hour) }
+		h.deps.Now = func() time.Time { return clock.Add(59 * 24 * time.Hour) }
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(theDashboard().Body).To(ContainSubstring("## Watching (1)"))
 
-		h.deps.Now = func() time.Time { return time.Now().Add(61 * 24 * time.Hour) }
+		h.deps.Now = func() time.Time { return clock.Add(61 * 24 * time.Hour) }
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(theDashboard().Body).To(ContainSubstring("## Watching (0)"))
@@ -262,12 +270,12 @@ var _ = Describe("the retro dashboard", func() {
 			Kind:   workflow.ActionPromote,
 			Groups: []workflow.GroupID{group},
 			By:     "o",
-			At:     time.Now().Add(-time.Hour),
+			At:     clock.Add(-2 * time.Hour),
 			URL:    "https://github.com/o/r/issues/2",
 		}
 
 		body, err := workflow.RenderDashboard(
-			workflow.BuildDashboard(nil, workflow.DashboardState{Actions: []workflow.DashboardAction{action}}, time.Now()))
+			workflow.BuildDashboard(nil, workflow.DashboardState{Actions: []workflow.DashboardAction{action}}, clock))
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = emulator.CreateIssueAs(context.Background(), "o/r", tokenFor(appLogin(workflow.Implementer)),

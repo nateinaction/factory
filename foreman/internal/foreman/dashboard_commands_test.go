@@ -106,10 +106,18 @@ func promoteConfig(factory string) config.Config {
 
 // dashboardCommands is the flow of a writer's commands on the retro dashboard.
 var _ = Describe("the dashboard's writer commands", func() {
-	var h *harness
+	var (
+		h     *harness
+		clock time.Time
+	)
 
 	BeforeEach(func() {
 		h = newHarness()
+
+		// One fixed clock per spec, just ahead of the emulator's wall-clock stamps, so a
+		// test's events never land after it: nothing advances it while the test runs.
+		clock = time.Now().Add(time.Hour)
+		h.deps.Now = func() time.Time { return clock }
 	})
 
 	ctx := context.Background()
@@ -403,7 +411,7 @@ var _ = Describe("the dashboard's writer commands", func() {
 		}
 
 		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil,
-			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
+			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, clock))
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
@@ -429,7 +437,7 @@ var _ = Describe("the dashboard's writer commands", func() {
 		}
 
 		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil,
-			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, time.Now()))
+			workflow.DashboardState{Proposals: []workflow.GroupRelation{proposal}}, clock))
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = emulator.CreateIssueAs(ctx, "o/r", tokenFor(appLogin(workflow.Implementer)),
