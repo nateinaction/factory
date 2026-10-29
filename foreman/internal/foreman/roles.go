@@ -194,13 +194,13 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 
 // prepareCurator reads the retro log and the dashboard state, and applies the Curator's proposals once
 // the agent returns. Its App holds no Contents permission, so it clones nothing and resolves no
-// toolchain: it works in an empty directory, and its prompt carries no repository docs. It runs no
-// retro.
+// toolchain: it only creates the empty working directory the agent runs in, and its prompt carries no
+// repository docs. It runs no retro.
 func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 	repo := rc.spec.ref.Repo
 
 	if err := os.MkdirAll(rc.paths.workdir, privateDirMode); err != nil {
-		return prepared{}, fmt.Errorf("make the Curator's empty working directory: %w", err)
+		return prepared{}, fmt.Errorf("create the Curator's empty working directory: %w", err)
 	}
 
 	reports, state, private, err := curatorInputs(ctx, rc.d, rc.j.c, repo, rc.j.issue)

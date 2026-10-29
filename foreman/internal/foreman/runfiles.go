@@ -142,21 +142,23 @@ func scratchOf(output string) string {
 	return filepath.Dir(output)
 }
 
+// resolveToolchain is the default branch's dev environment, or empty for an agent role that
+// prepared none.
+func (rc runCtx) resolveToolchain(ctx context.Context, files sandboxFiles, env runEnv, prep prepared) (string, error) {
+	if prep.noToolchain {
+		return "", nil
+	}
+
+	return rc.d.toolchain(ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files)
+}
+
 // sandboxed puts the run's clone inside its own sandbox: the default branch's dev environment, the
 // settings compiled from the agent role's spec, and the proxies the model may use. The agent role's
 // prepared output files join the run's own.
 func (rc runCtx) sandboxed(ctx context.Context, files sandboxFiles, env runEnv, prep prepared) (session, error) {
-	var toolchain string
-
-	if !prep.noToolchain {
-		var err error
-
-		toolchain, err = rc.d.toolchain(
-			ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files,
-		)
-		if err != nil {
-			return session{}, err
-		}
+	toolchain, err := rc.resolveToolchain(ctx, files, env, prep)
+	if err != nil {
+		return session{}, err
 	}
 
 	spec := sandbox.Plan(rc.role, files.layout(rc.d, rc.paths.workdir, rc.paths.out, toolchainPaths(toolchain)))

@@ -77,20 +77,13 @@ type secrets struct {
 }
 
 // readSecrets reads the token left by `start` for this run and the OpenRouter key.
-func readSecrets(d Deps, role workflow.Role) (secrets, error) {
-	path, err := d.tokenPath(role)
-	if err != nil {
-		return secrets{}, err
-	}
-
-	s := d.Settings
-
-	token, err := os.ReadFile(path) //nolint:gosec // the path is the token directory joined with a vetted name
+func readSecrets(tokenPath, keyFile string) (secrets, error) {
+	token, err := os.ReadFile(tokenPath) //nolint:gosec // the path is the token directory joined with a vetted name
 	if err != nil {
 		return secrets{}, fmt.Errorf("read token file: %w", err)
 	}
 
-	key, err := os.ReadFile(s.KeyFile)
+	key, err := os.ReadFile(keyFile) //nolint:gosec // the path is foreman's configured key file
 	if err != nil {
 		return secrets{}, fmt.Errorf("read openrouter key: %w", err)
 	}
@@ -485,10 +478,10 @@ func scratchDir(root, name string) (string, error) {
 	return path, nil
 }
 
-// outputProblem turns an unreadable output file into the error a rejected one returns. The problem
-// names the file, so the one comment it becomes says which file the run could not read.
+// outputProblem turns an unreadable output file into the error a rejected one returns. The error
+// carries the file's name, which the comment shows once, so the problem does not repeat it.
 func outputProblem(file string, err error) error {
-	return &workflow.OutputError{File: file, Problems: []string{file + " cannot be read: " + err.Error()}}
+	return &workflow.OutputError{File: file, Problems: []string{"cannot be read: " + err.Error()}}
 }
 
 // rejectOutput posts every problem with a rejected output file in one comment, then returns the
@@ -503,6 +496,7 @@ func rejectOutput(
 
 	lines := []string{
 		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
+		fmt.Sprintf("File: `%s`", rejected.File), "",
 	}
 	for _, problem := range rejected.Problems {
 		lines = append(lines, "- "+problem)
