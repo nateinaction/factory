@@ -137,8 +137,57 @@ var _ = Describe("Start", func() {
 			Expect(code).NotTo(BeZero())
 			h.expectNoWork()
 		},
-		Entry(nil, workflow.Planner), Entry(nil, workflow.Researcher), Entry(nil, workflow.Curator),
+		Entry(nil, workflow.Researcher), Entry(nil, workflow.Curator),
 	)
+
+	Describe("the Planner", func() {
+		BeforeEach(func() {
+			h.installed[workflow.Planner] = []string{"o/r"}
+		})
+
+		It("records the factory half's round without a second transition", func() {
+			h.acceptWrites()
+			h.sudoExit(0)
+			h.out.Reset()
+
+			Expect(start(workflow.Planner)).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("The Planner posted a round"))
+			Expect(h.markerComments(5)).To(BeEmpty(), "the factory half already moved the issue")
+			Expect(h.runner.find("sudo")).To(HaveLen(1))
+			Expect(joined(h.runner.find("sudo")[0])).To(ContainSubstring("run planner o/r 5"))
+		})
+
+		It("mints only its own App's tokens", func() {
+			h.acceptWrites()
+			seen := h.sudoExit(0)
+
+			Expect(start(workflow.Planner)).Error().NotTo(HaveOccurred())
+
+			mints := h.runner.find("app-token", " token ")
+			Expect(mints).To(HaveLen(1), "a successful round needs no second transition")
+
+			for _, c := range mints {
+				Expect(appOf(c)).To(Equal(string(workflow.Planner)))
+				Expect(c.Argv[len(c.Argv)-2:]).To(Equal([]string{"--repo", "o/r"}))
+			}
+
+			h.expectAuthorizedAs(workflow.Planner)
+			Expect(seen.token).To(Equal("minted-token-planner"))
+		})
+
+		It("moves a failed run from planning to failed", func() {
+			h.acceptWrites()
+			h.sudoExit(2)
+
+			Expect(start(workflow.Planner)).To(Equal(1))
+
+			labels, comments := h.outcome()
+			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
+			Expect(comments[0]).To(ContainSubstring(
+				"from=factory:planning to=factory:failed"))
+			Expect(comments[0]).To(ContainSubstring("The Planner failed"))
+		})
+	})
 
 	Describe("identity", func() {
 		DescribeTable("mints only the owning App's tokens: no App falls back to another's",

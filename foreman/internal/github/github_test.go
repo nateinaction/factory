@@ -254,7 +254,8 @@ var _ = Describe("Client", func() {
 		It("posts the marker with its outcome, then swaps the labels", func() {
 			number := issue(workflow.LabelReviewing)
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "done")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(p.Summary()).To(Equal([]string{
 				"POST /repos/o/r/issues/" + itoa(number) + "/comments",
 				"DELETE /repos/o/r/issues/" + itoa(number) + "/labels/factory:reviewing",
@@ -272,7 +273,8 @@ var _ = Describe("Client", func() {
 		It("tolerates a label already removed", func() {
 			number := issue()
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "done")).To(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "done")
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("passes on any other delete error", func() {
@@ -280,7 +282,8 @@ var _ = Describe("Client", func() {
 			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:reviewing",
 				http.StatusBadGateway)
 
-			Expect(c.Finish(ctx, "o/r", number, transition, "x")).NotTo(Succeed())
+			_, err := c.Finish(ctx, "o/r", number, transition, "x")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -457,6 +460,51 @@ var _ = Describe("Client", func() {
 			Expect(c.PostReplies(ctx, "o/r", pr.Number, "sha", "again")).To(Succeed())
 			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(BeEmpty(), "posted a duplicate")
 			Expect(p.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
+		})
+	})
+
+	Describe("planning links", func() {
+		It("reads a parent's sub-issues and links one by its database id", func() {
+			parent := issue()
+			child := issue()
+
+			p.JSON("GET /repos/o/r/issues/"+itoa(parent)+"/sub_issues",
+				[]map[string]any{{"number": child}})
+
+			numbers, supported, err := c.SubIssueNumbers(ctx, "o/r", parent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeTrue())
+			Expect(numbers).To(Equal([]int{child}))
+
+			id, err := c.IssueID(ctx, "o/r", child)
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(parent)+"/sub_issues", http.StatusCreated)
+			Expect(c.AddSubIssue(ctx, "o/r", parent, id)).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(parent)+"/sub_issues")).To(ConsistOf(
+				ContainSubstring(`"sub_issue_id":`)))
+		})
+
+		It("reads blockers and adds an edge by the blocker's database id", func() {
+			child := issue()
+			blocker := issue()
+
+			p.JSON("GET /repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by",
+				[]map[string]any{{"number": blocker}})
+
+			numbers, supported, err := c.BlockedByNumbers(ctx, "o/r", child)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(supported).To(BeTrue())
+			Expect(numbers).To(Equal([]int{blocker}))
+
+			id, err := c.IssueID(ctx, "o/r", blocker)
+			Expect(err).NotTo(HaveOccurred())
+
+			p.Status("POST /repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by", http.StatusCreated)
+			Expect(c.AddBlockedBy(ctx, "o/r", child, id)).To(Succeed())
+
+			raw := p.Bodies("POST", "/repos/o/r/issues/"+itoa(child)+"/dependencies/blocked_by")
+			Expect(raw).To(ConsistOf(ContainSubstring(strconv.FormatInt(id, 10))))
 		})
 	})
 
