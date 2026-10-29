@@ -23,6 +23,9 @@ const IssueMaterialHeading = "\n# Issue material\n\n"
 // ThreadHeading starts the comments a woken run reads.
 const ThreadHeading = "\n\n# Comments since the marker"
 
+// CIFailureHeading starts the CI failure report an Implementer run was sent back for.
+const CIFailureHeading = "\n\n# CI failure report"
+
 // Doc is one repository document put into a prompt.
 type Doc struct {
 	// Path is relative to the repository root.
@@ -105,9 +108,16 @@ const plannerRolePrompt = "Use the `grilling`, `wayfinder`, `to-spec` and `to-ti
 	"JSON object to the output file with \"version\": 1, \"kind\" and \"comment\". " +
 	"A \"kind\": \"questions\" round is numbered questions, each with a recommended answer worded so " +
 	"that \"yes\" accepts it; it carries no proposal. A \"kind\": \"final_round\" carries a " +
-	"\"proposal\" and its comment ends with exactly \"Is this ready to build?\". " +
+	"\"proposal\" and its comment ends with exactly \"Is this ready to build?\" or, for a decision " +
+	"ticket's resolution, \"Is this resolved?\". " +
 	"A proposal is {\"shape\": \"single\"} or {\"shape\": \"slices\"}, with \"spec\" and, for slices, " +
 	"\"issues\": [{\"key\": \"slug\", \"title\": \"...\", \"body\": \"...\", \"blocked_by\": [\"slug\" or \"#N\"]}]. " +
+	"A {\"shape\": \"map\"} charts a wayfinder map: its \"map\" carries \"destination\", \"notes\", " +
+	"\"not_yet_specified\" and \"out_of_scope\", and its \"issues\" are the tickets, each with a " +
+	"\"type\": \"research\", \"grilling\", \"prototype\" or \"task\". " +
+	"A {\"shape\": \"resolution\"} resolves a decision ticket: its \"resolution\" carries \"answer\" " +
+	"and \"decision_line\", and its \"issues\" are any new tickets under the same map. " +
+	"A prototype ticket is left for a human: propose one, but never build a prototype in this run. " +
 	"The spec must carry a \"Domain changes\" section listing proposed glossary terms and ADRs. " +
 	"Do not set labels or write factory markers: foreman derives every label."
 
@@ -143,10 +153,11 @@ const researcherRolePrompt = "Use the `research` skill on the ticket given under
 	"\"decision_line\": the map's one-line gist of the decision."
 
 // Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run; thread
-// is every comment since the marker when a writer's comment woke the issue; and outPath is where the
-// model writes implementer-output.json.
+// is every comment since the marker when a writer's comment woke the issue; ci is the CI failure
+// report the run was sent back for, empty when CI did not fail; and outPath is where the model writes
+// implementer-output.json.
 func Implementer(
-	docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item, outPath string,
+	docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item, ci, outPath string,
 ) string {
 	rework := ""
 	if feedback != "" {
@@ -154,6 +165,11 @@ func Implementer(
 			"problems. Fix every high and medium finding below on top of the existing " +
 			"commits and answer each one in \"replies\".\n\nReview:\n" +
 			workflow.Truncate(feedback, workflow.BodyLimitChars)
+	}
+
+	if ci != "" {
+		rework += CIFailureHeading + "\n\nThe pull request's CI failed. Fix every failed check " +
+			"below on top of the existing commits.\n\n" + workflow.Truncate(ci, workflow.BodyLimitChars)
 	}
 
 	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s%s"+

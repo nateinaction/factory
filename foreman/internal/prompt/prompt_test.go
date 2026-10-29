@@ -16,13 +16,13 @@ var _ = Describe("Implementer", func() {
 	issue := workflow.Issue{Number: 4, Title: "T", Body: "B"}
 
 	It("carries the issue after the role prompt and the docs", func() {
-		got := Implementer([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", issue, "", nil, "/w/out.json")
+		got := Implementer([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", issue, "", nil, "", "/w/out.json")
 		Expect(got).To(Equal(implementerRolePrompt + "\n\n# Repository docs\n\n## AGENTS.md\n\nRULES\n" +
 			IssueMaterialHeading + "Repository: o/r\nIssue: #4\nTitle: T\n\nB\n\nWrite the JSON to /w/out.json."))
 	})
 
 	It("ends a rework with the review to fix", func() {
-		Expect(Implementer(nil, "o/r", issue, "FEEDBACK", nil, "/w/out.json")).To(HaveSuffix(
+		Expect(Implementer(nil, "o/r", issue, "FEEDBACK", nil, "", "/w/out.json")).To(HaveSuffix(
 			"Fix every high and medium finding below on top of the existing commits and answer each one " +
 				"in \"replies\".\n\nReview:\nFEEDBACK\n\nWrite the JSON to /w/out.json."))
 	})
@@ -31,20 +31,34 @@ var _ = Describe("Implementer", func() {
 		got := Implementer(nil, "o/r", issue, "", []workflow.Item{
 			{ID: 3, Body: "first", Author: "o"},
 			{ID: 4, Body: "second", Author: "o"},
-		}, "/w/out.json")
+		}, "", "/w/out.json")
 		Expect(got).To(ContainSubstring(ThreadHeading + "\n\n**o:** first\n\n**o:** second"))
 		Expect(strings.Index(got, "first")).To(BeNumerically("<", strings.Index(got, "second")))
 	})
 
 	It("cuts the body and the feedback to the body limit, by character", func() {
 		long := strings.Repeat("é", workflow.BodyLimitChars+50)
-		got := Implementer(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, long, nil, "/w/out.json")
+		got := Implementer(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, long, nil, "", "/w/out.json")
 		Expect(strings.Count(got, "é")).To(Equal(2 * workflow.BodyLimitChars))
+	})
+
+	It("carries the CI failure report a failed review round was sent back for", func() {
+		got := Implementer(nil, "o/r", issue, "", nil,
+			"CI failed on abc.\n\n- **build** (failure): the compiler said no", "/w/out.json")
+
+		Expect(got).To(ContainSubstring(CIFailureHeading))
+		Expect(got).To(ContainSubstring("**build** (failure): the compiler said no"))
+		Expect(got).To(HaveSuffix("Write the JSON to /w/out.json."))
+	})
+
+	It("leaves the CI section out when there is no failure report", func() {
+		Expect(Implementer(nil, "o/r", issue, "", nil, "", "/w/out.json")).
+			NotTo(ContainSubstring(CIFailureHeading))
 	})
 
 	It("keeps the thread within its own limit", func() {
 		long := strings.Repeat("é", workflow.BodyLimitChars+50)
-		got := Implementer(nil, "o/r", issue, "", []workflow.Item{{ID: 1, Body: long, Author: "o"}}, "/w/out.json")
+		got := Implementer(nil, "o/r", issue, "", []workflow.Item{{ID: 1, Body: long, Author: "o"}}, "", "/w/out.json")
 		Expect(strings.Count(got, "é")).To(Equal(workflow.BodyLimitChars))
 	})
 })
@@ -71,6 +85,21 @@ var _ = Describe("Researcher", func() {
 		long := strings.Repeat("é", workflow.BodyLimitChars+50)
 		got := Researcher(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, nil, "/w/out.json")
 		Expect(strings.Count(got, "é")).To(Equal(workflow.BodyLimitChars))
+	})
+})
+
+var _ = Describe("Planner", func() {
+	It("names the map and resolution shapes and leaves a prototype to a human", func() {
+		got := Planner(nil, "o/r", workflow.Issue{Number: 4, Title: "T", Body: "B"}, nil, "/w/out.json")
+
+		Expect(got).To(And(
+			ContainSubstring(`"shape": "map"`),
+			ContainSubstring(`"shape": "resolution"`),
+			ContainSubstring(`"not_yet_specified"`),
+			ContainSubstring("Is this resolved?"),
+			ContainSubstring("A prototype ticket is left for a human"),
+			ContainSubstring("never build a prototype"),
+		))
 	})
 })
 

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +24,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -151,6 +153,13 @@ type harness struct {
 	// pr and prURL are the open pull request the setup created or the run opened.
 	pr    int
 	prURL string
+	// ciChecks and ciStatuses are what the commits endpoint answers with; empty means no checks, which
+	// the CI gate treats as passed. ciError makes every CI read fail. ciHandler, when set, answers the
+	// CI reads itself and reports whether it did.
+	ciChecks   []map[string]any
+	ciStatuses []map[string]any
+	ciError    bool
+	ciHandler  func(http.ResponseWriter, *http.Request) bool
 }
 
 // testAgent() is the agent role settings tests run with.
@@ -172,6 +181,7 @@ func testConfig() config.Config {
 
 	return config.Config{
 		Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro(), DeadRunMarginMinutes: 10,
+		ReviewRoundLimit: 3, CIPendingDeadlineMinutes: 60,
 	}
 }
 
@@ -223,10 +233,14 @@ func newHarness() *harness {
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
+	h.gh.Handle("GET /repos/o/r/commits/", h.serveCI)
 	h.deps = Deps{
 		Settings: config.Settings{
 			API: gh.URL(), TokenDir: dir, KeyFile: key,
-			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
+			WorkRoot: filepath.Join(dir, "work"), Home: filepath.Join(dir, "home"),
+			DaguHome: filepath.Join(dir, "dagu"), Srt: "srt", Skills: filepath.Join(dir, "skills"),
+			ConfigFile:  filepath.Join(dir, "config.json"),
+			Self:        "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
 		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs), RunID: "run-1",
@@ -235,6 +249,33 @@ func newHarness() *harness {
 
 	return h
 }
+
+// serveCI answers a commit's check runs and statuses: no checks unless a spec sets some, or the
+// spec's own handler. The emulator has no CI state, so this is the proxy's job.
+func (h *harness) serveCI(w http.ResponseWriter, r *http.Request) {
+	if h.ciHandler != nil && h.ciHandler(w, r) {
+		return
+	}
+
+	if h.ciError {
+		w.WriteHeader(http.StatusInternalServerError)
+
+		return
+	}
+
+	if strings.HasSuffix(r.URL.Path, "/statuses") {
+		ghtest.WriteJSON(w, append([]map[string]any{}, h.ciStatuses...))
+
+		return
+	}
+
+	ghtest.WriteJSON(w, map[string]any{
+		"total_count": len(h.ciChecks), "check_runs": append([]map[string]any{}, h.ciChecks...),
+	})
+}
+
+// isModel reports whether c starts a model run: opencode under srt, or bare opencode.
+func isModel(c proc.Cmd) bool { return strings.Contains(joined(c), "opencode run") }
 
 // tokenFor is the seeded token of a test user.
 func tokenFor(login string) string {
@@ -321,11 +362,13 @@ func (h *harness) markerComments(number int) []string {
 func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 	line := joined(c)
 	switch {
-	case len(c.Argv) > 3 && c.Argv[0] == "git" && c.Argv[1] == "clone":
-		Expect(os.MkdirAll(c.Argv[3], 0o700)).To(Succeed())
+	case len(c.Argv) > 1 && c.Argv[0] == "git" && c.Argv[1] == "clone":
+		Expect(os.MkdirAll(c.Argv[len(c.Argv)-1], 0o700)).To(Succeed())
 		return "", nil
-	case c.Argv[0] == "opencode":
+	case isModel(c):
 		return okStream("ses_1"), nil
+	case c.Argv[0] == "nix":
+		return devEnvJSON, nil
 	case strings.Contains(line, "github-app-token"):
 		return h.tokenHelper(c)
 	case strings.Contains(line, "rev-parse HEAD"):
@@ -339,6 +382,9 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 
 	return "", nil
 }
+
+// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH.
+const devEnvJSON = `{"variables":{"PATH":"/nix/store/toolchain/bin"}}`
 
 // tokenHelper answers github-app-token: an App lists and mints only where it is installed.
 func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
@@ -439,7 +485,8 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
 	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
 	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10,` +
+	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
 // writeToken leaves a token for the factory half of role.
 func (h *harness) writeToken(role workflow.Role, token string) {
@@ -583,13 +630,13 @@ func (h *harness) retroComments() []string {
 	return out
 }
 
-// seedComment posts a comment as the repository's admin and returns its id.
-func (h *harness) seedComment(number int, text string) int64 {
+// seedComment posts a comment on issue 5 as the repository's admin and returns its id.
+func (h *harness) seedComment(text string) int64 {
 	GinkgoHelper()
 
-	h.comment(number, "o", text)
+	h.comment(5, "o", text)
 
-	comments, err := emulator.Comments(context.Background(), "o/r", number)
+	comments, err := emulator.Comments(context.Background(), "o/r", 5)
 	Expect(err).NotTo(HaveOccurred())
 
 	for _, c := range slices.Backward(comments) {
@@ -690,7 +737,7 @@ func (h *harness) researcherWrites(text string) {
 	out := h.researchOut()
 
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent researcher ") &&
+		if isModel(c) && strings.Contains(joined(c), "--agent researcher ") &&
 			!strings.Contains(joined(c), "--session") {
 			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
 			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
@@ -776,8 +823,10 @@ const blockingReview = `{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad"
 // marker.
 func (h *harness) opencodeWrites(marker, path, text string) {
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] == "opencode" && strings.Contains(joined(c), marker) {
+		if isModel(c) && strings.Contains(joined(c), marker) {
+			Expect(os.MkdirAll(filepath.Dir(path), 0o700)).To(Succeed())
 			Expect(os.WriteFile(path, []byte(text), 0o600)).To(Succeed())
+
 			return okStream("ses_1"), nil
 		}
 
@@ -809,7 +858,7 @@ type fakeProxy struct {
 	closed bool
 }
 
-// URL is the base URL the model is told to call.
+// URL is the base URL the key proxy serves.
 func (p *fakeProxy) URL() string { return p.url }
 
 // Usage is what the proxy read.
@@ -817,6 +866,31 @@ func (p *fakeProxy) Usage() openrouter.Usage { return p.usage }
 
 // Close records that the run stopped the proxy.
 func (p *fakeProxy) Close() error {
+	p.closed = true
+
+	return nil
+}
+
+// fakeEgress is a stand-in for the run's egress proxy.
+type fakeEgress struct {
+	url     string
+	address string
+	domains []string
+	policy  sandbox.Network
+	closed  bool
+}
+
+// URL is the model's OpenRouter base URL.
+func (p *fakeEgress) URL() string { return p.url }
+
+// Address is the loopback host:port srt settings point at.
+func (p *fakeEgress) Address() string { return p.address }
+
+// Domains is every domain the run contacted.
+func (p *fakeEgress) Domains() []string { return p.domains }
+
+// Close records that the run stopped the proxy.
+func (p *fakeEgress) Close() error {
 	p.closed = true
 
 	return nil
@@ -880,7 +954,7 @@ func (h *harness) answerOpencode(outs ...string) {
 	n := 0
 
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] != "opencode" {
+		if !isModel(c) {
 			return base(c)
 		}
 
@@ -898,7 +972,7 @@ func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.writeToken(workflow.Implementer, "repo-token\n")
 	h.implementerWrites(firstRunOutput)
 
-	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
+	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 3, 5)
 }
 
 // implementerWrites makes the Implementer's run write text as its output file, leaving the retro
@@ -913,7 +987,7 @@ func (h *harness) implementerWritesFor(number int, text string) {
 		workflow.ImplementerOutputFile)
 
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent implementer ") &&
+		if isModel(c) && strings.Contains(joined(c), "--agent implementer ") &&
 			!strings.Contains(joined(c), "--session") {
 			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
 			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())

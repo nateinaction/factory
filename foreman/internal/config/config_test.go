@@ -98,7 +98,7 @@ var _ = Describe("Load", func() {
 	load := func(agents map[string]config.AgentConfig) error {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": agents, "retro": retro,
-			"dead_run_margin_minutes": 10,
+			"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = config.Load(writeConfig(raw))
@@ -135,6 +135,7 @@ var _ = Describe("Load", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
 			"retro": config.Budget{Steps: 0, DeadlineMinutes: 0}, "dead_run_margin_minutes": 10,
+			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -146,6 +147,7 @@ var _ = Describe("Load", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
 			"retro": retro, "dead_run_margin_minutes": 0,
+			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -157,7 +159,8 @@ var _ = Describe("Load", func() {
 		load := func(repo string) error {
 			raw, err := json.Marshal(map[string]any{
 				"roles": []workflow.Role{workflow.Implementer}, "agents": every(), "retro": retro,
-				"dead_run_margin_minutes": 10, "factory_repo": repo,
+				"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+				"factory_repo": repo,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -175,6 +178,7 @@ var _ = Describe("Load", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
 			"retro": retro, "dead_run_margin_minutes": 10,
+			"review_round_limit": 3, "ci_pending_deadline_minutes": 60,
 		})
 		Expect(err).NotTo(HaveOccurred())
 

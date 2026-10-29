@@ -52,6 +52,16 @@ factory_models:
 # output-token limit each model alias declares.
 factory_context_cap: 200000
 factory_max_output: 32000
+# Egress per agent role. An empty list is open egress, the default. A list limits that role to those
+# domains; foreman's loopback proxy refuses everything else and logs every domain the run contacts.
+# A restricted role must still name openrouter.ai, or it cannot reach its model. A repository cannot
+# change this.
+factory_egress:
+  planner: []
+  researcher: []
+  implementer: []
+  reviewer: []
+  curator: []
 opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"
@@ -169,6 +179,19 @@ factory_retro_deadline_minutes: 15
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
 # moves the issue to factory:failed. Nothing retries a dead run automatically.
 factory_dead_run_margin_minutes: 10
+# The CI gate before review. An issue in factory:review waits this long for its pull request's checks:
+# any failure sends it back to the Implementer without a model run, and pending CI past this deadline
+# fails it. Neither a CI failure nor a Reviewer's REQUEST_CHANGES may take an issue past the review
+# round limit; at the limit the issue goes to factory:failed instead.
+factory_ci_pending_deadline_minutes: 60
+factory_review_round_limit: 3
+
+# The sandbox backend, pinned to the same exact version as the flake's dev shell. srt is
+# @anthropic-ai/sandbox-runtime; it uses Seatbelt on macOS and bubblewrap on Linux. The nixpkgs
+# revision is the one in flake.lock, so the host and the dev shell get the same package.
+factory_nixpkgs_rev: "31ecbaca1bdefa45dffc409f0250bd8039ea0010"
+factory_srt_version: "0.0.81"
+
 # The factory's own repository. A public repository's ready skill or factory retro group is promoted to
 # an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
 # fail those promotions closed.

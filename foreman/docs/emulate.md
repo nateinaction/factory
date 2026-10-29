@@ -46,6 +46,7 @@ for built-in services. `internal/ghtest` fills both gaps, and the tests keep the
 | No GraphQL endpoint | Minimizing a comment, and reading whether the App may (`viewerCanMinimize`), is GraphQL-only. A spec registers a `/graphql` route on the proxy (`harness.graphql`) that answers `viewerCanMinimize` and records each `minimizeComment`, so the dashboard command specs cover both the minimize and the delete fallback. |
 | Repositories are created under the token's user | `/user/repos` names the repository after the token's user, so a spec's factory repository is `o/factory`, not the production `nateinaction/factory`. A spec assigns it to every agent role and deletes it afterwards. |
 | No "an App cannot approve its own pull request" rule | The approval → comment-review fallback is still covered by forcing the 422 in the proxy, not by emulator state. |
+| No check runs, commit statuses or Actions job logs | The CI gate's reads have no emulator state to answer from, so the specs register the `GET /repos/o/r/commits/…` subtree and the job-log path on the proxy and answer with the check runs, statuses or log text the case needs. `Proxy.Handle` on a trailing-slash pattern covers every commit SHA. |
 | Seed numbering starts at 1 per repository | Where a fixed number matters (issue #5), the harness creates filler issues below it. Pull request and retro numbers are read back rather than hard-coded. |
 
 ## Authentication

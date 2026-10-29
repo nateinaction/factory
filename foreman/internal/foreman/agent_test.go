@@ -14,6 +14,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -38,14 +39,10 @@ var _ = Describe("the opencode adapter", func() {
 	})
 
 	It("gives each run fresh state, deletes it afterwards, and never continues by recency", func() {
-		stale := filepath.Join(h.deps.Settings.WorkRoot, "state-implementer-5")
-		Expect(os.MkdirAll(stale, 0o700)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(stale, "opencode.db"), []byte("old session"), 0o600)).To(Succeed())
-
 		var seen []string
 
 		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-			if c.Argv[0] == "opencode" {
+			if isModel(c) {
 				db := c.Env["OPENCODE_DB"]
 				if len(seen) == 0 {
 					Expect(db).NotTo(BeAnExistingFile(), "state not fresh")
@@ -77,7 +74,7 @@ var _ = Describe("the opencode adapter", func() {
 	It("keeps the Reviewer's state in memory", func() {
 		h.reviewerGH(nil)
 		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 5)).
+		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 3, 5)).
 			Error().NotTo(HaveOccurred())
 		calls := h.opencodeCalls()
 		Expect(calls).To(HaveLen(2), "the review and its retro")
@@ -100,7 +97,13 @@ var _ = Describe("the opencode adapter", func() {
 
 		agent := testAgent()
 		agent.DeadlineMinutes = 30
-		_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", agent, testRetro(), 5)
+		cfg := testConfig()
+		cfg.Agents[string(workflow.Reviewer)] = agent
+
+		_, err := Run(
+			context.Background(), h.deps, workflow.Reviewer, "o/r",
+			cfg.Agents[string(workflow.Reviewer)], cfg.Retro, cfg.ReviewRoundLimit, 5,
+		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(h.opencodeCalls()[0].Timeout).To(beNear(30 * time.Minute))
 	})
@@ -201,6 +204,8 @@ var _ = Describe("the opencode adapter", func() {
 
 				return proxy, nil
 			}
+			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
+			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _ string) (EgressProxy, error) { return egress, nil }
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
 			lines := h.usageLines()
@@ -212,8 +217,10 @@ var _ = Describe("the opencode adapter", func() {
 			), "the adapter still reports the context peak")
 			Expect(proxy.key).To(Equal("or-key"), "the proxy never got the key")
 			Expect(proxy.closed).To(BeTrue(), "the proxy outlived the run")
-			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(proxy.url))
+			Expect(egress.closed).To(BeTrue(), "the egress proxy outlived the run")
+			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
+			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
 		})
 
 		It("is one JSON line per run, summed over the run and its retro", func() {
@@ -229,7 +236,7 @@ var _ = Describe("the opencode adapter", func() {
 				HaveKeyWithValue("context_cap", 200000.0), HaveKeyWithValue("peak_context", 1400.0),
 				HaveKeyWithValue("cost", 0.004),
 			))
-			Expect(lines[0]).To(HaveKeyWithValue("missing", []any{"domains"}), "domains are not reported yet")
+			Expect(lines[0]).To(HaveKeyWithValue("missing", []any{}), "domains are reported by the egress proxy")
 		})
 
 		It("lists a field the adapter cannot report as missing, not zero", func() {
@@ -242,7 +249,7 @@ var _ = Describe("the opencode adapter", func() {
 				Expect(lines[0]).NotTo(HaveKey(k))
 			}
 
-			Expect(lines[0]["missing"]).To(HaveLen(7))
+			Expect(lines[0]["missing"]).To(HaveLen(6))
 		})
 
 		It("is still logged when the run fails", func() {
@@ -264,8 +271,9 @@ var _ = Describe("the opencode adapter", func() {
 			h.deps.Settings.WorkRoot = filepath.Join(h.dir, root, "work")
 			h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 				if len(c.Argv) > 3 && c.Argv[0] == "git" && c.Argv[1] == "clone" {
-					Expect(os.MkdirAll(c.Argv[3], 0o700)).To(Succeed())
-					Expect(os.WriteFile(filepath.Join(c.Argv[3], "AGENTS.md"), []byte("AGENTS-MD-CONTENT"), 0o600)).To(Succeed())
+					dest := c.Argv[len(c.Argv)-1]
+					Expect(os.MkdirAll(dest, 0o700)).To(Succeed())
+					Expect(os.WriteFile(filepath.Join(dest, "AGENTS.md"), []byte("AGENTS-MD-CONTENT"), 0o600)).To(Succeed())
 				}
 
 				return base(c)

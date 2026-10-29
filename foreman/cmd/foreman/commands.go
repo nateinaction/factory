@@ -85,6 +85,10 @@ func addSettingsFlags(fs *pflag.FlagSet) {
 	fs.String("token-dir", "", "directory holding each agent role's token file")
 	fs.String("key-file", "", "file holding the OpenRouter key")
 	fs.String("work-root", "", "directory holding clones and scratch files")
+	fs.String("home", "", "the real home directory, hidden from sandboxed runs")
+	fs.String("dagu-home", "", "dagu's home directory, hidden from sandboxed runs")
+	fs.String("srt", "", "the sandbox backend binary every model process runs under")
+	fs.String("skills", "", "the factory's forked skills directory")
 	fs.String("self", "", "foreman's installed path, re-run as the factory user")
 	fs.String("config", "", "the Ansible-written role config (FACTORY_AGENT_CONFIG)")
 	fs.String("token-helper", "", "the GitHub App token helper")
@@ -142,7 +146,10 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 			if verb == "start" {
 				code, err = foreman.Start(cmd.Context(), *d, cfg, role, args[1], number)
 			} else {
-				code, err = foreman.Run(cmd.Context(), *d, role, args[1], cfg.Agents[string(role)], cfg.Retro, number)
+				code, err = foreman.Run(
+					cmd.Context(), *d, role, args[1],
+					cfg.Agents[string(role)], cfg.Retro, cfg.ReviewRoundLimit, number,
+				)
 			}
 
 			return result(code, err)

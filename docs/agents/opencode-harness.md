@@ -13,8 +13,10 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Fresh state, deleted after the run and its retro | `OPENCODE_DB` in `<work root>/state-<role>-<issue>/`; `:memory:` for the Reviewer |
 | Step cap and deadline per agent role | `agent.<role>.steps` from `factory_agent_limits`, and foreman's own count and timeout; see below |
 | Retro in the run's session | `--session <id>` from the run's JSON stream, never `--continue` |
-| The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's loopback proxy, which adds `Authorization` |
-| Usage | the proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
+| The OpenRouter key never reaches the model | `OPENROUTER_API_KEY` is never set. `OPENCODE_CONFIG_CONTENT` points `provider.openrouter.options.baseURL` at the run's egress proxy, which forwards `/api/v1` to the loopback key proxy that adds `Authorization` |
+| Usage | the key proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
+| Every model process runs under srt | `opencode run` is wrapped by `srt --settings <run>/srt-settings.json`; see `foreman/docs/sandbox.md` |
+| Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
 
 ## The OpenRouter key proxy
 
@@ -25,14 +27,17 @@ A request naming any other path or destination is refused, and the proxy's clien
 `HTTPS_PROXY`, so the key cannot be sent anywhere else. A proxy that cannot bind fails the run, with
 no unsandboxed fallback.
 
-opencode sees only `http://127.0.0.1:<port>/api/v1` in `provider.openrouter.options.baseURL`. The
+opencode sees only `http://127.0.0.1:<port>/api/v1` in `provider.openrouter.options.baseURL`, where
+that port is the run's egress proxy (`foreman/internal/egress`). The egress proxy forwards the
+`/api/v1` path to this key proxy and enforces the role's egress policy. The
 proxy reads `usage.prompt_tokens`, `usage.completion_tokens`, `usage.prompt_tokens_details.cached_tokens`
 and `usage.cost` from each response (the last SSE message when streaming), and the run's usage line
 takes those totals over the adapter's own.
 
-Not yet checked against the pinned v1.19.3: whether opencode starts a run with no `OPENROUTER_API_KEY`
-or provider auth entry. If it insists on one, set a placeholder `provider.openrouter.options.apiKey`
-(a literal such as `proxy`, never the key): opencode sends it and the proxy replaces the header.
+Checked against the pinned v1.19.3: opencode refuses a run with no provider key. The adapter sets the
+placeholder `provider.openrouter.options.apiKey` (`factory-egress-proxy`, never the real key), which
+opencode sends and the egress proxy's forward to the key proxy replaces. The acceptance test in
+`foreman/internal/foreman/acceptance_test.go` exercises this under srt.
 
 
 ## How foreman enforces the step cap and the deadline

@@ -44,7 +44,7 @@ var _ = Describe("the Planner", func() {
 	runPlanner := func() (int, error) {
 		h.writeToken(workflow.Planner, "repo-token\n")
 
-		return Run(context.Background(), h.deps, workflow.Planner, "o/r", testAgent(), testRetro(), 5)
+		return Run(context.Background(), h.deps, workflow.Planner, "o/r", testAgent(), testRetro(), 3, 5)
 	}
 
 	It("posts a round of questions, moves the issue to waiting and runs no retro", func() {
@@ -65,7 +65,8 @@ var _ = Describe("the Planner", func() {
 
 		Expect(h.opencodeCalls()).To(HaveLen(1), "the questions round has no retro")
 		Expect(h.runner.find("--session")).To(BeEmpty())
-		Expect(h.runner.find("git clone")).To(BeEmpty(), "the Planner never clones or commits")
+		Expect(h.runner.find("git clone https://github.com/o/r.git")).To(BeEmpty(),
+			"the Planner never clones the planned repository")
 		Expect(h.runner.find("commit -m")).To(BeEmpty())
 	})
 
@@ -321,5 +322,191 @@ var _ = Describe("applying an approved proposal", func() {
 		again, err := emulator.Issues(context.Background(), "o/r")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(again).To(HaveLen(len(all)), "nothing new: no second slice and no second dashboard")
+	})
+
+	It("rewrites an approved map, routes its tickets and creates nothing twice", func() {
+		h.queue(map[string][]map[string]any{
+			workflow.LabelWaiting: {{"number": 1, "body": "Make exports work."}},
+		})
+
+		wayfinderMap := workflow.PlannerProposal{
+			Shape: workflow.ShapeMap, Spec: plannerSpec,
+			Map: &workflow.PlannerMap{
+				Destination: "Ship the export.", Notes: "Use the CLI.",
+				NotYetSpecified: "How accounts are matched.", OutOfScope: "Billing.",
+			},
+			Issues: []workflow.PlannedIssue{
+				{
+					Key: "read-api", Title: "Read the API",
+					Body: "## Question\n\nWhich API?", Type: workflow.TicketResearch,
+				},
+				{
+					Key: "grill-ux", Title: "Grill the UX",
+					Body: "## Question\n\nWhich UX?", Type: workflow.TicketGrilling,
+				},
+				{
+					Key: "proto-ui", Title: "Sketch the UI", Body: "## Question\n\nWhich UI?",
+					Type: workflow.TicketPrototype, BlockedBy: []string{"read-api"},
+				},
+				{
+					Key: "sign-up", Title: "Sign up for the API",
+					Body: "## Question\n\nWhich plan?", Type: workflow.TicketTask,
+				},
+			},
+		}
+		plannerRound(workflow.PlannerOutput{
+			Version: 1, Kind: workflow.PlannerFinalRound,
+			Comment: "The map is charted. **Is this ready to build?**", Proposal: &wayfinderMap,
+		})
+		h.comment(1, "o", "yes")
+
+		poll()
+
+		body := h.bodyOf(1)
+		Expect(body).To(And(
+			ContainSubstring("## Destination\n\nShip the export."),
+			ContainSubstring("## Notes\n\nUse the CLI."),
+			ContainSubstring("## Decisions so far"),
+			ContainSubstring("## Not yet specified\n\nHow accounts are matched."),
+			ContainSubstring("## Out of scope\n\nBilling."),
+			ContainSubstring("## Original request\n\nMake exports work."),
+		))
+		Expect(strings.Count(body, "Make exports work.")).To(Equal(1), "the original request went in twice")
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelMap))
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelDone))
+		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelWaiting))
+		Expect(h.markerComments(1)).To(ContainElement(ContainSubstring(
+			"role=planner run=run-1 from=factory:waiting to=factory:done")))
+		Expect(h.runner.find("opencode")).To(BeEmpty(), "approval must not run the model")
+
+		all, err := emulator.Issues(context.Background(), "o/r")
+		Expect(err).NotTo(HaveOccurred())
+
+		var tickets []ghtest.Issue
+
+		for _, issue := range all {
+			if issue.Title != workflow.DashboardTitle {
+				tickets = append(tickets, issue)
+			}
+		}
+
+		Expect(tickets).To(HaveLen(5), "the map and its four tickets")
+
+		byKey := map[string]int{}
+
+		for _, issue := range tickets {
+			from, key, found := workflow.PlannedFrom(issue.Body)
+			if !found {
+				continue
+			}
+
+			Expect(from).To(Equal(1))
+
+			byKey[key] = issue.Number
+			Expect(issue.Body).To(ContainSubstring("Part of #1"), "the sub-issue fallback")
+		}
+
+		Expect(byKey).To(HaveLen(4))
+		Expect(h.labels(byKey["read-api"])).To(ConsistOf(
+			workflow.LabelResearchTicket, workflow.LabelResearch))
+
+		for _, key := range []string{"grill-ux", "proto-ui", "sign-up"} {
+			Expect(h.labels(byKey[key])).To(ContainElement(workflow.LabelPlan))
+			Expect(h.labels(byKey[key])).NotTo(ContainElement(workflow.LabelResearch))
+		}
+
+		Expect(h.labels(byKey["proto-ui"])).To(ContainElement(workflow.LabelWayfinderPrototype))
+
+		prototype, err := emulator.Issue(context.Background(), "o/r", byKey["proto-ui"])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(prototype.Body).To(ContainSubstring("## Question\n\nWhich UI?"), "a prototype was built")
+		Expect(prototype.Body).To(ContainSubstring(fmt.Sprintf("Blocked by: #%d", byKey["read-api"])))
+
+		// Applying the same proposal again creates nothing new.
+		applyPlanner(wayfinderMap)
+		applyPlanner(wayfinderMap)
+
+		again, err := emulator.Issues(context.Background(), "o/r")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again).To(HaveLen(len(all)), "nothing new: no second ticket and no second dashboard")
+		Expect(h.bodyOf(1)).To(Equal(body), "the map body was rewritten again")
+		Expect(h.markerComments(1)).To(HaveLen(1), "the map moved to done more than once")
+	})
+
+	It("records an approved resolution, adds its tickets and closes the ticket", func() {
+		h.researchTicket()
+
+		resolution := workflow.PlannerProposal{
+			Shape: workflow.ShapeResolution,
+			Resolution: &workflow.PlannerResolution{
+				Answer: "Emulate is enough.", DecisionLine: "Use emulate for GitHub.",
+			},
+			Issues: []workflow.PlannedIssue{
+				{
+					Key: "follow-up", Title: "Follow up",
+					Body: "## Question\n\nWhat next?", Type: workflow.TicketTask,
+				},
+			},
+		}
+		applyResolution := func() {
+			c := h.deps.client("minted-token-planner")
+			Expect(applyProposal(context.Background(), h.deps, c, "o/r", 5, 99, resolution)).To(Succeed())
+		}
+		applyResolution()
+
+		ticket, err := emulator.Issue(context.Background(), "o/r", 5)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ticket.State).To(Equal("closed"))
+
+		comments, err := emulator.Comments(context.Background(), "o/r", 5)
+		Expect(err).NotTo(HaveOccurred())
+
+		var answers, markers int
+
+		for _, c := range comments {
+			if strings.Contains(c.Body, "Emulate is enough.") {
+				answers++
+			}
+
+			if strings.Contains(c.Body, workflow.MarkerPrefix+"handoff ") {
+				markers++
+			}
+		}
+
+		Expect(answers).To(Equal(1), "the resolution comment")
+		Expect(markers).To(Equal(1), "the ticket's final transition")
+
+		decision := "- [Add x](https://github.com/o/r/issues/5): Use emulate for GitHub."
+		Expect(h.bodyOf(6)).To(ContainSubstring("## Decisions so far\n\n" + decision + "\n\n## Not yet"))
+		Expect(strings.Count(h.bodyOf(6), decision)).To(Equal(1))
+
+		all, err := emulator.Issues(context.Background(), "o/r")
+		Expect(err).NotTo(HaveOccurred())
+
+		var newTickets []ghtest.Issue
+
+		for _, issue := range all {
+			if _, key, found := workflow.PlannedFrom(issue.Body); found && key == "follow-up" {
+				newTickets = append(newTickets, issue)
+			}
+		}
+
+		Expect(newTickets).To(HaveLen(1))
+		Expect(newTickets[0].Body).To(ContainSubstring("Part of #6"), "not a sub-issue of the map")
+		Expect(h.labels(newTickets[0].Number)).To(ConsistOf(
+			workflow.LabelTask, workflow.LabelPlan))
+
+		// Applying the same proposal again creates nothing new.
+		applyResolution()
+		applyResolution()
+
+		commentsAgain, err := emulator.Comments(context.Background(), "o/r", 5)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(commentsAgain).To(HaveLen(len(comments)), "the ticket gained a comment")
+
+		again, err := emulator.Issues(context.Background(), "o/r")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again).To(HaveLen(len(all)), "the resolution created another ticket")
+		Expect(strings.Count(h.bodyOf(6), decision)).To(Equal(1), "the decision went in twice")
 	})
 })
