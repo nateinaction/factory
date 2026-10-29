@@ -16,34 +16,35 @@ var _ = Describe("Implementer", func() {
 	issue := workflow.Issue{Number: 4, Title: "T", Body: "B"}
 
 	It("carries the issue after the role prompt and the docs", func() {
-		got := Implementer([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", issue, "", nil)
+		got := Implementer([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", issue, "", nil, "/w/out.json")
 		Expect(got).To(Equal(implementerRolePrompt + "\n\n# Repository docs\n\n## AGENTS.md\n\nRULES\n" +
-			IssueMaterialHeading + "Repository: o/r\nIssue: #4\nTitle: T\n\nB"))
+			IssueMaterialHeading + "Repository: o/r\nIssue: #4\nTitle: T\n\nB\n\nWrite the JSON to /w/out.json."))
 	})
 
 	It("ends a rework with the review to fix", func() {
-		Expect(Implementer(nil, "o/r", issue, "FEEDBACK", nil)).To(HaveSuffix(
-			"Fix every high and medium finding below on top of the existing commits, then commit.\n\nReview:\nFEEDBACK"))
+		Expect(Implementer(nil, "o/r", issue, "FEEDBACK", nil, "/w/out.json")).To(HaveSuffix(
+			"Fix every high and medium finding below on top of the existing commits and answer each one " +
+				"in \"replies\".\n\nReview:\nFEEDBACK\n\nWrite the JSON to /w/out.json."))
 	})
 
 	It("carries every comment since the marker, oldest first", func() {
 		got := Implementer(nil, "o/r", issue, "", []workflow.Item{
 			{ID: 3, Body: "first", Author: "o"},
 			{ID: 4, Body: "second", Author: "o"},
-		})
-		Expect(got).To(HaveSuffix(ThreadHeading + "\n\n**o:** first\n\n**o:** second"))
+		}, "/w/out.json")
+		Expect(got).To(ContainSubstring(ThreadHeading + "\n\n**o:** first\n\n**o:** second"))
 		Expect(strings.Index(got, "first")).To(BeNumerically("<", strings.Index(got, "second")))
 	})
 
 	It("cuts the body and the feedback to the body limit, by character", func() {
 		long := strings.Repeat("é", workflow.BodyLimitChars+50)
-		got := Implementer(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, long, nil)
+		got := Implementer(nil, "o/r", workflow.Issue{Number: 1, Title: "T", Body: long}, long, nil, "/w/out.json")
 		Expect(strings.Count(got, "é")).To(Equal(2 * workflow.BodyLimitChars))
 	})
 
 	It("keeps the thread within its own limit", func() {
 		long := strings.Repeat("é", workflow.BodyLimitChars+50)
-		got := Implementer(nil, "o/r", issue, "", []workflow.Item{{ID: 1, Body: long, Author: "o"}})
+		got := Implementer(nil, "o/r", issue, "", []workflow.Item{{ID: 1, Body: long, Author: "o"}}, "/w/out.json")
 		Expect(strings.Count(got, "é")).To(Equal(workflow.BodyLimitChars))
 	})
 })

@@ -332,6 +332,9 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 		return "sha-head\n", nil
 	case strings.Contains(line, "rev-list --count"):
 		return "1\n", nil
+	case strings.Contains(line, "status --porcelain"):
+		// The model left a change in the working tree for foreman to commit.
+		return "M a.go\n", nil
 	}
 
 	return "", nil
@@ -346,6 +349,10 @@ func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
 		return strings.Join(installed, "\n") + "\n", nil
 	case !slices.Contains(installed, repoOf(c)):
 		return "", &proc.ExitError{Program: "github-app-token", Code: 1}
+	}
+
+	if strings.Contains(joined(c), "--read-only") {
+		return "read-only-token-" + appOf(c) + "\n", nil
 	}
 
 	return "minted-token-" + appOf(c) + "\n", nil
@@ -639,15 +646,27 @@ func (h *harness) reviewerGH(reviews []workflow.Item) {
 
 // reviewOut is where a Reviewer run on issue 5 writes its verdict.
 func (h *harness) reviewOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "review-5.json")
+	return filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", workflow.ReviewerOutputFile)
 }
 
-// cleanReview is a review with no findings.
-const cleanReview = `{"summary":"fine","findings":[]}`
+// implOut is where an Implementer run on issue 5 writes its output.
+func (h *harness) implOut() string {
+	return filepath.Join(h.deps.Settings.WorkRoot, "implementer-5", workflow.ImplementerOutputFile)
+}
 
-// blockingReview is a review with one high finding.
-const blockingReview = `{"summary":"bad","findings":[` +
-	`{"severity":"high","title":"bug","detail":"d","location":"a.go:1"}]}`
+// firstRunOutput is an implementer-output.json for a first run.
+const firstRunOutput = `{"version":1,"commit_message":"Add x","pr_title":"Add x","pr_body":"Closes #5"}`
+
+// reworkOutput is an implementer-output.json for a review round.
+const reworkOutput = `{"version":1,"commit_message":"Fix x","replies":[` +
+	`{"finding":"bug","status":"fixed","reason":"fixed it"}]}`
+
+// cleanReview is a reviewer-output.json that approves.
+const cleanReview = `{"version":1,"verdict":"APPROVE","summary":"fine","findings":[]}`
+
+// blockingReview is a reviewer-output.json that requests changes for one high finding.
+const blockingReview = `{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[` +
+	`{"severity":"high","path":"a.go","line":1,"claim":"bug"}]}`
 
 // opencodeWrites makes opencode runs write text to the file at path, for the runs whose argv contains
 // marker.
@@ -755,12 +774,36 @@ func (h *harness) answerOpencode(outs ...string) {
 	})
 }
 
-// runImpl runs the Implementer on issue 5 against the emulator.
+// runImpl runs the Implementer on issue 5 against the emulator, with a model that writes a valid
+// first-run output file.
 func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
 	h.writeToken(workflow.Implementer, "repo-token\n")
+	h.implementerWrites(firstRunOutput)
 
 	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
+}
+
+// implementerWrites makes the Implementer's run write text as its output file, leaving the retro
+// alone, and passes the process on to whatever the harness otherwise answers.
+func (h *harness) implementerWrites(text string) {
+	h.implementerWritesFor(5, text)
+}
+
+// implementerWritesFor makes an Implementer run on number write text to that run's output file.
+func (h *harness) implementerWritesFor(number int, text string) {
+	out := filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("implementer-%d", number),
+		workflow.ImplementerOutputFile)
+
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if c.Argv[0] == "opencode" && strings.Contains(joined(c), "--agent implementer ") &&
+			!strings.Contains(joined(c), "--session") {
+			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
+		}
+
+		return base(c)
+	})
 }
 
 // usageLines are the JSON lines on stdout that are usage reports.

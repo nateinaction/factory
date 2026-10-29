@@ -90,32 +90,39 @@ func Build(rolePrompt string, docs []Doc, material string) string {
 }
 
 // implementerRolePrompt is the Implementer's fixed instruction.
-const implementerRolePrompt = "Use the `implement` skill to implement the GitHub issue given under " +
-	"\"Issue material\". The repository is the current directory, already on its own branch. " +
-	"Commit your changes to this branch; do not push."
+const implementerRolePrompt = "Use the `implement` skill on the issue given under \"Issue material\". " +
+	"The repository is the current directory, already on its own branch. Leave your changes " +
+	"uncommitted: do not commit, push, comment or ask questions, because foreman makes every write " +
+	"from your output file. Write the result as JSON with \"version\": 1, \"commit_message\", and, on " +
+	"a first run, \"pr_title\" and \"pr_body\". On a review round add \"replies\": a list of " +
+	"{\"finding\": \"...\", \"status\": \"fixed\" or \"contested\", \"reason\": \"...\"}."
 
 // reviewerRolePrompt is the Reviewer's fixed instruction.
 const reviewerRolePrompt = "Use the `code-review` skill on the current directory. Do not change the " +
 	"repository, do not post anything, and do not ask questions. Classify every finding as high " +
 	"(a bug, a spec miss or a security problem that must be fixed before merge), medium (a " +
 	"documented-standard breach or a notable defect) or low (a judgement call or nit). Write the " +
-	`result as JSON: {"summary": "<one paragraph>", "findings": [{"severity": ` +
-	`"high|medium|low", "title": "...", "detail": "...", "location": "file:line or empty"}]}. ` +
-	"An empty findings list means the change is clean."
+	`result as JSON with "version": 1, "verdict": "APPROVE" or "REQUEST_CHANGES", "summary", and ` +
+	`"findings": [{"severity": "high|medium|low", "path": "file", "line": 3, "claim": "..."}]. ` +
+	"A high or medium finding requires REQUEST_CHANGES, and REQUEST_CHANGES needs at least one finding."
 
-// Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run, and
-// thread is every comment since the marker when a writer's comment woke the issue.
-func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item) string {
+// Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run; thread
+// is every comment since the marker when a writer's comment woke the issue; and outPath is where the
+// model writes implementer-output.json.
+func Implementer(
+	docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item, outPath string,
+) string {
 	rework := ""
 	if feedback != "" {
 		rework = "\n\nThe open pull request for this branch was reviewed and the review found " +
 			"problems. Fix every high and medium finding below on top of the existing " +
-			"commits, then commit.\n\nReview:\n" + workflow.Truncate(feedback, workflow.BodyLimitChars)
+			"commits and answer each one in \"replies\".\n\nReview:\n" +
+			workflow.Truncate(feedback, workflow.BodyLimitChars)
 	}
 
-	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s%s",
-		repo, issue.Number, issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars),
-		Thread(thread), rework))
+	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s%s"+
+		"\n\nWrite the JSON to %s.", repo, issue.Number, issue.Title,
+		workflow.Truncate(issue.Body, workflow.BodyLimitChars), Thread(thread), rework, outPath))
 }
 
 // Thread renders every comment a woken run reads, oldest first, each with its author and cut to fit

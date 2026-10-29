@@ -42,8 +42,10 @@ var _ = Describe("waking on a comment", func() {
 		}
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
 		markers := h.markerComments(1)
@@ -64,8 +66,10 @@ var _ = Describe("waking on a comment", func() {
 		h.comment(pr.Number, "o", "please also handle the empty case")
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ContainElement(workflow.LabelImplementing))
 		markers := h.markerComments(1)
@@ -74,6 +78,7 @@ var _ = Describe("waking on a comment", func() {
 
 		// The Implementer's run reads the comment the writer left on the pull request.
 		h.writeToken(workflow.Implementer, "repo-token\n")
+		h.implementerWritesFor(1, reworkOutput)
 		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 1)).
 			Error().NotTo(HaveOccurred())
 
@@ -94,8 +99,10 @@ var _ = Describe("waking on a comment", func() {
 		}
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
 		Expect(h.markerComments(1)).To(BeEmpty())
@@ -113,8 +120,10 @@ var _ = Describe("waking on a comment", func() {
 		}
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Planner, workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelWaiting))
 		Expect(h.markerComments(1)).To(BeEmpty())
@@ -129,8 +138,10 @@ var _ = Describe("waking on a comment", func() {
 		h.comment(1, "o", "looks good")
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelDone))
 		Expect(h.markerComments(1)).To(BeEmpty())
@@ -144,8 +155,10 @@ var _ = Describe("waking on a comment", func() {
 		h.comment(1, "o", "first bit of guidance")
 		h.comment(1, "o", "second bit of guidance")
 
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ContainElement(workflow.LabelImplementing))
 		markers := h.markerComments(1)
@@ -154,6 +167,7 @@ var _ = Describe("waking on a comment", func() {
 
 		// The Implementer's run reads the guidance the writer left after the failure.
 		h.writeToken(workflow.Implementer, "repo-token\n")
+		h.implementerWritesFor(1, firstRunOutput)
 		Expect(Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 1)).
 			Error().NotTo(HaveOccurred())
 
@@ -193,8 +207,10 @@ var _ = Describe("dead runs", func() {
 			"created_at": old,
 		}})
 
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ContainElement(workflow.LabelFailed))
 		Expect(h.labels(1)).NotTo(ContainElement(workflow.LabelImplementing))
@@ -208,8 +224,10 @@ var _ = Describe("dead runs", func() {
 
 		// The next poll leaves the failed issue alone: it is not retried automatically.
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr = Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 		Expect(h.markerComments(1)).To(HaveLen(1))
 	})
 
@@ -218,8 +236,10 @@ var _ = Describe("dead runs", func() {
 		addLabel(1, workflow.LabelImplementing)
 
 		h.out.Reset()
-		Expect(Poll(context.Background(), h.deps,
-			pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+		code, pollErr := Poll(context.Background(), h.deps,
+			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
 
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
 		Expect(h.markerComments(1)).To(BeEmpty())

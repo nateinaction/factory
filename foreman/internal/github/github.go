@@ -164,6 +164,15 @@ type (
 		Base  string `json:"base"`
 		Body  string `json:"body"`
 	}
+	// pullRequestBody updates a pull request's text.
+	pullRequestBody struct {
+		Title string `json:"title,omitempty"`
+		Body  string `json:"body,omitempty"`
+	}
+	// reviewersRequest asks people to review a pull request.
+	reviewersRequest struct {
+		Reviewers []string `json:"reviewers"`
+	}
 	// reviewRequest posts a pull request review on a commit.
 	reviewRequest struct {
 		CommitID string `json:"commit_id"`
@@ -526,23 +535,60 @@ func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, tex
 	return c.Comment(ctx, repo, ticket, body)
 }
 
-// PostReview posts a native pull request review on a commit. An approval GitHub refuses (the App
-// authored the pull request) is posted as a comment review instead.
-func (c Client) PostReview(ctx context.Context, repo string, pr int, sha, body string, approve bool) error {
+// PostReview posts a native pull request review on a commit, carrying the verdict. A review GitHub
+// refuses because the App authored the pull request is posted as a comment review instead, so the
+// findings still reach the pull request.
+func (c Client) PostReview(ctx context.Context, repo string, pr int, sha, body string, verdict workflow.Verdict) error {
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr)
-	if approve {
-		err := c.Call(ctx, http.MethodPost, path, reviewRequest{CommitID: sha, Body: body, Event: "APPROVE"}, nil)
-		if err == nil {
-			return nil
-		}
 
-		if !isStatus(err, http.StatusUnprocessableEntity) {
-			return err
-		}
-
-		body += "\n\n_No high or medium findings. GitHub rejected the approval because " +
-			"the review agent is also the pull request's author._"
+	err := c.Call(ctx, http.MethodPost, path,
+		reviewRequest{CommitID: sha, Body: body, Event: verdict.Event()}, nil)
+	if err == nil {
+		return nil
 	}
 
+	if !isStatus(err, http.StatusUnprocessableEntity) {
+		return err
+	}
+
+	body += "\n\n_GitHub rejected the " + verdict.Event() + " review because the review agent is " +
+		"also the pull request's author, so it is posted as a comment._"
+
 	return c.Call(ctx, http.MethodPost, path, reviewRequest{CommitID: sha, Body: body, Event: "COMMENT"}, nil)
+}
+
+// UpdatePR replaces a pull request's title and body.
+func (c Client) UpdatePR(ctx context.Context, repo string, pr int, title, text string) error {
+	return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, pr),
+		pullRequestBody{Title: title, Body: text}, nil)
+}
+
+// RequestReviewers asks people to review a pull request. An empty list asks nobody, so foreman never
+// calls GitHub with nothing to do.
+func (c Client) RequestReviewers(ctx context.Context, repo string, pr int, reviewers []string) error {
+	if len(reviewers) == 0 {
+		return nil
+	}
+
+	return c.Call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, pr),
+		reviewersRequest{Reviewers: reviewers}, nil)
+}
+
+// PostReplies comments on the pull request, keyed by the commit the replies answer, so a repeat
+// updates that comment instead of adding another.
+func (c Client) PostReplies(ctx context.Context, repo string, pr int, sha, text string) error {
+	marker := workflow.RepliesMarker(sha)
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments", repo, pr)
+
+	comments, err := Paged[workflow.Item](ctx, c, path)
+	if err != nil {
+		return err
+	}
+
+	if mine := workflow.StartsWith(comments, marker); len(mine) > 0 {
+		return c.Call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, mine[0].ID),
+			bodyRequest{Body: text}, nil)
+	}
+
+	return c.Comment(ctx, repo, pr, text)
 }

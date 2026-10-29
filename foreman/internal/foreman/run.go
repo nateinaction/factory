@@ -21,20 +21,19 @@ import (
 )
 
 // Run is the factory half, run as the factory user: it works the issue as the agent role. For the
-// Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted).
+// Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted); a run
+// that already reported its failure on the issue returns workflow.ExitReported.
 func Run(
 	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
 	number int,
 ) (int, error) {
 	switch role {
 	case workflow.Implementer:
-		if err := runImplementer(ctx, d, repo, agent, retro, number); err != nil {
-			return 1, err
-		}
-
-		return 0, nil
+		return exitCode(runImplementer(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Reviewer:
-		return runReviewer(ctx, d, repo, agent, number)
+		code, err := runReviewer(ctx, d, repo, agent, number)
+
+		return exitCode(err, code)
 	case workflow.Planner, workflow.Researcher, workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
@@ -132,17 +131,23 @@ func (s session) clone(ctx context.Context, repo string) error {
 }
 
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
-// environment.
+// environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
+// run outside the sandbox; identity adds the committer a run needs.
 func newSession(d Deps, j job, workdir string, identity []string) session {
+	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
+
 	return session{
 		d:        d,
 		workdir:  workdir,
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
-		gitArgv:  append([]string{"git", "-C", workdir}, identity...),
+		gitArgv:  gitArgv,
 		key:      j.sec.openrouterKey,
 	}
 }
+
+// nullHooksPath disables every git hook of the clone.
+const nullHooksPath = "/dev/null"
 
 // job is what an agent role reads before it touches a clone: its secrets, the model's environment, a
 // GitHub client and the issue.
@@ -154,15 +159,23 @@ type job struct {
 }
 
 // loadJob reads the issue an agent role works and builds its model environment around the run's
-// proxy. The secrets are already read: the key belongs to the proxy, never to the model.
+// proxy. The secrets are already read: the key belongs to the proxy, never to the model. The model's
+// one GitHub credential is a read-only token of its own App's, scoped to the repository.
 func loadJob(
-	ctx context.Context, d Deps, sec secrets, baseURL string,
-	repo string, agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL, repo string, role workflow.Role,
+	agent config.AgentConfig, number int, db string,
 ) (job, error) {
 	env, err := opencode.Env(baseURL, db, agent)
 	if err != nil {
 		return job{}, err
 	}
+
+	readOnly, err := d.mintReadOnlyToken(ctx, role, repo)
+	if err != nil {
+		return job{}, err
+	}
+
+	env["GH_TOKEN"] = readOnly
 
 	c := d.client(sec.githubToken)
 
@@ -215,6 +228,34 @@ func reported(u openrouter.Usage) opencode.Usage {
 	return opencode.Usage{Input: u.Input, Output: u.Output, Cached: u.Cached, Cost: u.Cost}
 }
 
+// reportedError is a failure whose reason foreman already posted on the issue in one comment. The
+// start half only records the failure, so the output errors are never described twice.
+type reportedError struct {
+	// cause is the failure that was reported.
+	cause error
+}
+
+// Error is the reported failure's message.
+func (e *reportedError) Error() string { return e.cause.Error() }
+
+// Unwrap exposes the reported failure.
+func (e *reportedError) Unwrap() error { return e.cause }
+
+// exitCode maps a finished run to the code `start` reads: a reported failure becomes ExitReported,
+// because the factory half already commented; code is what a successful run returns. The error is
+// kept so the dagu log records it too.
+func exitCode(err error, code int) (int, error) {
+	if _, ok := errors.AsType[*reportedError](err); ok {
+		return workflow.ExitReported, err
+	}
+
+	if err != nil {
+		return 1, err
+	}
+
+	return code, nil
+}
+
 // runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
 // when the run failed.
 func runImplementer(
@@ -234,7 +275,7 @@ func runImplementer(
 	return err
 }
 
-// implement clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
+// implement clones, runs the model, applies its output, and writes the retro.
 func implement(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (opencode.Usage, error) {
@@ -253,20 +294,19 @@ func implementRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
 	agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Implementer, agent, number, db)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
 	branch := workflow.BranchName(number)
 
-	// A clean slate makes a re-run equal to a first run.
-	workdir, err := freshPath(d.Settings.WorkRoot, fmt.Sprintf("issue-%d", number))
+	paths, err := implementerPaths(d.Settings.WorkRoot, number)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
 
-	s := newSession(d, j, workdir, []string{
+	s := newSession(d, j, paths.workdir, []string{
 		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
 	})
 
@@ -275,7 +315,7 @@ func implementRun(
 		return opencode.Usage{}, err
 	}
 
-	docs, err := prompt.ReadRepoDocs(workdir)
+	docs, err := prompt.ReadRepoDocs(paths.workdir)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -286,14 +326,19 @@ func implementRun(
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread),
+		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread, paths.out),
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
 		return res.Usage, err
 	}
 
-	if err := s.publish(ctx, j, repo, branch, start, pr); err != nil {
+	out, err := readImplementerOutput(paths.out, pr != nil)
+	if err != nil {
+		return res.Usage, rejectOutput(ctx, j.c, repo, number, workflow.Implementer, err)
+	}
+
+	if err := s.applyImplementer(ctx, j, repo, branch, start, pr, out); err != nil {
 		return res.Usage, err
 	}
 	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
@@ -334,6 +379,144 @@ func guidance(ctx context.Context, c github.Client, repo string, number int) ([]
 	return workflow.Guidance(comments), nil
 }
 
+// implementerPaths clears and returns an Implementer run's clone and scratch paths. The output file
+// sits outside the clone, in the run's own scratch directory, with the name the spec fixes.
+func implementerPaths(root string, number int) (runFiles, error) {
+	workdir, err := freshPath(root, fmt.Sprintf("issue-%d", number))
+	if err != nil {
+		return runFiles{}, err
+	}
+
+	scratch, err := scratchDir(root, fmt.Sprintf("implementer-%d", number))
+	if err != nil {
+		return runFiles{}, err
+	}
+
+	return runFiles{workdir: workdir, out: filepath.Join(scratch, workflow.ImplementerOutputFile)}, nil
+}
+
+// runFiles are the clone and output path of an Implementer run.
+type runFiles struct {
+	workdir, out string
+}
+
+// scratchDir clears and creates one run's scratch directory, which is outside the clone.
+func scratchDir(root, name string) (string, error) {
+	path, err := freshPath(root, name)
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.MkdirAll(path, privateDirMode); err != nil {
+		return "", fmt.Errorf("scratch directory: %w", err)
+	}
+
+	return path, nil
+}
+
+// readImplementerOutput reads and validates the Implementer's output file. A file foreman cannot
+// read is an output error too, so the model that wrote none fails the same way as a bad one.
+func readImplementerOutput(path string, rework bool) (workflow.ImplementerOutput, error) {
+	raw, err := readScratch(path)
+	if err != nil {
+		return workflow.ImplementerOutput{}, outputProblem(workflow.ImplementerOutputFile, err)
+	}
+
+	return workflow.ParseImplementerOutput(string(raw), rework)
+}
+
+// outputProblem turns an unreadable output file into the error a rejected one returns.
+func outputProblem(file string, err error) error {
+	return &workflow.OutputError{File: file, Problems: []string{"cannot be read: " + err.Error()}}
+}
+
+// rejectOutput posts every problem with a rejected output file in one comment, then returns the
+// failure the run reports. Nothing in the file is applied: the issue goes to failed instead.
+func rejectOutput(
+	ctx context.Context, c github.Client, repo string, number int, role workflow.Role, err error,
+) error {
+	var rejected *workflow.OutputError
+	if !errors.As(err, &rejected) {
+		return err
+	}
+
+	lines := []string{
+		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
+	}
+	for _, problem := range rejected.Problems {
+		lines = append(lines, "- "+problem)
+	}
+
+	text := workflow.Truncate(strings.Join(lines, "\n"), workflow.CommentLimitChars)
+	if postErr := c.Comment(ctx, repo, number, text); postErr != nil {
+		// Both failures matter: the file was bad and the report never reached the issue.
+		return errors.Join(err, postErr)
+	}
+
+	return &reportedError{cause: err}
+}
+
+// applyImplementer commits the working tree with hooks disabled, pushes the branch, opens or updates
+// the pull request, and posts the replies to the review. Every step is keyed to the tree, the branch
+// or the commit, so applying the same output twice changes nothing.
+func (s session) applyImplementer(
+	ctx context.Context, j job, repo, branch, start string, original *github.PullRequest,
+	out workflow.ImplementerOutput,
+) error {
+	if err := s.commit(ctx, out.CommitMessage); err != nil {
+		return err
+	}
+
+	pr, err := s.publish(ctx, j, repo, branch, start, original, out)
+	if err != nil {
+		return err
+	}
+
+	if err := s.reply(ctx, j, repo, pr, original != nil, out); err != nil {
+		return err
+	}
+
+	return writeLine(s.d.Out, pr.HTMLURL)
+}
+
+// commit stages the working tree and commits it, with the clone's hooks disabled so nothing the
+// model wrote runs outside the sandbox. A tree with nothing to commit is left as it is.
+func (s session) commit(ctx context.Context, message string) error {
+	if _, err := s.git(ctx, nil, "add", "-A"); err != nil {
+		return err
+	}
+
+	status, err := s.git(ctx, nil, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+
+	_, err = s.git(ctx, nil, "commit", "-m", message)
+
+	return err
+}
+
+// reply posts the answers to the review's findings, keyed to the commit they answer. A first run has
+// no review to answer.
+func (s session) reply(
+	ctx context.Context, j job, repo string, pr *github.PullRequest, rework bool, out workflow.ImplementerOutput,
+) error {
+	if !rework || len(out.Replies) == 0 {
+		return nil
+	}
+
+	sha, err := s.head(ctx)
+	if err != nil {
+		return err
+	}
+
+	return j.c.PostReplies(ctx, repo, pr.Number, sha, workflow.RenderReplies(sha, out.Replies))
+}
+
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if
 // any, the review feedback on it, and the commit the agent starts from.
 func (s session) prepare(
@@ -353,10 +536,13 @@ func (s session) prepare(
 	return pr, feedback, start, err
 }
 
-// publish pushes the agent's new commits, opens the pull request if there is none, and prints its URL.
-func (s session) publish(ctx context.Context, j job, repo, branch, start string, pr *github.PullRequest) error {
-	if err := s.requireNewCommits(ctx, start, branch); err != nil {
-		return err
+// publish pushes the agent's new commits and opens or updates the pull request. A first run must
+// carry a commit; a rerun may change nothing and still refreshes the pull request.
+func (s session) publish(
+	ctx context.Context, j job, repo, branch, start string, pr *github.PullRequest, out workflow.ImplementerOutput,
+) (*github.PullRequest, error) {
+	if err := s.requireNewCommits(ctx, start, branch, pr); err != nil {
+		return nil, err
 	}
 	// agent/* branches are ours alone; a first run replaces any stale one, a rework fast-forwards.
 	push := []string{"push", "origin", branch}
@@ -365,17 +551,28 @@ func (s session) publish(ctx context.Context, j job, repo, branch, start string,
 	}
 
 	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
-		return err
+		return nil, err
 	}
 
+	return s.upsertPR(ctx, j, repo, branch, pr, out)
+}
+
+// upsertPR opens the pull request linked to the issue, or updates the open one's text when the output
+// carries it.
+func (s session) upsertPR(
+	ctx context.Context, j job, repo, branch string, pr *github.PullRequest, out workflow.ImplementerOutput,
+) (*github.PullRequest, error) {
 	if pr == nil {
-		var err error
-		if pr, err = openPR(ctx, j.c, repo, j.issue, branch); err != nil {
-			return err
+		return openPR(ctx, j.c, repo, j.issue, branch, out)
+	}
+
+	if out.PRTitle != "" && out.PRBody != "" {
+		if err := j.c.UpdatePR(ctx, repo, pr.Number, out.PRTitle, workflow.PRBody(j.issue.Number, out.PRBody)); err != nil {
+			return nil, err
 		}
 	}
 
-	return writeLine(s.d.Out, pr.HTMLURL)
+	return pr, nil
 }
 
 // checkoutBranch checks out the issue's branch. With an open pull request it builds on the reviewed
@@ -406,9 +603,13 @@ func (s session) checkoutBranch(
 	return pr, feedback, err
 }
 
-// requireNewCommits never discards the agent's work silently: no new commits means no PR, and that is a
-// failure.
-func (s session) requireNewCommits(ctx context.Context, start, branch string) error {
+// requireNewCommits never discards the agent's work silently: a first run with no new commits fails,
+// because there is no pull request to carry them. A rerun may change nothing.
+func (s session) requireNewCommits(ctx context.Context, start, branch string, pr *github.PullRequest) error {
+	if pr != nil {
+		return nil
+	}
+
 	out, err := s.git(ctx, nil, "rev-list", "--count", start+".."+branch)
 	if err != nil {
 		return err
@@ -421,17 +622,17 @@ func (s session) requireNewCommits(ctx context.Context, start, branch string) er
 	return nil
 }
 
-// openPR opens the pull request for the branch and links it from the issue.
+// openPR opens the pull request for the branch, linked to the issue, and comments its link.
 func openPR(
 	ctx context.Context, c github.Client, repo string, issue workflow.Issue, branch string,
+	out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
 	base, err := c.DefaultBranch(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
 
-	pr, err := c.CreatePR(ctx, repo, issue.Title, branch, base,
-		fmt.Sprintf("Closes #%d\n\nOpened by the factory agent.", issue.Number))
+	pr, err := c.CreatePR(ctx, repo, out.PRTitle, branch, base, workflow.PRBody(issue.Number, out.PRBody))
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +732,7 @@ func reviewRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
 	agent config.AgentConfig, number int, db string,
 ) (int, opencode.Usage, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
+	j, err := loadJob(ctx, d, sec, baseURL, repo, workflow.Reviewer, agent, number, db)
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}
@@ -566,7 +767,12 @@ func reviewRun(
 		return 1, res.Usage, err
 	}
 
-	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, paths.out)
+	out, err := readReviewerOutput(paths.out)
+	if err != nil {
+		return 1, res.Usage, rejectOutput(ctx, j.c, repo, number, workflow.Reviewer, err)
+	}
+
+	code, err := postVerdict(ctx, j.c, repo, pr.Number, sha, out, j.issue)
 
 	return code, res.Usage, err
 }
@@ -598,27 +804,29 @@ func writeSpec(paths reviewFiles, issue workflow.Issue) ([]prompt.Doc, error) {
 	return prompt.ReadRepoDocs(paths.workdir)
 }
 
-// reviewFiles are a review run's scratch paths.
+// reviewFiles are a review run's paths: the clone, the spec and the model's output file.
 type reviewFiles struct {
 	workdir, spec, out string
 }
 
-// reviewPaths clears and returns the scratch paths of a review run.
+// reviewPaths clears and returns the paths of a review run. The output file and the spec sit in the
+// run's scratch directory, outside the clone, with the names the spec fixes.
 func reviewPaths(root string, number int) (reviewFiles, error) {
-	var (
-		f   reviewFiles
-		err error
-	)
-	for _, p := range []struct {
-		dst    *string
-		suffix string
-	}{{&f.workdir, ""}, {&f.spec, ".spec.md"}, {&f.out, ".json"}} {
-		if *p.dst, err = freshPath(root, "review-"+strconv.Itoa(number)+p.suffix); err != nil {
-			return reviewFiles{}, err
-		}
+	workdir, err := freshPath(root, "review-"+strconv.Itoa(number))
+	if err != nil {
+		return reviewFiles{}, err
 	}
 
-	return f, nil
+	scratch, err := scratchDir(root, "reviewer-"+strconv.Itoa(number))
+	if err != nil {
+		return reviewFiles{}, err
+	}
+
+	return reviewFiles{
+		workdir: workdir,
+		spec:    filepath.Join(scratch, "issue.md"),
+		out:     filepath.Join(scratch, workflow.ReviewerOutputFile),
+	}, nil
 }
 
 // checkoutForReview clones the repository on the pull request's branch and returns the reviewed commit.
@@ -638,38 +846,52 @@ func (s session) checkoutForReview(ctx context.Context, repo, branch string) (st
 	return s.head(ctx)
 }
 
-// postVerdict parses the review strictly, posts it once per commit, and returns the verdict code.
-func postVerdict(ctx context.Context, c github.Client, repo string, pr int, sha, outPath string) (int, error) {
-	raw, err := readScratch(outPath)
+// readReviewerOutput reads and validates the Reviewer's output file.
+func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
+	raw, err := readScratch(path)
 	if err != nil {
-		return 1, fmt.Errorf("read review: %w", err)
+		return workflow.ReviewerOutput{}, outputProblem(workflow.ReviewerOutputFile, err)
 	}
 
-	summary, findings, err := workflow.ParseReview(string(raw))
-	if err != nil {
-		return 1, err
-	}
+	return workflow.ParseReviewerOutput(string(raw))
+}
 
+// postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The
+// verdict leaves only through the output file, so nothing else can decide it.
+func postVerdict(
+	ctx context.Context, c github.Client, repo string, pr int, sha string, out workflow.ReviewerOutput,
+	issue workflow.Issue,
+) (int, error) {
 	reviews, err := c.Reviews(ctx, repo, pr)
 	if err != nil {
 		return 1, err
 	}
 
-	bad := workflow.Blocking(findings)
-	// A repeat of this commit's review posts nothing.
+	// A repeat of this commit's review posts nothing: the same head SHA is reviewed once.
 	if len(workflow.StartsWith(reviews, workflow.ReviewMarker(sha))) == 0 {
-		body := workflow.RenderReview(sha, summary, findings)
-		if err := c.PostReview(ctx, repo, pr, sha, body, len(bad) == 0); err != nil {
+		body := workflow.RenderReview(sha, out)
+		if err := c.PostReview(ctx, repo, pr, sha, body, out.Verdict); err != nil {
 			return 1, err
 		}
 	}
 
-	switch {
-	case len(bad) == 0:
-		return workflow.ReviewClean, nil
-	case workflow.ReviewRounds(reviews, sha) >= workflow.MaxReviewRounds:
+	if out.Verdict == workflow.Approve {
+		// An approval asks the issue's writer, a human, to review and merge. A bot cannot.
+		return workflow.ReviewClean, c.RequestReviewers(ctx, repo, pr, humans(issue.Author))
+	}
+
+	if workflow.ReviewRounds(reviews, sha) >= workflow.MaxReviewRounds {
 		return workflow.ReviewExhausted, nil
 	}
 
 	return workflow.ReviewFindings, nil
+}
+
+// humans returns the logins a review may be requested from: a bot is not one.
+func humans(author string) []string {
+	if author == "" || workflow.BotAuthored(author) {
+		return nil
+	}
+
+	return []string{author}
 }

@@ -102,6 +102,7 @@ var _ = Describe("the merge path", func() {
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
+			h.implementerWrites(firstRunOutput)
 			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),

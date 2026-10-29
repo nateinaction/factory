@@ -22,12 +22,34 @@ const MaxAssignedRepos = 200
 // supervisorGitRuns is how many git ceilings the supervisor adds around a run: the clone and the push.
 const supervisorGitRuns = 2
 
+// tokenArgs is the helper command line that mints one agent role's token for one repository. A
+// read-only token is restricted to reading the issue, its pull request and its contents.
+func tokenArgs(role workflow.Role, repo string, readOnly bool) []string {
+	args := []string{"token", "--app", string(role), "--repo", repo}
+	if readOnly {
+		args = append(args, "--read-only")
+	}
+
+	return args
+}
+
 // mintToken asks the helper for a token of the agent role's own App, scoped to the repository.
 // There is no fallback: if this App can't mint, no other App's token stands in for it.
 func (d Deps) mintToken(ctx context.Context, role workflow.Role, repo string) (string, error) {
+	return d.mint(ctx, role, repo, false)
+}
+
+// mintReadOnlyToken asks the helper for the token the model gets: the same App and repository, with
+// only read permissions, so the model can read GitHub but never write to it.
+func (d Deps) mintReadOnlyToken(ctx context.Context, role workflow.Role, repo string) (string, error) {
+	return d.mint(ctx, role, repo, true)
+}
+
+// mint runs the helper for one token.
+func (d Deps) mint(ctx context.Context, role workflow.Role, repo string, readOnly bool) (string, error) {
 	// stderr is inherited so the helper's error reaches the dagu log; it never prints the token there.
 	out, err := d.run(ctx, proc.Cmd{
-		Argv:    []string{d.Settings.TokenHelper, "token", "--app", string(role), "--repo", repo},
+		Argv:    append([]string{d.Settings.TokenHelper}, tokenArgs(role, repo, readOnly)...),
 		Capture: true, Timeout: MintTimeout,
 	})
 	if err != nil {
@@ -643,14 +665,27 @@ func startImplementer(ctx context.Context, d Deps, cfg config.Config, repo strin
 	}
 
 	return 1, finishAs(ctx, d, workflow.Implementer, repo, number, workflow.Implementing, workflow.Failed,
-		"The Implementer failed. Check the dagu run log, then comment to send it back to the Implementer.")
+		failureText(workflow.Implementer, code))
+}
+
+// failureText is what start says about a failed run. A factory half that already posted its errors in
+// one comment needs no second description.
+func failureText(role workflow.Role, code int) string {
+	if code == workflow.ExitReported {
+		return ""
+	}
+
+	name := strings.ToUpper(string(role)[:1]) + string(role)[1:]
+
+	return fmt.Sprintf("The %s failed. Check the dagu run log, then comment to send it back to the %s.",
+		name, name)
 }
 
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
 func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
 	code := factoryExit(ctx, d, cfg, workflow.Reviewer, repo, number)
 	dst := workflow.Failed
-	text := "The Reviewer failed. Check the dagu run log, then comment to send it back to the Reviewer."
+	text := failureText(workflow.Reviewer, code)
 
 	switch code {
 	case workflow.ReviewClean:
