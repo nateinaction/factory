@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -148,6 +149,7 @@ type harness struct {
 	runner *fakeRunner
 	deps   Deps
 	out    *bytes.Buffer
+	errOut *bytes.Buffer
 	logs   *logCapture
 	dir    string
 	// installed maps an agent role to the repositories its App is installed on.
@@ -236,7 +238,7 @@ func newHarness() *harness {
 	Expect(os.WriteFile(key, []byte("or-key\n"), 0o600)).To(Succeed())
 
 	h := &harness{
-		gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, logs: &logCapture{}, dir: dir,
+		gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, errOut: &bytes.Buffer{}, logs: &logCapture{}, dir: dir,
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
@@ -258,7 +260,7 @@ func newHarness() *harness {
 			Self:        "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
-		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs), RunID: "run-1",
+		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Err: h.errOut, Log: slog.New(h.logs), RunID: "run-1",
 		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 		Token: func() (string, error) { return testToken, nil },
 	}
@@ -998,6 +1000,24 @@ func (h *harness) answerOpencode(outs ...string) {
 		n++
 
 		return out, nil
+	})
+}
+
+// answerOpencodeStreams makes every opencode process print stdout on its standard output and, when
+// given, write stderr to the writer foreman handed it.
+func (h *harness) answerOpencodeStreams(stdout, stderr string) {
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if !isModel(c) {
+			return base(c)
+		}
+
+		if c.Stderr != nil {
+			if _, err := io.WriteString(c.Stderr, stderr); err != nil {
+				return "", fmt.Errorf("write stderr: %w", err)
+			}
+		}
+
+		return stdout, nil
 	})
 }
 

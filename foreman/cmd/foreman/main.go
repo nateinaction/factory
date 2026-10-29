@@ -53,6 +53,7 @@ func run() int {
 		Runner: proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
 		HTTP:   &http.Client{Timeout: github.HTTPTimeout},
 		Out:    os.Stdout,
+		Err:    os.Stderr,
 		Log:    logger,
 		Host:   host,
 		RunID:  os.Getenv("DAG_RUN_ID"),
