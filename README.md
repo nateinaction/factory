@@ -101,8 +101,11 @@ There are five agent roles. The Planner, Researcher, Implementer and Reviewer
 work an issue; the Curator looks after the repository's retro dashboard. The
 **human gate** sits between planning and building: the Planner asks questions
 in rounds and ends with a final round holding a proposal, and only a writer's
-reply approving it (or a writer's explicit "ready to build") lets foreman apply
-the proposal and queue the Implementer. A person merges every PR; foreman has
+reply of "yes", "yep", "yeah", "ok", "okay" or "lgtm" (or a writer's explicit
+"ready to build", which also works with no final round pending) lets foreman
+apply the proposal and queue the Implementer. The gate opens only from
+`factory:waiting`, on the latest Planner round, and never on a non-writer's
+comment. A person merges every PR; foreman has
 no code path that merges.
 
 1. `factory-poll` runs on the server every 5 minutes. It uses no model.
