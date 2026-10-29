@@ -27,7 +27,7 @@ var _ = Describe("the Implementer and Reviewer path", func() {
 
 		// The Implementer's run opens the pull request and hands off to the Reviewer.
 		h.sudoExit(0)
-		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Implementer, "o/r", 5)).To(BeZero())
+		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Implementer, testRef(5))).To(BeZero())
 		Expect(h.labels(5)).To(ContainElement(workflow.LabelReview))
 		Expect(h.labels(5)).NotTo(ContainElement(workflow.LabelImplementing))
 
@@ -40,7 +40,7 @@ var _ = Describe("the Implementer and Reviewer path", func() {
 		Expect(h.labels(5)).To(ContainElement(workflow.LabelReviewing))
 
 		h.sudoExit(workflow.ReviewClean)
-		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Reviewer, "o/r", 5)).To(BeZero())
+		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Reviewer, testRef(5))).To(BeZero())
 		Expect(h.labels(5)).To(ConsistOf(workflow.LabelDone))
 
 		markers := h.markerComments(5)
@@ -60,7 +60,7 @@ var _ = Describe("the Implementer and Reviewer path", func() {
 		Expect(h.labels(5)).To(ContainElement(workflow.LabelResearching))
 
 		h.sudoExit(0)
-		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Researcher, "o/r", 5)).To(BeZero())
+		Expect(Start(context.Background(), h.deps, testConfig(), workflow.Researcher, testRef(5))).To(BeZero())
 
 		Expect(h.factoryLabels(5)).To(BeEmpty(), "a closed ticket carries no factory label")
 

@@ -981,18 +981,18 @@ func claimAndEnqueue(
 }
 
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
-func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) (int, error) {
+func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) (int, error) {
 	switch role {
 	case workflow.Planner:
-		return startPlanner(ctx, d, cfg, repo, number)
+		return startPlanner(ctx, d, cfg, ref)
 	case workflow.Implementer:
-		return startImplementer(ctx, d, cfg, repo, number)
+		return startImplementer(ctx, d, cfg, ref)
 	case workflow.Researcher:
-		return startResearcher(ctx, d, cfg, repo, number)
+		return startResearcher(ctx, d, cfg, ref)
 	case workflow.Reviewer:
-		return startReviewer(ctx, d, cfg, repo, number)
+		return startReviewer(ctx, d, cfg, ref)
 	case workflow.Curator:
-		return startCurator(ctx, d, cfg, repo, number)
+		return startCurator(ctx, d, cfg, ref)
 	}
 
 	return 1, fmt.Errorf("unknown agent role %q", role)
@@ -1000,10 +1000,10 @@ func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, r
 
 // startCurator runs the Curator on a repository's dashboard. The dashboard carries no factory label,
 // so a finished run records nothing on GitHub: its output was already applied to the dashboard body.
-func startCurator(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Curator, repo, number)
+func startCurator(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Curator, ref)
 	if code != 0 {
-		return 1, fmt.Errorf("the Curator failed on %s#%d (exit %d); see the dagu run log", repo, number, code)
+		return 1, fmt.Errorf("the Curator failed on %s (exit %d); see the dagu run log", ref, code)
 	}
 
 	return 0, writeLine(d.Out, "The Curator finished; see the retro dashboard.")
@@ -1011,25 +1011,25 @@ func startCurator(ctx context.Context, d Deps, cfg config.Config, repo string, n
 
 // startPlanner posts the Planner's round, which the factory half records and moves to waiting. A
 // failed run moves planning to failed, with one comment saying why.
-func startPlanner(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Planner, repo, number)
+func startPlanner(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Planner, ref)
 	if code == 0 {
 		return 0, writeLine(d.Out, "The Planner posted a round; see the issue.")
 	}
 
-	return 1, finishAs(ctx, d, workflow.Planner, repo, number, workflow.Planning, workflow.Failed,
+	return 1, finishAs(ctx, d, workflow.Planner, ref, workflow.Planning, workflow.Failed,
 		failureText(workflow.Planner, code))
 }
 
 // startImplementer implements the issue, then queues it for review or fails it.
-func startImplementer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Implementer, repo, number)
+func startImplementer(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Implementer, ref)
 	if code == 0 {
-		return 0, finishAs(ctx, d, workflow.Implementer, repo, number, workflow.Implementing, workflow.Review,
+		return 0, finishAs(ctx, d, workflow.Implementer, ref, workflow.Implementing, workflow.Review,
 			"The Implementer finished; see the linked pull request. Queued for review.")
 	}
 
-	return 1, finishAs(ctx, d, workflow.Implementer, repo, number, workflow.Implementing, workflow.Failed,
+	return 1, finishAs(ctx, d, workflow.Implementer, ref, workflow.Implementing, workflow.Failed,
 		failureText(workflow.Implementer, code))
 }
 
@@ -1047,20 +1047,20 @@ func failureText(role workflow.Role, code int) string {
 }
 
 // startResearcher closes a resolved ticket, with no label replacing the claim, or fails it.
-func startResearcher(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Researcher, repo, number)
+func startResearcher(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Researcher, ref)
 	if code == 0 {
-		return 0, finishRun(ctx, d, workflow.Researcher, repo, number,
+		return 0, finishRun(ctx, d, workflow.Researcher, ref,
 			workflow.Researching, workflow.Closed, "")
 	}
 
-	return 1, finishAs(ctx, d, workflow.Researcher, repo, number, workflow.Researching, workflow.Failed,
+	return 1, finishAs(ctx, d, workflow.Researcher, ref, workflow.Researching, workflow.Failed,
 		failureText(workflow.Researcher, code))
 }
 
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
-func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, cfg, workflow.Reviewer, repo, number)
+func startReviewer(ctx context.Context, d Deps, cfg config.Config, ref workflow.IssueRef) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Reviewer, ref)
 	dst := workflow.Failed
 	text := failureText(workflow.Reviewer, code)
 
@@ -1080,7 +1080,7 @@ func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, 
 		exit = 0
 	}
 
-	return exit, finishAs(ctx, d, workflow.Reviewer, repo, number, workflow.Reviewing, dst, text)
+	return exit, finishAs(ctx, d, workflow.Reviewer, ref, workflow.Reviewing, dst, text)
 }
 
 // finishAs records the outcome with the owning agent role's own token (fresh: the run may have outlived
@@ -1088,16 +1088,17 @@ func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, 
 // fails closed: an App that is still installed moves the issue to failed and says why. No other App ever
 // makes the owning agent role's transition.
 func finishAs(
-	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
+	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
 ) error {
-	return finishRun(ctx, d, role, repo, number, src, dst, text)
+	return finishRun(ctx, d, role, ref, src, dst, text)
 }
 
 // finishRun records a run's outcome. A closed destination closes the ticket instead of labelling it; a
 // mint failure always falls back to factory:failed, reported by an App that is still installed.
 func finishRun(
-	ctx context.Context, d Deps, role workflow.Role, repo string, number int, src, dst workflow.State, text string,
+	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
 ) error {
+	repo, number := ref.Repo.String(), ref.Number
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
 	token, err := d.mintToken(ctx, role, repo)
@@ -1147,10 +1148,10 @@ func finishRun(
 
 // factoryExit is the exit code of `foreman run <role> <repo> <n>` as the factory user, with the token file
 // in place. It is -1 when the run could not be started: that is logged, and the issue must not stay claimed.
-func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) int {
-	code, err := runAsFactory(ctx, d, cfg, role, repo, number)
+func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) int {
+	code, err := runAsFactory(ctx, d, cfg, role, ref)
 	if err != nil {
-		d.log().Error("run as factory failed", "role", role, "repo", repo, "issue", number, "error", err)
+		d.log().Error("run as factory failed", "role", role, "issue", ref, "error", err)
 		return -1
 	}
 
@@ -1161,8 +1162,10 @@ func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.R
 // the token. The supervisor gets the agent role's deadline plus its retro's, so foreman's own
 // enforcement fires first and this ceiling only catches a factory half that never returns.
 func runAsFactory(
-	ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int,
+	ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef,
 ) (code int, err error) {
+	repo, number := ref.Repo.String(), ref.Number
+
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		return 0, err

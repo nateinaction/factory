@@ -53,7 +53,7 @@ var _ = Describe("Logs", func() {
 			return "", errors.New("unexpected command: " + joined(c))
 		})
 
-		code, err := Logs(context.Background(), h.deps, "o/r", 5, false)
+		code, err := Logs(context.Background(), h.deps, testRef(5), false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(BeZero())
 		Expect(h.out.String()).To(Equal("latest run\n"))
@@ -70,7 +70,7 @@ var _ = Describe("Logs", func() {
 			return "", errors.New("unexpected command: " + joined(c))
 		})
 
-		code, err := Logs(context.Background(), h.deps, "o/r", 99, false)
+		code, err := Logs(context.Background(), h.deps, testRef(99), false)
 		Expect(code).To(Equal(1))
 		Expect(err).To(MatchError(ContainSubstring("no dagu run for o/r issue 99")))
 		Expect(h.out.String()).To(BeEmpty())
@@ -89,7 +89,7 @@ var _ = Describe("Logs", func() {
 			return "", errors.New("unexpected command: " + joined(c))
 		})
 
-		code, err := Logs(context.Background(), h.deps, "o/r", 5, false)
+		code, err := Logs(context.Background(), h.deps, testRef(5), false)
 		Expect(code).To(Equal(1))
 		Expect(err).To(MatchError(ContainSubstring("run-1")))
 		Expect(err).To(MatchError(ContainSubstring("no log yet")))
@@ -122,7 +122,7 @@ var _ = Describe("Logs", func() {
 			return nil
 		}
 
-		code, err := Logs(context.Background(), h.deps, "o/r", 5, true)
+		code, err := Logs(context.Background(), h.deps, testRef(5), true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(BeZero())
 		Expect(h.out.String()).To(Equal("one\ntwo\n"))

@@ -47,7 +47,7 @@ var _ = Describe("the Planner", func() {
 	runPlanner := func() (int, error) {
 		h.writeToken(workflow.Planner, "repo-token\n")
 
-		return Run(context.Background(), h.deps, workflow.Planner, "o/r", testAgent(), testRetro(), 3, 5)
+		return Run(context.Background(), h.deps, workflow.Planner, testRef(5), testAgent(), testRetro(), 3)
 	}
 
 	It("posts a round of questions, moves the issue to waiting and runs no retro", func() {

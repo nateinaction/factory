@@ -993,7 +993,7 @@ func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.writeToken(workflow.Implementer, "repo-token\n")
 	h.implementerWrites(firstRunOutput)
 
-	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 3, 5)
+	return Run(context.Background(), h.deps, workflow.Implementer, testRef(5), agent, testRetro(), 3)
 }
 
 // implementerWrites makes the Implementer's run write text as its output file, leaving the retro
@@ -1029,6 +1029,14 @@ func (h *harness) usageLines() []map[string]any {
 	}
 
 	return out
+}
+
+// testRef is an issue in the harness's repository, as the command edge would have parsed it.
+func testRef(number int) workflow.IssueRef {
+	repo, err := workflow.ParseRepo("o/r")
+	Expect(err).NotTo(HaveOccurred())
+
+	return workflow.IssueRef{Repo: repo, Number: number}
 }
 
 // beNear matches a per-attempt timeout: the deadline less a moment of elapsed time.

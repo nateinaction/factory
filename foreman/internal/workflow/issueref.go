@@ -22,6 +22,22 @@ func (r Repo) String() string {
 	return r.name
 }
 
+// ParseIssueRef parses the repository and issue number arguments of a command into one IssueRef. On
+// failure it returns the zero IssueRef and an error.
+func ParseIssueRef(repo, number string) (IssueRef, error) {
+	r, err := ParseRepo(repo)
+	if err != nil {
+		return IssueRef{}, err
+	}
+
+	n, err := ParseIssueNumber(number)
+	if err != nil {
+		return IssueRef{}, err
+	}
+
+	return IssueRef{Repo: r, Number: n}, nil
+}
+
 // IssueRef names one issue in one repository.
 type IssueRef struct {
 	Repo   Repo

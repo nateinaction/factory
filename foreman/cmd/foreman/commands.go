@@ -127,11 +127,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 				return err
 			}
 
-			if err := workflow.ValidateRepo(args[1]); err != nil {
-				return err
-			}
-
-			number, err := workflow.ParseIssueNumber(args[2])
+			ref, err := workflow.ParseIssueRef(args[1], args[2])
 			if err != nil {
 				return err
 			}
@@ -144,12 +140,12 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 			var code int
 
 			if verb == "start" {
-				code, err = foreman.Start(cmd.Context(), *d, cfg, role, args[1], number)
+				code, err = foreman.Start(cmd.Context(), *d, cfg, role, ref)
 			} else {
 				d.Settings.FactoryRepo = cfg.FactoryRepo
 				code, err = foreman.Run(
-					cmd.Context(), *d, role, args[1],
-					cfg.Agents[string(role)], cfg.RetroBudget(role), cfg.ReviewRoundLimit, number,
+					cmd.Context(), *d, role, ref,
+					cfg.Agents[string(role)], cfg.RetroBudget(role), cfg.ReviewRoundLimit,
 				)
 			}
 
@@ -195,16 +191,12 @@ func logsCommand(d *foreman.Deps) *cobra.Command {
 		Short: "print the issue's latest dagu run log",
 		Args:  cobra.ExactArgs(logsArgCount),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := workflow.ValidateRepo(args[0]); err != nil {
-				return err
-			}
-
-			number, err := workflow.ParseIssueNumber(args[1])
+			ref, err := workflow.ParseIssueRef(args[0], args[1])
 			if err != nil {
 				return err
 			}
 
-			code, err := foreman.Logs(cmd.Context(), *d, args[0], number, follow)
+			code, err := foreman.Logs(cmd.Context(), *d, ref, follow)
 
 			return result(code, err)
 		},

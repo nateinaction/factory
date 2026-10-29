@@ -255,7 +255,7 @@ var _ = Describe("the Implementer's next run", func() {
 		}))
 		h.seedComment(transition(workflow.Reviewer, "r2", workflow.Review, workflow.Implement))
 
-		_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 3, 5)
+		_, err := Run(context.Background(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(h.runCalls()).To(HaveLen(1))
@@ -271,7 +271,7 @@ var _ = Describe("the Implementer's next run", func() {
 		h.seedComment(workflow.RenderCIFailure(workflow.CIReport{SHA: "s2"}))
 		h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
 
-		code, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 3, 5)
+		code, err := Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(Equal(workflow.ReviewExhausted))
 	})
@@ -285,7 +285,7 @@ var _ = Describe("the Implementer's next run", func() {
 		h.seedComment(transition(workflow.Reviewer, "r2", workflow.Review, workflow.Implement))
 		h.seedComment(transition(workflow.Implementer, "r3", workflow.Implement, workflow.Review))
 
-		_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 3, 5)
+		_, err := Run(context.Background(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(joined(h.runCalls()[0])).NotTo(ContainSubstring("# CI failure report"))

@@ -22,14 +22,8 @@ const (
 
 // Logs is `foreman logs`: it prints the latest dagu run log for an issue, and with follow keeps
 // printing until the run ends. It reads dagu's state and log files and talks to nothing else.
-func Logs(ctx context.Context, d Deps, repo string, number int, follow bool) (int, error) {
-	if err := workflow.ValidateRepo(repo); err != nil {
-		return 1, err
-	}
-
-	if number <= 0 {
-		return 1, fmt.Errorf("not an issue number: %d", number)
-	}
+func Logs(ctx context.Context, d Deps, ref workflow.IssueRef, follow bool) (int, error) {
+	repo, number := ref.Repo.String(), ref.Number
 
 	runs, err := readHistory(ctx, d)
 	if err != nil {

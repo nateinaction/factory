@@ -29,15 +29,15 @@ import (
 // Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted); a run
 // that already reported its failure on the issue returns workflow.ExitReported.
 func Run(
-	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
-	limit, number int,
+	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef,
+	agent config.AgentConfig, retro config.Budget, limit int,
 ) (int, error) {
 	// A host the sandbox adapter cannot serve does no work: there is never an unsandboxed fallback.
 	if err := sandbox.Supported(runtime.GOOS); err != nil {
 		return 1, err
 	}
 
-	spec := runSpec{repo: repo, number: number, agent: agent, retro: retro, limit: limit}
+	spec := runSpec{repo: ref.Repo.String(), number: ref.Number, agent: agent, retro: retro, limit: limit}
 
 	switch role {
 	case workflow.Planner:

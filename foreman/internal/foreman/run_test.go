@@ -26,7 +26,7 @@ var _ = Describe("Run", func() {
 
 	// run runs role on issue 5 of o/r.
 	run := func(role workflow.Role) (int, error) {
-		return Run(context.Background(), h.deps, role, "o/r", testAgent(), testRetro(), 3, 5)
+		return Run(context.Background(), h.deps, role, testRef(5), testAgent(), testRetro(), 3)
 	}
 
 	Describe("the Implementer", func() {
@@ -273,7 +273,7 @@ var _ = Describe("Run", func() {
 
 			short := config.Budget{Steps: testRetro().Steps}
 
-			code, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), short, 3, 5)
+			code, err := Run(context.Background(), h.deps, workflow.Implementer, testRef(5), testAgent(), short, 3)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(code).To(BeZero())
 			Expect(h.logs.String()).To(And(
