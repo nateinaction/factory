@@ -31,6 +31,8 @@ const (
 	maxResponseBytes = 1 << 20
 	// bodyField is the JSON key for a comment, review or pull request body.
 	bodyField = "body"
+	// titleField is the JSON key for an issue or pull request title.
+	titleField = "title"
 )
 
 // StatusError is a non-2xx answer from the emulator.
@@ -54,6 +56,24 @@ type PullRequest struct {
 	Number int
 	// HTMLURL is the advertised web URL.
 	HTMLURL string `json:"html_url"`
+}
+
+// Issue is the part of an emulator issue the tests read back.
+type Issue struct {
+	// Number is the issue number.
+	Number int `json:"number"`
+	// State is "open" or "closed".
+	State string `json:"state"`
+	// Title is the issue title.
+	Title string `json:"title"`
+	// Labels are the label names the issue carries.
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	// User is the issue's author.
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 // Emulate is a running GitHub emulator.
@@ -246,7 +266,7 @@ func (e *Emulate) CreateIssue(ctx context.Context, repo string, labels []string,
 		Number int
 	}
 
-	in := map[string]any{"title": title, bodyField: text}
+	in := map[string]any{titleField: title, bodyField: text}
 	if len(labels) > 0 {
 		in["labels"] = labels
 	}
@@ -256,6 +276,98 @@ func (e *Emulate) CreateIssue(ctx context.Context, repo string, labels []string,
 	}
 
 	return created.Number, nil
+}
+
+// CreateIssueAs creates an issue authored by the user behind token, returning its number.
+func (e *Emulate) CreateIssueAs(
+	ctx context.Context, repo, token string, labels []string, title, text string,
+) (int, error) {
+	var created struct {
+		Number int
+	}
+
+	in := map[string]any{titleField: title, bodyField: text}
+	if len(labels) > 0 {
+		in["labels"] = labels
+	}
+
+	if err := e.Do(ctx, http.MethodPost, "/repos/"+repo+"/issues", token, in, &created); err != nil {
+		return 0, err
+	}
+
+	return created.Number, nil
+}
+
+// CommentAs posts a comment on an issue as the user behind token.
+func (e *Emulate) CommentAs(ctx context.Context, repo string, number int, token, text string) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number)
+
+	return e.Do(ctx, http.MethodPost, path, token, map[string]string{bodyField: text}, nil)
+}
+
+// Comment is one issue comment, as setup reads it back.
+type Comment struct {
+	// ID identifies the comment.
+	ID int64 `json:"id"`
+	// Body is the comment's text.
+	Body string `json:"body"`
+}
+
+// Comments returns an issue's comments, oldest first.
+func (e *Emulate) Comments(ctx context.Context, repo string, number int) ([]Comment, error) {
+	var out []Comment
+
+	path := fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number)
+	err := e.Do(ctx, http.MethodGet, path, AdminToken, nil, &out)
+
+	return out, err
+}
+
+// SetPermission grants a user a permission on repo, as the repository's admin.
+func (e *Emulate) SetPermission(ctx context.Context, repo, login, permission string) error {
+	path := "/repos/" + repo + "/collaborators/" + url.PathEscape(login)
+
+	return e.Do(ctx, http.MethodPut, path, AdminToken, map[string]string{"permission": permission}, nil)
+}
+
+// RemoveLabel removes one label from an issue.
+func (e *Emulate) RemoveLabel(ctx context.Context, repo string, number int, label string) error {
+	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", repo, number, url.PathEscape(label))
+
+	return e.Do(ctx, http.MethodDelete, path, AdminToken, nil, nil)
+}
+
+// CloseIssue closes an issue.
+func (e *Emulate) CloseIssue(ctx context.Context, repo string, number int) error {
+	return e.Do(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, number),
+		AdminToken, map[string]string{"state": "closed"}, nil)
+}
+
+// Issue reads an issue back.
+func (e *Emulate) Issue(ctx context.Context, repo string, number int) (Issue, error) {
+	var issue Issue
+
+	err := e.Do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), AdminToken, nil, &issue)
+
+	return issue, err
+}
+
+// Labels lists the repository's label names.
+func (e *Emulate) Labels(ctx context.Context, repo string) ([]string, error) {
+	var labels []struct {
+		Name string `json:"name"`
+	}
+
+	if err := e.Do(ctx, http.MethodGet, "/repos/"+repo+"/labels", AdminToken, nil, &labels); err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, l.Name)
+	}
+
+	return out, nil
 }
 
 // HasIssue reports whether issue number exists in repo.
@@ -273,24 +385,6 @@ func (e *Emulate) HasIssue(ctx context.Context, repo string, number int) (bool, 
 	return false, err
 }
 
-// FindIssueByLabel returns the first open issue carrying label, or 0 when there is none.
-func (e *Emulate) FindIssueByLabel(ctx context.Context, repo, label string) (int, error) {
-	var issues []struct {
-		Number int
-	}
-
-	path := "/repos/" + repo + "/issues?state=open&labels=" + url.QueryEscape(label)
-	if err := e.Do(ctx, http.MethodGet, path, AdminToken, nil, &issues); err != nil {
-		return 0, err
-	}
-
-	if len(issues) == 0 {
-		return 0, nil
-	}
-
-	return issues[0].Number, nil
-}
-
 // PullRequests lists the open pull requests of repo.
 func (e *Emulate) PullRequests(ctx context.Context, repo string) ([]PullRequest, error) {
 	var prs []PullRequest
@@ -305,7 +399,7 @@ func (e *Emulate) PullRequests(ctx context.Context, repo string) ([]PullRequest,
 func (e *Emulate) CreatePR(ctx context.Context, repo, head, title, text string) (PullRequest, error) {
 	var created PullRequest
 
-	in := map[string]any{"title": title, "head": head, "base": defaultBranch, bodyField: text}
+	in := map[string]any{titleField: title, "head": head, "base": defaultBranch, bodyField: text}
 	if err := e.Do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", AdminToken, in, &created); err != nil {
 		return PullRequest{}, err
 	}

@@ -50,7 +50,8 @@ var _ = Describe("the sandbox", func() {
 		h = newHarness()
 		h.implementerGH(nil, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.opencodeWrites("--session", h.retroOut(), "lessons\n")
+		h.implementerWrites(firstRunOutput)
+		h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
 	})
 
 	// settingsOn reads the settings file of the run and retro commands as they start.
@@ -74,7 +75,7 @@ var _ = Describe("the sandbox", func() {
 		var settings []srtSettings
 
 		settingsOn(&settings)
-		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)).To(BeZero())
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)).To(BeZero())
 
 		calls := h.runner.find("srt --settings")
 		Expect(calls).To(HaveLen(2), "want the run and its retro")
@@ -110,7 +111,9 @@ var _ = Describe("the sandbox", func() {
 				h.deps.Settings.Home, h.deps.Settings.WorkRoot, h.deps.Settings.DaguHome,
 				h.deps.Settings.TokenDir, h.deps.Settings.KeyFile, "/nix/var/nix/daemon-socket",
 			))
-			Expect(s.Filesystem.AllowWrite).To(ConsistOf(work, runDir, filepath.Join(runDir, "retro.md")))
+			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
+				work, runDir, h.implOut(), retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer),
+			))
 			Expect(s.Filesystem.DenyWrite).To(ConsistOf(filepath.Join(work, ".git")),
 				"the model may edit the working tree but never commit")
 			Expect(s.Filesystem.AllowRead).To(ContainElements(work, runDir, h.deps.Settings.Skills))
@@ -118,7 +121,7 @@ var _ = Describe("the sandbox", func() {
 	})
 
 	It("deletes the run's HOME, XDG directories and toolchain afterwards", func() {
-		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)).To(BeZero())
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)).To(BeZero())
 		Expect(filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5")).NotTo(BeAnExistingFile())
 		Expect(filepath.Join(h.deps.Settings.WorkRoot, "toolchain-implementer-5")).NotTo(BeAnExistingFile())
 	})
@@ -142,7 +145,7 @@ var _ = Describe("the sandbox", func() {
 			return out, err
 		})
 
-		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)).To(BeZero())
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)).To(BeZero())
 		Expect(workdir).NotTo(BeEmpty())
 		Expect(toolchain).NotTo(Equal(workdir))
 
@@ -163,7 +166,7 @@ var _ = Describe("the sandbox", func() {
 	It("fails closed when the sandbox backend is not configured", func() {
 		h.deps.Settings.Srt = ""
 
-		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 		Expect(err).To(MatchError(ContainSubstring("sandbox is not configured")))
 		Expect(code).NotTo(BeZero())
 		Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran without its sandbox")
@@ -178,7 +181,7 @@ var _ = Describe("the sandbox", func() {
 			return base(c)
 		})
 
-		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 		Expect(err).To(HaveOccurred())
 		Expect(code).NotTo(BeZero())
 		Expect(h.runner.find("opencode run")).To(HaveLen(1), "only the sandboxed attempt ran")
@@ -192,7 +195,7 @@ var _ = Describe("the sandbox", func() {
 
 		h.deps.EgressAddr = taken.Addr().String()
 
-		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 		Expect(err).To(MatchError(ContainSubstring("bind")))
 		Expect(code).NotTo(BeZero())
 		Expect(h.opencodeCalls()).To(BeEmpty(), "the model ran without an egress boundary")
@@ -211,7 +214,7 @@ var _ = Describe("the sandbox", func() {
 			return fake, nil
 		}
 
-		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", agent, 5)).To(BeZero())
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)).To(BeZero())
 		Expect(fake.policy.Permits("api.example.com")).To(BeTrue())
 		Expect(fake.policy.Permits("elsewhere.example")).To(BeFalse())
 
@@ -224,7 +227,7 @@ var _ = Describe("the sandbox", func() {
 		agent := testAgent()
 		agent.Egress.AllowedDomains = []string{"*"}
 
-		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", agent, 5)
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
 		Expect(err).To(MatchError(ContainSubstring("invalid egress domain")))
 		Expect(code).NotTo(BeZero())
 		Expect(h.opencodeCalls()).To(BeEmpty())

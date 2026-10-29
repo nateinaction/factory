@@ -87,28 +87,29 @@ var _ = Describe("the merge path", func() {
 			}
 		},
 		Entry("poll", func(h *harness) {
-			h.queue(map[string][]map[string]any{"ready-for-agent-review": {{"number": 5}}})
-			h.acceptWrites("5")
+			h.queue(map[string][]map[string]any{workflow.LabelReview: {{"number": 5}}})
+			h.acceptWrites()
 			cfg, err := config.Load(h.deps.Settings.ConfigFile)
 			Expect(err).NotTo(HaveOccurred())
-			_, err = Poll(context.Background(), h.deps, cfg.Roles)
+			_, err = Poll(context.Background(), h.deps, cfg)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("start", func(h *harness) {
-			h.acceptWrites("5")
-			_, err := Start(context.Background(), h.deps, workflow.Reviewer, "o/r", 5)
+			h.acceptWrites()
+			_, err := Start(context.Background(), h.deps, testConfig(), workflow.Reviewer, "o/r", 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
-			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+			h.implementerWrites(firstRunOutput)
+			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run reviewer", func(h *harness) {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), 5)
+			_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 5)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 	)

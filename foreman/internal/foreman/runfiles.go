@@ -1,6 +1,7 @@
 package foreman
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,9 +23,9 @@ const nixProfilePath = "/nix/var/nix/profiles/default/bin"
 // nixDaemonSocket is the Nix daemon socket, which no sandboxed run may reach.
 const nixDaemonSocket = "/nix/var/nix/daemon-socket"
 
-// runFiles are one run's private directories. Everything here is deleted after the run and its
+// sandboxFiles are one run's private sandbox directories. Everything here is deleted after the run and its
 // retro, and nothing here is shared with another run.
-type runFiles struct {
+type sandboxFiles struct {
 	// dir holds HOME, XDG directories, scratch, state and the settings file.
 	dir string
 	// home is the run's HOME and the parent of its XDG directories.
@@ -40,13 +41,13 @@ type runFiles struct {
 }
 
 // newRunFiles clears and creates one run's directories. A re-run starts from nothing.
-func newRunFiles(root string, role workflow.Role, number int) (runFiles, error) {
+func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles, error) {
 	dir, err := freshPath(root, fmt.Sprintf("run-%s-%d", role, number))
 	if err != nil {
-		return runFiles{}, err
+		return sandboxFiles{}, err
 	}
 
-	f := runFiles{
+	f := sandboxFiles{
 		dir: dir, home: filepath.Join(dir, "home"), tmp: filepath.Join(dir, "tmp"),
 		state:    filepath.Join(dir, "state"),
 		settings: filepath.Join(dir, "srt-settings.json"),
@@ -58,31 +59,26 @@ func newRunFiles(root string, role workflow.Role, number int) (runFiles, error) 
 		filepath.Join(f.home, ".local", "share"), filepath.Join(f.home, ".local", "state"),
 	} {
 		if err := os.MkdirAll(path, privateDirMode); err != nil {
-			return runFiles{}, fmt.Errorf("run directory %s: %w", path, err)
+			return sandboxFiles{}, fmt.Errorf("run directory %s: %w", path, err)
 		}
 	}
 
 	// The toolchain sits beside the run directory, not inside it: it is read-only inside the
 	// sandbox, while everything under the run directory is writable.
 	if f.toolchain, err = freshPath(root, fmt.Sprintf("toolchain-%s-%d", role, number)); err != nil {
-		return runFiles{}, err
+		return sandboxFiles{}, err
 	}
 
 	return f, nil
 }
 
 // remove deletes the run directory and the toolchain clone.
-func (f runFiles) remove() error {
+func (f sandboxFiles) remove() error {
 	return errors.Join(os.RemoveAll(f.dir), os.RemoveAll(f.toolchain))
 }
 
-// output is the one result file the run writes, inside its run directory.
-func (f runFiles) output(name string) string {
-	return filepath.Join(f.dir, name)
-}
-
 // db is the run's opencode state database. The Reviewer's state never touches the disk.
-func (f runFiles) db(role workflow.Role) string {
+func (f sandboxFiles) db(role workflow.Role) string {
 	if role == workflow.Reviewer {
 		return opencode.InMemoryDB
 	}
@@ -93,7 +89,7 @@ func (f runFiles) db(role workflow.Role) string {
 // env is the process environment of a sandboxed run. It is the whole environment, not an addition:
 // nothing from foreman's own environment reaches the model. toolchainPath is the PATH the default
 // branch's flake resolved; empty falls back to the host's own tools.
-func (f runFiles) env(toolchainPath string) map[string]string {
+func (f sandboxFiles) env(toolchainPath string) map[string]string {
 	path := defaultPath
 	if toolchainPath != "" {
 		path = toolchainPath + ":" + defaultPath
@@ -113,7 +109,7 @@ func (f runFiles) env(toolchainPath string) map[string]string {
 }
 
 // layout is the sandbox spec's paths for a clone, one output file and the resolved toolchain.
-func (f runFiles) layout(d Deps, clone, output string, toolchain []string) sandbox.Layout {
+func (f sandboxFiles) layout(d Deps, clone, output string, toolchain []string) sandbox.Layout {
 	configDir := filepath.Dir(d.Settings.ConfigFile)
 	if configDir == "." {
 		configDir = ""
@@ -130,8 +126,35 @@ func (f runFiles) layout(d Deps, clone, output string, toolchain []string) sandb
 	}
 }
 
+// sandboxedSession compiles the role's spec and puts s inside it. extra names any further output
+// files the role writes outside the clone, such as its output file and its retro.
+func (d Deps) sandboxedSession(
+	s session, files sandboxFiles, role workflow.Role, clone, output string, extra []string,
+	network sandbox.Network, toolchain, proxyAddr string,
+) (session, error) {
+	spec := sandbox.Plan(role, files.layout(d, clone, output, toolchainPaths(toolchain)))
+	spec.ReadWrite = append(spec.ReadWrite, extra...)
+	spec.Network = network
+
+	return s.sandboxed(files, spec, toolchain, proxyPort(proxyAddr))
+}
+
+// sandboxedWithToolchain resolves the default branch's dev environment and puts s inside the sandbox
+// that uses it.
+func (d Deps) sandboxedWithToolchain(
+	ctx context.Context, s session, j job, sec secrets, repo, branch string, files sandboxFiles,
+	role workflow.Role, clone, output string, extra []string, network sandbox.Network, proxyAddr string,
+) (session, error) {
+	toolchain, err := d.toolchain(ctx, j.c, repo, sec.githubToken, branch, files)
+	if err != nil {
+		return session{}, err
+	}
+
+	return d.sandboxedSession(s, files, role, clone, output, extra, network, toolchain, proxyAddr)
+}
+
 // writeSettings compiles and writes the run's srt settings file.
-func (f runFiles) writeSettings(spec sandbox.Spec, proxyPort int) error {
+func (f sandboxFiles) writeSettings(spec sandbox.Spec, proxyPort int) error {
 	raw, err := sandbox.Settings(spec, proxyPort)
 	if err != nil {
 		return err

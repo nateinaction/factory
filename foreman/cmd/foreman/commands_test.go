@@ -17,18 +17,23 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proc"
 )
 
-// recordingRunner records the processes the command would start, answering every one with no output.
+// recordingRunner records the processes the command would start, answering every one with no output
+// unless reply answers it.
 type recordingRunner struct {
-	mu   sync.Mutex
-	cmds []proc.Cmd
+	mu    sync.Mutex
+	cmds  []proc.Cmd
+	reply func(proc.Cmd) (string, error)
 }
 
 // Run records c.
 func (r *recordingRunner) Run(_ context.Context, c proc.Cmd) (string, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	r.cmds = append(r.cmds, c)
+	r.mu.Unlock()
+
+	if r.reply != nil {
+		return r.reply(c)
+	}
 
 	return "", nil
 }
@@ -98,9 +103,12 @@ func (h *cliHarness) writeConfig(text string) string {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
-	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
-	`"curator":{"model":"prov/model","context_cap":200000}}}`
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
 
 var _ = Describe("the foreman command", func() {
 	var h *cliHarness
@@ -133,6 +141,12 @@ var _ = Describe("the foreman command", func() {
 			Entry("a malformed repository", "start", "implementer", "not-a-repo", "5"),
 			Entry("a word for an issue", "start", "implementer", "o/r", "five"),
 			Entry("an injected issue", "run", "implementer", "o/r", "5; rm -rf /"),
+			Entry("status with an argument", "status", "extra"),
+			Entry("logs alone", "logs"),
+			Entry("logs without an issue", "logs", "o/r"),
+			Entry("logs with an extra argument", "logs", "o/r", "5", "extra"),
+			Entry("logs with a malformed repository", "logs", "not-a-repo", "5"),
+			Entry("logs with a word for an issue", "logs", "o/r", "five"),
 		)
 
 		DescribeTable("fails closed on an unknown agent role",
@@ -170,6 +184,7 @@ var _ = Describe("the foreman command", func() {
 		Entry("no agents", `{"roles":["implementer"],"agents":{}}`),
 		Entry("no roles", `{"roles":[],"agents":{}}`),
 		Entry("roles missing", `{"agents":{}}`),
+		Entry("no dead-run margin", `{"roles":["implementer"],"agents":{},"dead_run_margin_minutes":0}`),
 		Entry("not JSON", `[`),
 	)
 
@@ -213,6 +228,8 @@ var _ = Describe("the foreman command", func() {
 		Expect(help).To(ContainSubstring("poll"))
 		Expect(help).To(ContainSubstring("start"))
 		Expect(help).To(ContainSubstring("run"))
+		Expect(help).To(ContainSubstring("status"))
+		Expect(help).To(ContainSubstring("logs"))
 		Expect(help).NotTo(ContainSubstring("completion"))
 	})
 
@@ -224,5 +241,37 @@ var _ = Describe("the foreman command", func() {
 		Entry("poll", "poll", "foreman poll [flags]"),
 		Entry("start", "start", "foreman start <agent-role> <owner/repo> <issue> [flags]"),
 		Entry("run", "run", "foreman run <agent-role> <owner/repo> <issue> [flags]"),
+		Entry("status", "status", "foreman status [flags]"),
+		Entry("logs", "logs", "foreman logs <owner/repo> <issue> [flags]"),
 	)
+
+	Context("with no runs in dagu", func() {
+		var configPath string
+
+		BeforeEach(func() {
+			configPath = h.writeConfig(validConfig)
+			h.runner.reply = func(proc.Cmd) (string, error) { return "[]", nil }
+		})
+
+		It("reports nothing running, read-only", func() {
+			Expect(h.execute("status", "--config", configPath)).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("Active runs"))
+			Expect(h.out.String()).To(ContainSubstring("(none)"))
+			Expect(h.out.String()).To(ContainSubstring("Recent usage"))
+
+			for _, line := range h.runner.lines() {
+				Expect(line).To(HavePrefix("/usr/local/bin/dagu "), "status ran something else")
+			}
+		})
+
+		It("fails clearly for an issue with no run", func() {
+			Expect(h.execute("logs", "o/r", "5")).To(Equal(1))
+			Expect(h.logs.String()).To(ContainSubstring("no dagu run for o/r issue 5"))
+		})
+
+		It("documents --follow", func() {
+			Expect(h.execute("logs", "--help")).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("--follow"))
+		})
+	})
 })

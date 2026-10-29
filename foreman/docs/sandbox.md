@@ -8,7 +8,8 @@ uses Seatbelt on macOS and bubblewrap on Linux. There are no containers and no V
 The whole `opencode run` — retry attempts and the retro included — runs under srt. foreman stays
 outside and does every clone, fetch, commit, push and GitHub write itself, running git on the host.
 The model's `git` can read the clone but cannot write `.git`, so the code it runs never becomes a
-commit outside the sandbox.
+commit outside the sandbox. The read-only installation token is the only secret inside the sandbox,
+as `GH_TOKEN`; the token file it was minted from stays in the deny list.
 
 ## Filesystem
 
@@ -118,6 +119,6 @@ The rest of the suite runs with a faked runner, so no other spec needs the real 
 
 ## Known follow-ups
 
-- The model gets no GitHub token yet. When the read-only installation token lands, it is the only
-  secret that may enter the sandbox, as `GH_TOKEN`.
 - Resource caps per run (memory, PIDs, CPU) are out of scope for this slice.
+- Non-HTTP TCP egress is denied by srt's own SOCKS proxy, whose allowlist cannot be opened; the model
+  reaches its provider over HTTP(S) through foreman's proxy.

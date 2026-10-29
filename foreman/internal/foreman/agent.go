@@ -18,6 +18,11 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
+	// A budget with nothing left never starts the model: the deadline has already passed.
+	if err := ctx.Err(); err != nil {
+		return opencode.Result{}, fmt.Errorf("%s: %w", r.Role, err)
+	}
+
 	deadline, _ := ctx.Deadline() // WithTimeout always sets one
 
 	var res opencode.Result
@@ -26,34 +31,59 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 		stream, err := s.attempt(ctx, r, time.Until(deadline))
 
 		res.Usage = res.Usage.Add(stream.Usage)
+
+		res.Steps += stream.Steps
 		if stream.Session != "" {
 			res.Session = stream.Session
 		}
 
-		kind, failed := opencode.Failure(stream, err)
-		if !failed {
+		done, err := s.afterAttempt(ctx, r, stream, err, res.Steps, attempt)
+		if err != nil {
+			return res, err
+		}
+
+		if done {
 			return res, nil
-		}
-
-		var cause error
-		if stream.Failure == nil {
-			cause = err
-		}
-
-		if ctx.Err() != nil {
-			return res, fmt.Errorf("%s: %w", r.Role, ctx.Err())
-		}
-
-		if !kind.Retryable() || attempt == opencode.MaxModelAttempts {
-			return res, &opencode.ModelError{Kind: kind, Attempts: attempt, Cause: cause}
-		}
-
-		if err := s.d.sleep(ctx, opencode.Backoff(attempt)); err != nil {
-			return res, fmt.Errorf("%s: %w", r.Role, err)
 		}
 	}
 	// unreachable: the loop returns
 	return res, &opencode.ModelError{Kind: opencode.FailOther, Attempts: opencode.MaxModelAttempts}
+}
+
+// afterAttempt decides what to do with one attempt: done reports that the run finished, and a
+// non-nil error is the failure to return. A step cap fails the run and is never retried.
+func (s session) afterAttempt(
+	ctx context.Context, r opencode.Run, stream opencode.Stream, runErr error, steps, attempt int,
+) (done bool, err error) {
+	kind, failed := opencode.Failure(stream, runErr)
+	capped := opencode.StepCapReached(steps, r.Steps)
+
+	if !failed {
+		if capped {
+			return false, &opencode.ModelError{Kind: opencode.FailStepCap, Attempts: attempt}
+		}
+
+		return true, nil
+	}
+
+	var cause error
+	if stream.Failure == nil {
+		cause = runErr
+	}
+
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("%s: %w", r.Role, ctx.Err())
+	}
+
+	if !kind.Retryable() || attempt == opencode.MaxModelAttempts || capped {
+		return false, &opencode.ModelError{Kind: kind, Attempts: attempt, Cause: cause}
+	}
+
+	if err := s.d.sleep(ctx, opencode.Backoff(attempt)); err != nil {
+		return false, fmt.Errorf("%s: %w", r.Role, err)
+	}
+
+	return false, nil
 }
 
 // attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to

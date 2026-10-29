@@ -232,20 +232,30 @@
         group: "{{ factory_user }}"
         mode: "0644"
 
-    - name: Fetch the pinned mattpocock skills
-      ansible.builtin.git:
-        repo: https://github.com/mattpocock/skills.git
-        dest: /opt/mattpocock-skills
-        version: "{{ mattpocock_skills_ref }}"
-        executable: /nix/var/nix/profiles/default/bin/git # the nix role's system-wide git is not on root's PATH
-
-    - name: Link the skills opencode needs into the factory user's skills directory
-      ansible.builtin.file:
-        src: "/opt/mattpocock-skills/{{ item.path }}"
-        dest: "/home/{{ factory_user }}/.config/opencode/skills/{{ item.name }}"
-        state: link
+    - name: Install the factory's own skills
+      ansible.builtin.copy:
+        src: skills/
+        dest: "/home/{{ factory_user }}/.config/opencode/skills/"
         owner: "{{ factory_user }}"
         group: "{{ factory_user }}"
-      loop: "{{ mattpocock_skills }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Remove the upstream skills clone the factory no longer uses
+      ansible.builtin.file:
+        path: /opt/mattpocock-skills
+        state: absent
+
+    - name: Find the old skill symlinks
+      ansible.builtin.find:
+        paths: "/home/{{ factory_user }}/.config/opencode/skills"
+        file_type: link
+      register: agent_skill_links
+
+    - name: Remove each old skill symlink
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ agent_skill_links.files }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.path }}"

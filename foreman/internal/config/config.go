@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -88,7 +89,21 @@ func (s Settings) TokenPath(role workflow.Role) string {
 	return filepath.Join(s.TokenDir, "gh-token-"+string(role))
 }
 
-// AgentConfig is one agent role's model settings, rendered from `factory_models` by Ansible.
+// Budget is a run's step cap and wall-clock deadline: one agent role's run, or a retro.
+type Budget struct {
+	// Steps is opencode's step cap and foreman's count: reaching it fails the run.
+	Steps int `json:"steps" mapstructure:"steps"`
+	// DeadlineMinutes is the wall-clock limit, in minutes.
+	DeadlineMinutes int `json:"deadline_minutes" mapstructure:"deadline_minutes"`
+}
+
+// Deadline is the budget's wall-clock limit.
+func (b Budget) Deadline() time.Duration {
+	return time.Duration(b.DeadlineMinutes) * time.Minute
+}
+
+// AgentConfig is one agent role's model settings and limits, rendered from `factory_models` and
+// `factory_agent_limits` by Ansible.
 type AgentConfig struct {
 	// Model is the OpenRouter model id, for the usage report.
 	Model string `json:"model" mapstructure:"model"`
@@ -98,6 +113,8 @@ type AgentConfig struct {
 	Compaction bool `json:"compaction" mapstructure:"compaction"`
 	// Egress is the role's network policy; an empty allowlist is open egress.
 	Egress EgressConfig `json:"egress" mapstructure:"egress"`
+	// Budget is the agent role's step cap and wall-clock deadline.
+	Budget `mapstructure:",squash"`
 }
 
 // EgressConfig is one agent role's egress allowlist, rendered from `factory_egress` by Ansible. A
@@ -113,6 +130,17 @@ type Config struct {
 	Roles []workflow.Role `json:"roles" mapstructure:"roles"`
 	// Agents holds each agent role's model settings, keyed by the role's name.
 	Agents map[string]AgentConfig `json:"agents" mapstructure:"agents"`
+	// Retro is the budget every retro gets, separate from the run's.
+	Retro Budget `json:"retro" mapstructure:"retro"`
+	// DeadRunMarginMinutes is how far past an agent role's deadline its running label may age before
+	// a poll calls the run dead.
+	DeadRunMarginMinutes int `json:"dead_run_margin_minutes" mapstructure:"dead_run_margin_minutes"`
+}
+
+// DeadRunMargin is how long past an agent role's deadline a run keeps its claim before a poll calls
+// it dead.
+func (c Config) DeadRunMargin() time.Duration {
+	return time.Duration(c.DeadRunMarginMinutes) * time.Minute
 }
 
 // Load reads and validates the role config through viper. An unknown key is an error, never ignored:
@@ -152,11 +180,46 @@ func validate(path string, c Config) error {
 		return err
 	}
 
+	if err := validateRequired(path, c.Agents); err != nil {
+		return err
+	}
+
+	if err := validateRetro(path, c.Retro); err != nil {
+		return err
+	}
+
+	return validateDeadRun(path, c.DeadRunMarginMinutes)
+}
+
+// validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
+func validateRequired(path string, agents map[string]AgentConfig) error {
 	for _, r := range workflow.KnownRoles() {
-		a, ok := c.Agents[string(r)]
+		a, ok := agents[string(r)]
 		if !ok || a.Model == "" || a.ContextCap <= 0 {
 			return fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
 		}
+
+		if a.Steps <= 0 || a.DeadlineMinutes <= 0 {
+			return fmt.Errorf("config %s: agent role %s needs a step cap and a deadline", path, r)
+		}
+	}
+
+	return nil
+}
+
+// validateRetro checks the retro has a step cap and a deadline.
+func validateRetro(path string, r Budget) error {
+	if r.Steps <= 0 || r.DeadlineMinutes <= 0 {
+		return fmt.Errorf("config %s: retro needs a step cap and a deadline", path)
+	}
+
+	return nil
+}
+
+// validateDeadRun checks the dead-run margin is a positive number of minutes.
+func validateDeadRun(path string, minutes int) error {
+	if minutes <= 0 {
+		return fmt.Errorf("config %s: dead-run margin must be a positive number of minutes", path)
 	}
 
 	return nil

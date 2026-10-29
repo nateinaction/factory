@@ -21,7 +21,7 @@ type devEnv struct {
 // accept-flake-config is off, so a flake cannot grant itself settings, and the evaluation is told not
 // to write a lock file: the default branch is used exactly as committed.
 func (d Deps) toolchain(
-	ctx context.Context, c github.Client, repo, token, branch string, f runFiles,
+	ctx context.Context, c github.Client, repo, token, branch string, f sandboxFiles,
 ) (string, error) {
 	if branch == "" {
 		var err error
@@ -68,7 +68,7 @@ func (d Deps) toolchain(
 
 // nixEnv is the environment of the dev-environment resolution: the run's private HOME and XDG
 // directories, with the host's nix profile on PATH. Nix never runs inside the sandbox.
-func nixEnv(f runFiles) map[string]string {
+func nixEnv(f sandboxFiles) map[string]string {
 	env := f.env("")
 	env["PATH"] = nixProfilePath + ":" + defaultPath
 

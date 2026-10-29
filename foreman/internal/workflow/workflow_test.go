@@ -77,65 +77,49 @@ var _ = Describe("names and markers", func() {
 
 	It("keys reviews and retros by commit", func() {
 		Expect(workflow.ReviewMarker("abc")).To(Equal("<!-- agent-review:abc -->"))
-		Expect(workflow.RetroMarker(5, "abc")).To(Equal("<!-- agent-retro:5:abc -->"))
-	})
-})
-
-var _ = Describe("ParseReview", func() {
-	It("reads the summary and findings, with an optional location", func() {
-		summary, findings, err := workflow.ParseReview(`{"summary":"s","findings":[
-			{"severity":"high","title":"t","detail":"d","location":"a.go:1"},
-			{"severity":"low","title":"t2","detail":"d2"}]}`)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(summary).To(Equal("s"))
-		Expect(findings).To(Equal([]workflow.Finding{
-			{Severity: "high", Title: "t", Detail: "d", Location: "a.go:1"},
-			{Severity: "low", Title: "t2", Detail: "d2"},
-		}))
+		Expect(workflow.RetroMarker(5, workflow.Implementer, "abc")).To(
+			Equal("<!-- factory:retro issue=5 role=implementer key=abc -->"))
 	})
 
-	DescribeTable("fails closed on anything malformed",
-		func(text string) {
-			_, _, err := workflow.ParseReview(text)
-			Expect(err).To(HaveOccurred())
-		},
-		Entry("empty", ``),
-		Entry("not JSON", `not json`),
-		Entry("no fields", `{}`),
-		Entry("no findings", `{"summary":"s"}`),
-		Entry("no summary", `{"findings":[]}`),
-		Entry("summary not a string", `{"summary":1,"findings":[]}`),
-		Entry("findings not a list", `{"summary":"s","findings":{}}`),
-		Entry("unknown severity", `{"summary":"s","findings":[{"severity":"critical","title":"t","detail":"d"}]}`),
-		Entry("no severity", `{"summary":"s","findings":[{"title":"t","detail":"d"}]}`),
-		Entry("no title", `{"summary":"s","findings":[{"severity":"high","detail":"d"}]}`),
-		Entry("no detail", `{"summary":"s","findings":[{"severity":"high","title":"t"}]}`),
-	)
+	It("makes a pull request body close the issue, without doubling a link the model wrote", func() {
+		Expect(workflow.PRBody(5, "Fixes the bug")).To(Equal("Fixes the bug\n\nCloses #5"))
+		Expect(workflow.PRBody(5, "Closes #5")).To(Equal("Closes #5"))
+		Expect(workflow.PRBody(5, "Part of #5")).To(Equal("Part of #5"))
+	})
 })
 
 var _ = Describe("Blocking", func() {
 	It("keeps high and medium findings", func() {
-		got := workflow.Blocking([]workflow.Finding{{Severity: "high"}, {Severity: "medium"}, {Severity: "low"}})
-		Expect(got).To(Equal([]workflow.Finding{{Severity: "high"}, {Severity: "medium"}}))
+		got := workflow.Blocking([]workflow.ReviewFinding{
+			{Severity: workflow.SeverityHigh}, {Severity: workflow.SeverityMedium}, {Severity: workflow.SeverityLow},
+		})
+		Expect(got).To(Equal([]workflow.ReviewFinding{
+			{Severity: workflow.SeverityHigh}, {Severity: workflow.SeverityMedium},
+		}))
 	})
 })
 
 var _ = Describe("RenderReview", func() {
-	It("groups findings by severity, most severe first", func() {
-		got := workflow.RenderReview("sha1", "all fine", []workflow.Finding{
-			{Severity: "low", Title: "nit", Detail: "d", Location: ""},
-			{Severity: "high", Title: "bug", Detail: "bad", Location: "a.go:3"},
+	It("groups findings by severity, most severe first, against the reviewed commit", func() {
+		got := workflow.RenderReview("sha1", workflow.ReviewerOutput{
+			Summary: "all fine",
+			Findings: []workflow.ReviewFinding{
+				{Severity: workflow.SeverityLow, Path: "a.go", Claim: "nit"},
+				{Severity: workflow.SeverityHigh, Path: "a.go", Line: 3, Claim: "bad"},
+			},
 		})
 		Expect(got).To(Equal("<!-- agent-review:sha1 -->\n## Agent review\n\nall fine\n\n" +
-			"### High (1)\n- **bug** (`a.go:3`): bad\n\n### Low (1)\n- **nit**: d"))
+			"### High (1)\n- **`a.go:3`**: bad\n\n### Low (1)\n- **`a.go`**: nit"))
 	})
 
 	It("says so when there are no findings", func() {
-		Expect(workflow.RenderReview("s", "ok", nil)).To(HaveSuffix("\n\nNo findings."))
+		Expect(workflow.RenderReview("s", workflow.ReviewerOutput{Summary: "ok"})).To(HaveSuffix("\n\nNo findings."))
 	})
 
 	It("is cut to the comment limit", func() {
-		got := workflow.RenderReview("s", strings.Repeat("x", workflow.CommentLimitChars+10), nil)
+		got := workflow.RenderReview("s", workflow.ReviewerOutput{
+			Summary: strings.Repeat("x", workflow.CommentLimitChars+10),
+		})
 		Expect([]rune(got)).To(HaveLen(workflow.CommentLimitChars))
 	})
 })

@@ -26,8 +26,9 @@ Run `go test` from the same dev shell — the suite starts `emulate` from `PATH`
   `Authorization` header) and forwards unmatched requests to the emulator.
 - Tests read outcome state back from the emulator where that is clearer than reading a request
   body. Issue #5 is fixed because many flow specs name it, so the harness creates filler issues
-  below it; pull request and retro numbers follow the repository's sequence and are read back
-  with `h.pullRequest` and `h.retroPath` instead of assuming `#8` or `#41`.
+  below it; the pull request number follows the repository's sequence and is read back with
+  `h.pullRequest` instead of assuming `#8`. A retro is a marker comment on the issue it worked, so
+  its number is the issue's: reads it back with `h.retroComments` and `emulator.Comments`.
 
 ## What emulate cannot do, and how the tests handle it
 

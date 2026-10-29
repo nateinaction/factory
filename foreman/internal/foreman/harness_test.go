@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -157,7 +156,44 @@ type harness struct {
 
 // testAgent() is the agent role settings tests run with.
 func testAgent() config.AgentConfig {
-	return config.AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
+	return config.AgentConfig{
+		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
+	}
+}
+
+// testRetro is the retro budget tests run with.
+func testRetro() config.Budget { return config.Budget{Steps: 20, DeadlineMinutes: 15} }
+
+// testConfig is a config file's worth of agent roles.
+func testConfig() config.Config {
+	agents := map[string]config.AgentConfig{}
+	for _, r := range workflow.KnownRoles() {
+		agents[string(r)] = testAgent()
+	}
+
+	return config.Config{
+		Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro(), DeadRunMarginMinutes: 10,
+	}
+}
+
+// pollConfig is the config a poll of the given agent roles runs with.
+func pollConfig(roles ...workflow.Role) config.Config {
+	cfg := testConfig()
+	cfg.Roles = roles
+
+	return cfg
+}
+
+// stepsStream is a run that finished after n steps, each reporting no error.
+func stepsStream(n int) string {
+	var b strings.Builder
+
+	for range n {
+		b.WriteString(`{"type":"step_start","sessionID":"ses_1"}` + "\n")
+		b.WriteString(`{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":1,"output":1}}}` + "\n")
+	}
+
+	return b.String()
 }
 
 // newHarness builds a harness whose runner answers the helpers every flow needs. Each spec gets a
@@ -197,7 +233,7 @@ func newHarness() *harness {
 			Self:        "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
-		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs),
+		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs), RunID: "run-1",
 		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 	}
 
@@ -206,6 +242,86 @@ func newHarness() *harness {
 
 // isModel reports whether c starts a model run: opencode under srt, or bare opencode.
 func isModel(c proc.Cmd) bool { return strings.Contains(joined(c), "opencode run") }
+
+// tokenFor is the seeded token of a test user.
+func tokenFor(login string) string {
+	switch login {
+	case "o":
+		return ghtest.AdminToken
+	case "factory":
+		return "secret-token"
+	}
+
+	Fail("no seeded token for " + login)
+
+	return ""
+}
+
+// createAs creates an issue in o/r authored by login.
+func (h *harness) createAs(login string, labels []string, title string) int {
+	GinkgoHelper()
+
+	number, err := emulator.CreateIssueAs(context.Background(), "o/r", tokenFor(login), labels, title, "Do it")
+	Expect(err).NotTo(HaveOccurred())
+
+	return number
+}
+
+// comment posts a comment on o/r#number as login.
+func (h *harness) comment(number int, login, text string) {
+	GinkgoHelper()
+	Expect(emulator.CommentAs(context.Background(), "o/r", number, tokenFor(login), text)).To(Succeed())
+}
+
+// labels reads back the labels an issue carries.
+func (h *harness) labels(number int) []string {
+	GinkgoHelper()
+
+	issue, err := emulator.Issue(context.Background(), "o/r", number)
+	Expect(err).NotTo(HaveOccurred())
+
+	out := make([]string, 0, len(issue.Labels))
+	for _, l := range issue.Labels {
+		out = append(out, l.Name)
+	}
+
+	return out
+}
+
+// factoryLabels are the factory labels an issue carries.
+func (h *harness) factoryLabels(number int) []string {
+	GinkgoHelper()
+
+	var out []string
+
+	for _, label := range h.labels(number) {
+		if strings.HasPrefix(label, "factory:") {
+			out = append(out, label)
+		}
+	}
+
+	return out
+}
+
+// markerComments are the factory transition markers posted on o/r#number, oldest first.
+func (h *harness) markerComments(number int) []string {
+	GinkgoHelper()
+
+	var out []string
+
+	for _, raw := range h.gh.Bodies("POST", fmt.Sprintf("/repos/o/r/issues/%d/comments", number)) {
+		var body struct {
+			Body string `json:"body"`
+		}
+		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
+
+		if strings.HasPrefix(body.Body, workflow.MarkerPrefix) {
+			out = append(out, body.Body)
+		}
+	}
+
+	return out
+}
 
 // defaultRun answers token minting and git queries, and a clone makes its directory, as git does;
 // everything else succeeds silently.
@@ -225,6 +341,9 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 		return "sha-head\n", nil
 	case strings.Contains(line, "rev-list --count"):
 		return "1\n", nil
+	case strings.Contains(line, "status --porcelain"):
+		// The model left a change in the working tree for foreman to commit.
+		return "M a.go\n", nil
 	}
 
 	return "", nil
@@ -242,6 +361,10 @@ func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
 		return strings.Join(installed, "\n") + "\n", nil
 	case !slices.Contains(installed, repoOf(c)):
 		return "", &proc.ExitError{Program: "github-app-token", Code: 1}
+	}
+
+	if strings.Contains(joined(c), "--read-only") {
+		return "read-only-token-" + appOf(c) + "\n", nil
 	}
 
 	return "minted-token-" + appOf(c) + "\n", nil
@@ -272,12 +395,6 @@ func (h *harness) expectAuthorizedAs(role workflow.Role) {
 	for _, r := range h.gh.Calls() {
 		Expect(r.Header.Get("Authorization")).To(Equal("Bearer minted-token-"+string(role)), r.Method+" "+r.Path)
 	}
-}
-
-// expectOnlyReads fails the spec when any GitHub call wrote.
-func (h *harness) expectOnlyReads() {
-	GinkgoHelper()
-	Expect(h.gh.Summary()).To(HaveEach(HavePrefix("GET ")))
 }
 
 // repoOf is the value of --repo in a github-app-token command line.
@@ -329,9 +446,12 @@ func (h *harness) withConfigText(text string) {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
-	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
-	`"curator":{"model":"prov/model","context_cap":200000}}}`
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
+	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10}`
 
 // writeToken leaves a token for the factory half of role.
 func (h *harness) writeToken(role workflow.Role, token string) {
@@ -350,6 +470,7 @@ func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
 	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
 
 	labels := map[int][]string{}
+	bodies := map[int]string{}
 	highest := 0
 
 	for label, issues := range byLabel {
@@ -360,29 +481,37 @@ func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
 			}
 
 			labels[number] = append(labels[number], label)
+
+			if body, ok := fields["body"].(string); ok {
+				bodies[number] = body
+			}
+
 			highest = maxInt(highest, number)
 		}
 	}
 
 	for number := 1; number <= highest; number++ {
-		_, err := emulator.CreateIssue(context.Background(), repo, labels[number], "Add x", "Do x")
+		body := bodies[number]
+		if body == "" {
+			body = "Do x"
+		}
+
+		_, err := emulator.CreateIssue(context.Background(), repo, labels[number], "Add x", body)
 		Expect(err).NotTo(HaveOccurred())
 	}
 }
 
-// acceptWrites makes sure issue n exists. Label and comment writes then succeed against the emulator.
-func (h *harness) acceptWrites(n string) {
+// acceptWrites makes sure issue 5 exists. Label and comment writes then succeed against the emulator.
+func (h *harness) acceptWrites() {
 	GinkgoHelper()
-
-	number, err := strconv.Atoi(n)
-	Expect(err).NotTo(HaveOccurred(), "issue number %q", n)
-
-	h.ensureIssue("o/r", number)
+	h.ensureIssue(5)
 }
 
 // ensureIssue creates the filler issues below number and then number itself.
-func (h *harness) ensureIssue(repo string, number int) {
+func (h *harness) ensureIssue(number int) {
 	GinkgoHelper()
+
+	const repo = "o/r"
 
 	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
 
@@ -441,24 +570,49 @@ func (h *harness) reviewPath() string {
 	return fmt.Sprintf("/repos/o/r/pulls/%d/reviews", pr)
 }
 
-// retroNumber is the open retro ticket's number, or 0.
-func (h *harness) retroNumber() int {
-	GinkgoHelper()
-
-	number, err := emulator.FindIssueByLabel(context.Background(), "o/r", workflow.LabelRetro)
-	Expect(err).NotTo(HaveOccurred())
-
-	return number
+// retroOut is where a run's retro.json is written for o/r#5.
+func (h *harness) retroOut(role workflow.Role) string {
+	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("issue-5-%s.retro.json", role))
 }
 
-// retroPath is the retro ticket's comments endpoint.
-func (h *harness) retroPath() string {
+// retroComments are the retro marker comments posted on o/r#5, oldest first.
+func (h *harness) retroComments() []string {
 	GinkgoHelper()
 
-	number := h.retroNumber()
-	Expect(number).NotTo(BeZero(), "no retro ticket")
+	var out []string
 
-	return fmt.Sprintf("/repos/o/r/issues/%d/comments", number)
+	for _, raw := range h.gh.Bodies("POST", "/repos/o/r/issues/5/comments") {
+		var body struct {
+			Body string `json:"body"`
+		}
+		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
+
+		if strings.HasPrefix(body.Body, workflow.RetroMarkerPrefix) {
+			out = append(out, body.Body)
+		}
+	}
+
+	return out
+}
+
+// seedComment posts a comment as the repository's admin and returns its id.
+func (h *harness) seedComment(number int, text string) int64 {
+	GinkgoHelper()
+
+	h.comment(number, "o", text)
+
+	comments, err := emulator.Comments(context.Background(), "o/r", number)
+	Expect(err).NotTo(HaveOccurred())
+
+	for _, c := range slices.Backward(comments) {
+		if c.Body == text {
+			return c.ID
+		}
+	}
+
+	Fail("seeded comment not found")
+
+	return 0
 }
 
 // factoryHalf is what the fake factory half saw: the token file's content and mode.
@@ -500,7 +654,7 @@ func (h *harness) sudoExit(code int) *factoryHalf {
 func (h *harness) implementerGH(pr map[string]any, reviews []workflow.Item) {
 	GinkgoHelper()
 
-	h.ensureIssue("o/r", 5)
+	h.ensureIssue(5)
 
 	h.pr, h.prURL = 0, ""
 
@@ -529,20 +683,39 @@ func (h *harness) reviewerGH(reviews []workflow.Item) {
 
 // reviewOut is where a Reviewer run on issue 5 writes its verdict.
 func (h *harness) reviewOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "run-reviewer-5", "review.json")
+	return filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", workflow.ReviewerOutputFile)
 }
 
-// retroOut is where an Implementer run on issue 5 writes its retro.
-func (h *harness) retroOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5", "retro.md")
+// implOut is where an Implementer run on issue 5 writes its output.
+func (h *harness) implOut() string {
+	return filepath.Join(h.deps.Settings.WorkRoot, "implementer-5", workflow.ImplementerOutputFile)
 }
 
-// cleanReview is a review with no findings.
-const cleanReview = `{"summary":"fine","findings":[]}`
+// validRetro is a retro with one finding about the Implementer's skill.
+const validRetro = `{"version":1,"findings":[{"target":"skill:implement","group":"guide-misses-tests",` +
+	`"severity":"medium","claim":"the guide never mentions tests","evidence":"I searched and found none"}]}`
 
-// blockingReview is a review with one high finding.
-const blockingReview = `{"summary":"bad","findings":[` +
-	`{"severity":"high","title":"bug","detail":"d","location":"a.go:1"}]}`
+// retroBody renders a retro comment as foreman would post it, for seeding the log.
+func retroBody(role workflow.Role, key string, findings ...workflow.RetroFinding) string {
+	body, err := workflow.RenderRetro(workflow.RetroMarker(5, role, key), findings)
+	Expect(err).NotTo(HaveOccurred())
+
+	return body
+}
+
+// firstRunOutput is an implementer-output.json for a first run.
+const firstRunOutput = `{"version":1,"commit_message":"Add x","pr_title":"Add x","pr_body":"Closes #5"}`
+
+// reworkOutput is an implementer-output.json for a review round.
+const reworkOutput = `{"version":1,"commit_message":"Fix x","replies":[` +
+	`{"finding":"bug","status":"fixed","reason":"fixed it"}]}`
+
+// cleanReview is a reviewer-output.json that approves.
+const cleanReview = `{"version":1,"verdict":"APPROVE","summary":"fine","findings":[]}`
+
+// blockingReview is a reviewer-output.json that requests changes for one high finding.
+const blockingReview = `{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[` +
+	`{"severity":"high","path":"a.go","line":1,"claim":"bug"}]}`
 
 // opencodeWrites makes opencode runs write text to the file at path, for the runs whose argv contains
 // marker.
@@ -661,6 +834,19 @@ func errStream(name string, status int) string {
 // opencodeCalls are the recorded opencode processes.
 func (h *harness) opencodeCalls() []proc.Cmd { return h.runner.find("opencode run") }
 
+// runCalls are the recorded opencode processes of the run itself, leaving its retro out.
+func (h *harness) runCalls() []proc.Cmd {
+	var out []proc.Cmd
+
+	for _, c := range h.opencodeCalls() {
+		if !strings.Contains(joined(c), "--session") {
+			out = append(out, c)
+		}
+	}
+
+	return out
+}
+
 // answerOpencode makes the n-th (0-based) opencode process print outs[n]; later ones print the last.
 func (h *harness) answerOpencode(outs ...string) {
 	n := 0
@@ -677,12 +863,36 @@ func (h *harness) answerOpencode(outs ...string) {
 	})
 }
 
-// runImpl runs the Implementer on issue 5 against the emulator.
+// runImpl runs the Implementer on issue 5 against the emulator, with a model that writes a valid
+// first-run output file.
 func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
 	h.writeToken(workflow.Implementer, "repo-token\n")
+	h.implementerWrites(firstRunOutput)
 
-	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, 5)
+	return Run(context.Background(), h.deps, workflow.Implementer, "o/r", agent, testRetro(), 5)
+}
+
+// implementerWrites makes the Implementer's run write text as its output file, leaving the retro
+// alone, and passes the process on to whatever the harness otherwise answers.
+func (h *harness) implementerWrites(text string) {
+	h.implementerWritesFor(5, text)
+}
+
+// implementerWritesFor makes an Implementer run on number write text to that run's output file.
+func (h *harness) implementerWritesFor(number int, text string) {
+	out := filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("implementer-%d", number),
+		workflow.ImplementerOutputFile)
+
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if isModel(c) && strings.Contains(joined(c), "--agent implementer ") &&
+			!strings.Contains(joined(c), "--session") {
+			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
+		}
+
+		return base(c)
+	})
 }
 
 // usageLines are the JSON lines on stdout that are usage reports.

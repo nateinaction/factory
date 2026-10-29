@@ -86,8 +86,12 @@ type Deps struct {
 	Log *slog.Logger
 	// Host names this worker host in the usage report; empty is reported as missing.
 	Host string
+	// RunID is the dagu run id recorded in transition markers; empty is recorded as unknown.
+	RunID string
 	// Sleep waits between model retries; nil waits on the clock.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
+	Now func() time.Time
 	// Proxy starts the run's OpenRouter proxy; nil starts the real one.
 	Proxy func(key, addr string) (Forwarder, error)
 	// ProxyAddr is the loopback address the run's proxy binds; empty binds a free loopback port.
@@ -126,6 +130,15 @@ func (d Deps) log() *slog.Logger {
 	return d.Log
 }
 
+// runID is the id transition markers record: the dagu run's id, or a placeholder outside dagu.
+func (d Deps) runID() string {
+	if d.RunID == "" {
+		return "unknown"
+	}
+
+	return d.RunID
+}
+
 // writeLine writes text and a newline.
 func writeLine(w io.Writer, text string) error {
 	if _, err := fmt.Fprintln(w, text); err != nil {
@@ -150,6 +163,15 @@ func (d Deps) sleep(ctx context.Context, wait time.Duration) error {
 	case <-ctx.Done():
 		return fmt.Errorf("sleep: %w", ctx.Err())
 	}
+}
+
+// now reads the clock. Tests replace it through Deps.Now, so elapsed times are deterministic.
+func (d Deps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+
+	return time.Now()
 }
 
 // GitAuthEnv gives git its credentials through the environment, so they never appear in argv.
