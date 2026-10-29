@@ -104,7 +104,7 @@ func pollCommand(d *foreman.Deps) *cobra.Command {
 				return &exitError{code: 1, err: err}
 			}
 
-			code, err := foreman.Poll(cmd.Context(), *d, cfg.Roles)
+			code, err := foreman.Poll(cmd.Context(), *d, cfg)
 
 			return result(code, err)
 		},

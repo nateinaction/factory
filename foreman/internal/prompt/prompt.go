@@ -20,6 +20,9 @@ const DocsLimitChars = 40_000
 // IssueMaterialHeading starts the variable part of a prompt. Everything before it is the prefix.
 const IssueMaterialHeading = "\n# Issue material\n\n"
 
+// ThreadHeading starts the comments a woken run reads.
+const ThreadHeading = "\n\n# Comments since the marker"
+
 // Doc is one repository document put into a prompt.
 type Doc struct {
 	// Path is relative to the repository root.
@@ -100,8 +103,9 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 	`"high|medium|low", "title": "...", "detail": "...", "location": "file:line or empty"}]}. ` +
 	"An empty findings list means the change is clean."
 
-// Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run.
-func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string) string {
+// Implementer is the Implementer's prompt; feedback is the latest review, empty on a first run, and
+// thread is every comment since the marker when a writer's comment woke the issue.
+func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string, thread []workflow.Item) string {
 	rework := ""
 	if feedback != "" {
 		rework = "\n\nThe open pull request for this branch was reviewed and the review found " +
@@ -109,8 +113,40 @@ func Implementer(docs []Doc, repo string, issue workflow.Issue, feedback string)
 			"commits, then commit.\n\nReview:\n" + workflow.Truncate(feedback, workflow.BodyLimitChars)
 	}
 
-	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s",
-		repo, issue.Number, issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars), rework))
+	return Build(implementerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s%s",
+		repo, issue.Number, issue.Title, workflow.Truncate(issue.Body, workflow.BodyLimitChars),
+		Thread(thread), rework))
+}
+
+// Thread renders every comment a woken run reads, oldest first, each with its author and cut to fit
+// a single body limit across the whole section.
+func Thread(comments []workflow.Item) string {
+	if len(comments) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+
+	b.WriteString(ThreadHeading)
+
+	budget := workflow.BodyLimitChars
+
+	for _, c := range comments {
+		author := c.Author
+		if author == "" {
+			author = "unknown"
+		}
+
+		body := workflow.Truncate(c.Body, budget)
+		budget -= utf8.RuneCountInString(body)
+		fmt.Fprintf(&b, "\n\n**%s:** %s", author, body)
+
+		if budget <= 0 {
+			break
+		}
+	}
+
+	return b.String()
 }
 
 // Reviewer is the Reviewer's prompt: base is the branch to compare with, specPath holds the

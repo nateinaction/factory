@@ -1,11 +1,13 @@
 package foreman
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -278,8 +280,13 @@ func implementRun(
 		return opencode.Usage{}, err
 	}
 
+	thread, err := guidance(ctx, j.c, repo, number)
+	if err != nil {
+		return opencode.Usage{}, err
+	}
+
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback),
+		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback, thread),
 		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
@@ -296,6 +303,35 @@ func implementRun(
 	}
 
 	return res.Usage.Add(retroUsage), nil
+}
+
+// guidance reads every comment since the marker that woke the issue, from the issue and its pull
+// request, oldest first. An issue that was not woken reads nothing.
+func guidance(ctx context.Context, c github.Client, repo string, number int) ([]workflow.Item, error) {
+	comments, err := c.ListComments(ctx, repo, number)
+	if err != nil {
+		return nil, err
+	}
+
+	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(number))
+	if err != nil {
+		return nil, err
+	}
+
+	if pr != nil {
+		onPR, err := c.ListComments(ctx, repo, pr.Number)
+		if err != nil {
+			return nil, err
+		}
+
+		comments = append(comments, onPR...)
+	}
+
+	slices.SortStableFunc(comments, func(a, b workflow.Item) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return workflow.Guidance(comments), nil
 }
 
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if

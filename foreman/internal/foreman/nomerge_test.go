@@ -91,7 +91,7 @@ var _ = Describe("the merge path", func() {
 			h.acceptWrites()
 			cfg, err := config.Load(h.deps.Settings.ConfigFile)
 			Expect(err).NotTo(HaveOccurred())
-			_, err = Poll(context.Background(), h.deps, cfg.Roles)
+			_, err = Poll(context.Background(), h.deps, cfg)
 			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("start", func(h *harness) {

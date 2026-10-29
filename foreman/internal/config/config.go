@@ -111,6 +111,15 @@ type Config struct {
 	Agents map[string]AgentConfig `json:"agents" mapstructure:"agents"`
 	// Retro is the budget every retro gets, separate from the run's.
 	Retro Budget `json:"retro" mapstructure:"retro"`
+	// DeadRunMarginMinutes is how far past an agent role's deadline its running label may age before
+	// a poll calls the run dead.
+	DeadRunMarginMinutes int `json:"dead_run_margin_minutes" mapstructure:"dead_run_margin_minutes"`
+}
+
+// DeadRunMargin is how long past an agent role's deadline a run keeps its claim before a poll calls
+// it dead.
+func (c Config) DeadRunMargin() time.Duration {
+	return time.Duration(c.DeadRunMarginMinutes) * time.Minute
 }
 
 // Load reads and validates the role config through viper. An unknown key is an error, never ignored:
@@ -154,7 +163,11 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateRetro(path, c.Retro)
+	if err := validateRetro(path, c.Retro); err != nil {
+		return err
+	}
+
+	return validateDeadRun(path, c.DeadRunMarginMinutes)
 }
 
 // validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
@@ -177,6 +190,15 @@ func validateRequired(path string, agents map[string]AgentConfig) error {
 func validateRetro(path string, r Budget) error {
 	if r.Steps <= 0 || r.DeadlineMinutes <= 0 {
 		return fmt.Errorf("config %s: retro needs a step cap and a deadline", path)
+	}
+
+	return nil
+}
+
+// validateDeadRun checks the dead-run margin is a positive number of minutes.
+func validateDeadRun(path string, minutes int) error {
+	if minutes <= 0 {
+		return fmt.Errorf("config %s: dead-run margin must be a positive number of minutes", path)
 	}
 
 	return nil

@@ -401,6 +401,11 @@ func (c Client) Finish(ctx context.Context, repo string, number int, t workflow.
 	return c.addLabel(ctx, repo, number, string(t.To))
 }
 
+// Timeline lists an issue's timeline events, oldest first.
+func (c Client) Timeline(ctx context.Context, repo string, number int) ([]workflow.TimelineEvent, error) {
+	return Paged[workflow.TimelineEvent](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/timeline", repo, number))
+}
+
 // PullRequest is the part of a pull request foreman reads.
 type PullRequest struct {
 	// Number is the pull request number.

@@ -108,17 +108,18 @@ func pollQueues() []queueStep {
 }
 
 // Poll is deterministic and cheap: no model involved. It first brings every assigned repository's
-// labels, routing and recovery up to date, then claims at most one issue and queues its run. It looks
-// only at repositories where one of the roles' Apps is installed, and in each only at the queues of
-// agent roles whose Apps are installed there; every claim uses its own agent role's token.
-func Poll(ctx context.Context, d Deps, roles []workflow.Role) (int, error) {
-	assigned := Assigned(ctx, d, roles)
+// labels, routing, waking and recovery up to date, and calls any dead run failed, then claims at most
+// one issue and queues its run. It looks only at repositories where one of the roles' Apps is
+// installed, and in each only at the queues of agent roles whose Apps are installed there; every
+// claim uses its own agent role's token.
+func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
+	assigned := Assigned(ctx, d, cfg.Roles)
 
 	repos := assigned.Repos()
 	perms := newPermissions()
 
 	for _, repo := range repos {
-		if err := prepareRepo(ctx, d, perms, repo, assigned[repo]); err != nil {
+		if err := prepareRepo(ctx, d, cfg, perms, repo, assigned[repo]); err != nil {
 			return 1, err
 		}
 	}
@@ -151,9 +152,12 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 	return "", false
 }
 
-// prepareRepo creates the factory labels, repairs stranded issues from their latest marker, and
-// routes new issues to their first queue. Every write uses the polling App's token.
-func prepareRepo(ctx context.Context, d Deps, perms *permissions, repo string, roles []workflow.Role) error {
+// prepareRepo creates the factory labels, calls dead runs failed, repairs stranded issues from their
+// latest marker, wakes an issue a writer has commented on, and routes new issues to their first
+// queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
+func prepareRepo(
+	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo string, roles []workflow.Role,
+) error {
 	role, ok := pollingRole(roles)
 	if !ok {
 		return nil
@@ -182,7 +186,7 @@ func prepareRepo(ctx context.Context, d Deps, perms *permissions, repo string, r
 			continue
 		}
 
-		if err := prepareIssue(ctx, d, c, perms, repo, issue); err != nil {
+		if err := settleIssue(ctx, d, cfg, c, perms, repo, issue); err != nil {
 			// One unreadable issue fails closed for that issue; the poll carries on.
 			d.log().Warn("skipping an issue the poll cannot read", "repo", repo, "issue", issue.Number, "error", err)
 		}
@@ -191,7 +195,76 @@ func prepareRepo(ctx context.Context, d Deps, perms *permissions, repo string, r
 	return nil
 }
 
-// prepareIssue repairs and routes one issue. A read failure is returned, so the issue is left alone.
+// settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
+func settleIssue(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	repo string, issue workflow.Issue,
+) error {
+	dead, err := failDeadRun(ctx, d, cfg, c, repo, issue)
+	if err != nil || dead {
+		return err
+	}
+
+	return prepareIssue(ctx, d, c, perms, repo, issue)
+}
+
+// failDeadRun moves an issue whose running label outlived its agent role's deadline plus the dead-run
+// margin to factory:failed, once, with a marker. A missing deadline or timeline event leaves the
+// issue alone: an age it cannot read is never an age that fails a run.
+func failDeadRun(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string, issue workflow.Issue,
+) (bool, error) {
+	role, state, ok := workflow.RunningState(issue)
+	if !ok {
+		return false, nil
+	}
+
+	agent, ok := cfg.Agents[string(role)]
+	if !ok || agent.Deadline() <= 0 {
+		d.log().Warn("cannot date a running label without its agent role's deadline",
+			"repo", repo, "issue", issue.Number, "role", role)
+
+		return false, nil
+	}
+
+	events, err := c.Timeline(ctx, repo, issue.Number)
+	if err != nil {
+		return false, fmt.Errorf("read the timeline of #%d: %w", issue.Number, err)
+	}
+
+	since, found := workflow.LabeledAt(events, string(state))
+	if !found {
+		d.log().Warn("the timeline has no labeled event for the running label",
+			"repo", repo, "issue", issue.Number, "state", state)
+
+		return false, nil
+	}
+
+	margin := cfg.DeadRunMargin()
+	if !workflow.DeadRun(since, d.now(), agent.Deadline(), margin) {
+		return false, nil
+	}
+
+	token, err := d.mintToken(ctx, role, repo)
+	if err != nil {
+		d.log().Warn("cannot mint the dead run's own token; leaving the issue claimed",
+			"role", role, "repo", repo, "issue", issue.Number, "error", err)
+
+		return false, nil
+	}
+
+	d.log().Info("failing a dead run", "repo", repo, "issue", issue.Number, "role", role,
+		"since", since, "deadline", agent.Deadline(), "margin", margin)
+
+	t := workflow.Transition{Role: role, RunID: d.runID(), From: state, To: workflow.Failed}
+	text := fmt.Sprintf("The %s run outlived its %s deadline plus the %s dead-run margin. "+
+		"It is not retried automatically; comment to send it back to the %s.",
+		role, agent.Deadline(), margin, role)
+
+	return true, d.client(token).Finish(ctx, repo, issue.Number, t, text)
+}
+
+// prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
 func prepareIssue(
 	ctx context.Context, d Deps, c github.Client, perms *permissions, repo string, issue workflow.Issue,
 ) error {
@@ -200,12 +273,12 @@ func prepareIssue(
 		return err
 	}
 
-	latest, found, err := workflow.LatestTransition(comments)
+	latest, found, err := workflow.LatestMarker(comments)
 	if err != nil {
 		return fmt.Errorf("read the latest marker on #%d: %w", issue.Number, err)
 	}
 
-	if state, repair := workflow.Repair(issue, latest, found); repair {
+	if state, repair := workflow.Repair(issue, latest.Transition, found); repair {
 		d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state)
 
 		if err := c.AddLabel(ctx, repo, issue.Number, string(state)); err != nil {
@@ -213,6 +286,11 @@ func prepareIssue(
 		}
 
 		issue.Labels = append(issue.Labels, string(state))
+	}
+
+	woke, err := wakeIssue(ctx, d, perms, c, repo, issue, comments, latest, found)
+	if err != nil || woke {
+		return err
 	}
 
 	state, ok := workflow.Route(issue)
@@ -229,6 +307,92 @@ func prepareIssue(
 	}
 
 	return nil
+}
+
+// wakeIssue moves an issue a writer has commented on out of the state that was waiting for them: a
+// waiting issue goes back to the Planner, a done one back to the Implementer, and a failed one back
+// to the agent role that failed. A done issue is woken by a comment on its pull request; the others
+// by a comment on the issue. The wake is made with the token of the agent role it queues for.
+func wakeIssue(
+	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string, issue workflow.Issue,
+	comments []workflow.Item, latest workflow.Marker, found bool,
+) (bool, error) {
+	if !found {
+		return false, nil
+	}
+
+	thread, ok, err := wakeThread(ctx, c, repo, issue, comments, latest)
+	if err != nil || !ok {
+		return false, err
+	}
+
+	state, ok := workflow.WakeState(latest.Transition, true, written(ctx, d, perms, c, repo, thread, latest))
+	if !ok {
+		return false, nil
+	}
+
+	role, ok := workflow.RoleOf(state)
+	if !ok {
+		return false, nil
+	}
+
+	token, err := d.mintToken(ctx, role, repo)
+	if err != nil {
+		d.log().Warn("cannot mint the waking agent role's token; leaving the issue where it is",
+			"role", role, "repo", repo, "issue", issue.Number, "error", err)
+
+		return false, nil
+	}
+
+	t := workflow.Transition{Role: role, RunID: d.runID(), From: latest.To, To: state}
+
+	won, err := d.client(token).Claim(ctx, repo, issue.Number, t)
+	if err != nil {
+		return false, err
+	}
+
+	d.log().Info("woke an issue on a writer's comment",
+		"repo", repo, "issue", issue.Number, "state", state, "won", won)
+
+	return true, nil
+}
+
+// wakeThread is the thread a wake is judged on: the pull request's comments for a done issue, the
+// issue's own otherwise. ok is false when a done issue has no open pull request to comment on.
+func wakeThread(
+	ctx context.Context, c github.Client, repo string, issue workflow.Issue,
+	comments []workflow.Item, latest workflow.Marker,
+) ([]workflow.Item, bool, error) {
+	if latest.To != workflow.Done {
+		return comments, true, nil
+	}
+
+	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
+	if err != nil {
+		return nil, false, err
+	}
+
+	if pr == nil {
+		return nil, false, nil
+	}
+
+	thread, err := c.ListComments(ctx, repo, pr.Number)
+
+	return thread, err == nil, err
+}
+
+// written reports whether a writer commented after the latest marker.
+func written(
+	ctx context.Context, d Deps, perms *permissions, c github.Client, repo string,
+	thread []workflow.Item, latest workflow.Marker,
+) bool {
+	for _, comment := range workflow.AfterMarker(thread, latest) {
+		if perms.isWriter(ctx, d, c, repo, comment.Author) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // issueComments lists an issue's comments, skipping the call when it has none.
