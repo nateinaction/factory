@@ -90,14 +90,16 @@ type Deps struct {
 	RunID string
 	// Sleep waits between model retries; nil waits on the clock.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Token mints the run's random proxy token; nil reads crypto/rand.
+	Token func() (string, error)
 	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
 	Now func() time.Time
 	// Proxy starts the run's OpenRouter proxy; nil starts the real one.
-	Proxy func(key, addr string) (Forwarder, error)
+	Proxy func(key, token, addr string) (Forwarder, error)
 	// ProxyAddr is the loopback address the run's proxy binds; empty binds a free loopback port.
 	ProxyAddr string
 	// Egress starts the run's egress proxy; nil starts the real one.
-	Egress func(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error)
+	Egress func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error)
 	// EgressAddr is the loopback address the egress proxy binds; empty binds a free loopback port.
 	EgressAddr string
 }
