@@ -179,17 +179,6 @@ func Queued(role Role) (State, bool) {
 	return "", false
 }
 
-// Running returns the state that marks a claim by role.
-func Running(role Role) (State, bool) {
-	for _, q := range Queues() {
-		if q.Role == role {
-			return q.Running, true
-		}
-	}
-
-	return "", false
-}
-
 // RoleOf names the agent role that owns a handoff state.
 func RoleOf(state State) (Role, bool) {
 	for _, q := range Queues() {
@@ -412,17 +401,6 @@ func WriterPermission(permission string) bool {
 		return true
 	case "read", "triage", "none", "":
 		return false
-	}
-
-	return false
-}
-
-// WriterComment reports whether any comment was written by a writer.
-func WriterComment(comments []Item, writers map[string]bool) bool {
-	for _, c := range comments {
-		if writers[c.Author] {
-			return true
-		}
 	}
 
 	return false
@@ -708,27 +686,6 @@ func ParseTransition(body string) (Transition, bool, error) {
 	return t, true, nil
 }
 
-// LatestTransition is the last transition marker in API order, which is oldest first.
-func LatestTransition(comments []Item) (Transition, bool, error) {
-	var (
-		latest Transition
-		found  bool
-	)
-
-	for _, c := range comments {
-		t, ok, err := ParseTransition(c.Body)
-		if err != nil {
-			return Transition{}, false, err
-		}
-
-		if ok {
-			latest, found = t, true
-		}
-	}
-
-	return latest, found, nil
-}
-
 // Repair returns the state label to re-apply when the latest marker names a state the issue does not
 // carry. A paused issue is frozen, so it is never repaired. A closed ticket has no label to apply.
 func Repair(issue Issue, latest Transition, found bool) (State, bool) {
@@ -738,17 +695,6 @@ func Repair(issue Issue, latest Transition, found bool) (State, bool) {
 	}
 
 	return latest.To, true
-}
-
-// PickIssue returns the first issue that is not a pull request: oldest first, as the API returns them.
-func PickIssue(issues []Issue) (Issue, bool) {
-	for _, i := range issues {
-		if !i.IsPullRequest {
-			return i, true
-		}
-	}
-
-	return Issue{}, false
 }
 
 // BranchName is the branch an issue's work lives on.

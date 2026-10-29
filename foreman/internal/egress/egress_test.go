@@ -58,7 +58,7 @@ func policy(allowed ...string) sandbox.Network {
 func start(n sandbox.Network, apiURL string) *Proxy {
 	GinkgoHelper()
 
-	p, err := Start(GinkgoT().Context(), n, apiURL, "127.0.0.1:0")
+	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, "127.0.0.1:0", nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	return p
@@ -272,7 +272,7 @@ var _ = Describe("Proxy", func() {
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
-		_, err := Start(GinkgoT().Context(), policy(), "", "0.0.0.0:0")
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "0.0.0.0:0", nil)
 		Expect(err).To(MatchError(ContainSubstring("loopback")))
 	})
 

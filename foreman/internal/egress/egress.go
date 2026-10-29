@@ -64,15 +64,10 @@ type Proxy struct {
 	closeErr  error
 }
 
-// Start binds a proxy for policy on addr. apiURL is the OpenRouter key proxy that origin-form API
-// calls are forwarded to; empty refuses them. addr must be loopback. Any bind or parse failure is an
-// error: the run has no egress without its proxy.
-func Start(ctx context.Context, policy sandbox.Network, apiURL, addr string) (*Proxy, error) {
-	return StartWithLogger(ctx, policy, apiURL, addr, nil)
-}
-
-// StartWithLogger is Start with a logger for traffic the proxy refuses. A nil logger discards those
-// diagnostics.
+// StartWithLogger binds a proxy for policy on addr. apiURL is the OpenRouter key proxy that
+// origin-form API calls are forwarded to; empty refuses them. addr must be loopback. Any bind or
+// parse failure is an error: the run has no egress without its proxy. logger records traffic the
+// proxy refuses; nil discards those diagnostics.
 func StartWithLogger(
 	ctx context.Context, policy sandbox.Network, apiURL, addr string, logger *slog.Logger,
 ) (*Proxy, error) {

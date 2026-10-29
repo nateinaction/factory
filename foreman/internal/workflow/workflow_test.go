@@ -57,19 +57,6 @@ var _ = Describe("ValidateRepo", func() {
 	)
 })
 
-var _ = Describe("PickIssue", func() {
-	It("skips pull requests", func() {
-		got, ok := workflow.PickIssue([]workflow.Issue{{Number: 1, IsPullRequest: true}, {Number: 2}, {Number: 3}})
-		Expect(ok).To(BeTrue())
-		Expect(got.Number).To(Equal(2))
-	})
-
-	It("finds nothing among pull requests only", func() {
-		_, ok := workflow.PickIssue([]workflow.Issue{{Number: 1, IsPullRequest: true}})
-		Expect(ok).To(BeFalse())
-	})
-})
-
 var _ = Describe("names and markers", func() {
 	It("puts an issue's work on agent/issue-<n>", func() {
 		Expect(workflow.BranchName(7)).To(Equal("agent/issue-7"))

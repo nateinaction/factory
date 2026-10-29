@@ -59,11 +59,6 @@ const (
 	ActionCurate DashboardActionKind = "curate"
 )
 
-// DashboardActionKinds is the closed set of writer actions.
-func DashboardActionKinds() []DashboardActionKind {
-	return []DashboardActionKind{ActionPromote, ActionIgnore, ActionMerge, ActionCurate}
-}
-
 // DashboardAction is one writer action, recorded in the dashboard body so a later poll replays it.
 // A merge names two groups: the first is the one the dashboard keeps. Applying a merge to the
 // reports behind both groups belongs to the writer-command ticket; this draws only what it is told.

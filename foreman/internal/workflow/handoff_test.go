@@ -14,9 +14,9 @@ var _ = Describe("the handoff label table", func() {
 			Expect(ok).To(BeTrue())
 			Expect(got).To(Equal(queued))
 
-			got, ok = workflow.Running(role)
+			owner, ok := workflow.RoleOf(running)
 			Expect(ok).To(BeTrue())
-			Expect(got).To(Equal(running))
+			Expect(owner).To(Equal(role))
 		},
 		Entry(nil, workflow.Planner, workflow.Plan, workflow.Planning),
 		Entry(nil, workflow.Researcher, workflow.Research, workflow.Researching),
@@ -190,21 +190,21 @@ var _ = Describe("the latest transition", func() {
 			{Body: marker(workflow.Implementer, "r2", workflow.Review) + "\n\nopened"},
 		}
 
-		got, found, err := workflow.LatestTransition(comments)
+		got, found, err := workflow.LatestMarker(comments)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(got.RunID).To(Equal("r2"))
-		Expect(got.To).To(Equal(workflow.Review))
+		Expect(got.Transition.RunID).To(Equal("r2"))
+		Expect(got.Transition.To).To(Equal(workflow.Review))
 	})
 
 	It("finds none when no comment is a marker", func() {
-		_, found, err := workflow.LatestTransition([]workflow.Item{{Body: "hello"}})
+		_, found, err := workflow.LatestMarker([]workflow.Item{{Body: "hello"}})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
 
 	It("fails closed on a malformed latest marker", func() {
-		_, _, err := workflow.LatestTransition([]workflow.Item{{Body: "<!-- factory:handoff nope -->"}})
+		_, _, err := workflow.LatestMarker([]workflow.Item{{Body: "<!-- factory:handoff nope -->"}})
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -297,13 +297,6 @@ var _ = Describe("writers", func() {
 		Entry(nil, "", false),
 		Entry(nil, "WRITE", false),
 	)
-
-	It("counts a comment by a writer", func() {
-		comments := []workflow.Item{{Author: "o", Body: "please"}, {Author: "stranger", Body: "hi"}}
-
-		Expect(workflow.WriterComment(comments, map[string]bool{"o": true})).To(BeTrue())
-		Expect(workflow.WriterComment(comments, map[string]bool{"coder": true})).To(BeFalse())
-	})
 })
 
 var _ = Describe("the Blocked by fallback", func() {
