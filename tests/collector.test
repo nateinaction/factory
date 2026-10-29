@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# What the collector role renders to: OTLP on loopback only, an attribute allowlist that redacts
+# everything else, span-derived metrics, a bounded local buffer, and a backend exporter only once
+# one is named. Run against the real group_vars; no host and no collector binary needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+}
+
+# conf <python>: runs the assertions with the parsed config `c` and the group_vars `v` in scope.
+conf() {
+  python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+c, v = d["c"], d["v"]
+exec(sys.argv[2])
+' "$out/config.json" "$1"
+}
+
+render() {
+  if ! COLLECTOR_BACKEND="$1" ansible-playbook "$root/tests/collector.yml" >"$out/.log" 2>&1; then
+    cat "$out/.log" >&2
+    echo "FAIL render playbook" >&2
+    exit 1
+  fi
+}
+
+# --- no backend yet ---
+render ""
+
+check "OTLP gRPC listens on loopback" conf \
+  'assert c["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"] == "127.0.0.1:4317"'
+check "OTLP HTTP listens on loopback" conf \
+  'assert c["receivers"]["otlp"]["protocols"]["http"]["endpoint"] == "127.0.0.1:4318"'
+check "nothing in the config binds a wildcard address" bash -c "! grep -E '0\.0\.0\.0|\[::\]' '$out/config.yaml'"
+check "the collector's own metrics endpoint is off" conf \
+  'assert c["service"]["telemetry"]["metrics"]["level"] == "none"'
+check "redaction drops every key but the allowlist" conf '
+r = c["processors"]["redaction"]
+assert r["allow_all_keys"] is False
+assert r["allowed_keys"] == v["factory_collector_allowed_attributes"]
+'
+check "redaction runs on traces and metrics before anything leaves" conf '
+for name in ("traces", "metrics"):
+    procs = c["service"]["pipelines"][name]["processors"]
+    assert procs.index("memory_limiter") < procs.index("redaction") < procs.index("batch"), name
+'
+check "spanmetrics turns spans into metrics" conf '
+p = c["service"]["pipelines"]
+assert "spanmetrics" in c["connectors"]
+assert "spanmetrics" in p["traces"]["exporters"]
+assert "spanmetrics" in p["metrics"]["receivers"]
+'
+check "spanmetrics dimensions stay inside the allowlist" conf '
+dims = [d["name"] for d in c["connectors"]["spanmetrics"].get("dimensions", [])]
+assert set(dims) <= set(v["factory_collector_allowed_attributes"]), dims
+'
+check "no backend means nothing is exported" conf '
+assert not [k for k in c["exporters"] if k.startswith("otlp")]
+for name in ("traces", "metrics"):
+    assert "nop" in c["service"]["pipelines"][name]["exporters"], name
+'
+
+# --- backend named ---
+render "telemetry.example:4317"
+
+check "a named backend receives traces and metrics" conf '
+e = c["exporters"]["otlp_grpc/backend"]
+assert e["endpoint"] == "telemetry.example:4317"
+for name in ("traces", "metrics"):
+    assert "otlp_grpc/backend" in c["service"]["pipelines"][name]["exporters"], name
+'
+check "the unreachable-server buffer is bounded and survives a restart" conf '
+q = c["exporters"]["otlp_grpc/backend"]["sending_queue"]
+assert q["enabled"] is True
+assert q["queue_size"] == v["factory_collector_queue_size"]
+assert q["storage"] in c["service"]["extensions"]
+assert q["storage"].startswith("file_storage")
+'
+check "the memory limit is set" conf \
+  'assert c["processors"]["memory_limiter"]["limit_mib"] == v["factory_collector_memory_limit_mib"]'
+
+unit="$out/otelcol.service"
+check "the unit runs as the unprivileged collector user" grep -Fxq 'User=otelcol' "$unit"
+check "the unit runs the contrib binary on the rendered config" \
+  grep -Fxq 'ExecStart=/nix/var/nix/profiles/default/bin/otelcol-contrib --config=/etc/otelcol/config.yaml' "$unit"
+
+[ "$failures" -eq 0 ]

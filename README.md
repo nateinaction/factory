@@ -13,6 +13,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
 | `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the factory's own forked skills (`roles/agent/files/skills/`, each naming the upstream path and ref it was forked from; nothing is cloned or pinned upstream at run time), and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
+| `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards to `factory_collector_backend_endpoint` once one is set. The egress proxy refuses loopback, so a sandboxed run cannot reach it |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
 ## Use

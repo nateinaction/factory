@@ -250,3 +250,31 @@ factory_srt_version: "0.0.81"
 # an issue here; a private repository's lesson is copied here by a writer's `publish`. Leave it empty to
 # fail those promotions closed.
 factory_repo: nateinaction/factory
+
+# The OpenTelemetry Collector (contrib distribution, from the nixpkgs revision above) on every host.
+# It receives foreman's OTLP on loopback only. Do not widen the host: a sandboxed run must not reach
+# it, and the egress proxy refuses loopback.
+factory_collector: true
+factory_collector_user: otelcol
+factory_collector_host: 127.0.0.1
+factory_collector_grpc_port: 4317
+factory_collector_http_port: 4318
+# Where the collector forwards (OTLP gRPC). Empty until the telemetry backend exists; the collector
+# then keeps receiving and deriving metrics, and exports nothing.
+factory_collector_backend_endpoint: ""
+# Attributes (span, resource and metric) that may leave the host. Everything else is redacted, so a
+# new attribute is dropped until someone adds it here. The first four are spanmetrics' own dimensions.
+factory_collector_allowed_attributes:
+  - service.name
+  - span.name
+  - span.kind
+  - status.code
+  - service.version
+  - host.name
+  - factory.agent_role
+  - factory.outcome
+# Fixed bounds. While the backend is unreachable the queue holds at most this many batches, each of at
+# most factory_collector_batch_size spans or data points; memory is capped separately.
+factory_collector_queue_size: 1000
+factory_collector_batch_size: 512
+factory_collector_memory_limit_mib: 128

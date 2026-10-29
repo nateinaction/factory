@@ -19,6 +19,8 @@
     - nix
     - users
     - dagu
+    - role: collector
+      when: factory_collector | bool
     - role: github_app
       when: factory_github_app | bool
     - role: agent

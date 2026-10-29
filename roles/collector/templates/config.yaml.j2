@@ -1,0 +1,75 @@
+# {{ ansible_managed }}
+# Receives foreman's OTLP on loopback, keeps only allowlisted attributes, derives run counts and
+# durations from spans, and forwards to the telemetry backend once one is named.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: {{ factory_collector_host }}:{{ factory_collector_grpc_port }}
+      http:
+        endpoint: {{ factory_collector_host }}:{{ factory_collector_http_port }}
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: {{ factory_collector_memory_limit_mib }}
+  # Anything not in allowed_keys is redacted, so a new attribute is dropped until it is added to
+  # factory_collector_allowed_attributes. summary: info logs which keys were dropped, never values.
+  redaction:
+    allow_all_keys: false
+    allowed_keys:
+{% for key in factory_collector_allowed_attributes %}
+      - {{ key }}
+{% endfor %}
+    summary: info
+  batch:
+    send_batch_size: {{ factory_collector_batch_size }}
+    send_batch_max_size: {{ factory_collector_batch_size }}
+    timeout: 5s
+
+connectors:
+  # Run counts and duration histograms come from spans, so a short-lived foreman process needs no
+  # scrape endpoint. Its dimensions are only what the allowlist already admits.
+  spanmetrics:
+    dimensions:
+      - name: factory.agent_role
+      - name: factory.outcome
+
+exporters:
+  nop: {}
+{% if factory_collector_backend_endpoint | length > 0 %}
+  otlp_grpc/backend:
+    endpoint: {{ factory_collector_backend_endpoint }}
+    # Buffers locally, within a fixed size, while the backend is unreachable. The file storage keeps
+    # the buffer across a collector restart.
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+{% endif %}
+
+{% if factory_collector_backend_endpoint | length > 0 %}
+extensions:
+  file_storage/queue:
+    directory: /var/lib/otelcol/queue
+
+{% endif %}
+service:
+{% if factory_collector_backend_endpoint | length > 0 %}
+  extensions: [file_storage/queue]
+{% endif %}
+  telemetry:
+    metrics:
+      level: none # no self-metrics endpoint: the collector serves nothing but OTLP
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [spanmetrics, nop{% if factory_collector_backend_endpoint | length > 0 %}, otlp_grpc/backend{% endif %}]
+    metrics:
+      receivers: [otlp, spanmetrics]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [nop{% if factory_collector_backend_endpoint | length > 0 %}, otlp_grpc/backend{% endif %}]
