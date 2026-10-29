@@ -136,6 +136,17 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.runImpl(agent)).Error().NotTo(HaveOccurred())
 	})
 
+	It("fails the run when the model prints a line over the line limit", func() {
+		// The step after the oversized line is never parsed, so the stream cannot be read as a run
+		// that finished.
+		h.answerOpencode(`{"type":"text","sessionID":"ses_1","part":{"text":"` +
+			strings.Repeat("x", 4<<20) + `"}}` + "\n" + okStream("ses_1"))
+
+		_, err := h.runImpl(testAgent())
+		Expect(err).To(MatchError(ContainSubstring("line over")))
+		Expect(h.runCalls()).To(HaveLen(1), "a stream foreman could not read is not retried")
+	})
+
 	DescribeTable("passes compaction per agent role as inline config",
 		func(on bool) {
 			agent := testAgent()

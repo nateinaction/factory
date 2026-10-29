@@ -192,8 +192,10 @@ type Stream struct {
 const maxStreamLine = 4 << 20
 
 // ParseStream reads opencode's JSON lines. Lines that are not events are ignored: the stream is
-// best-effort telemetry, and the exit code and error events decide failure.
-func ParseStream(out string) Stream {
+// best-effort telemetry, and the exit code and error events decide failure. A line over
+// maxStreamLine fails the parse: everything after it, including the failure and the usage the stream
+// would report, was never read, so the stream cannot be taken as complete.
+func ParseStream(out string) (Stream, error) {
 	var s Stream
 
 	sc := bufio.NewScanner(strings.NewReader(out))
@@ -208,7 +210,11 @@ func ParseStream(out string) Stream {
 		s.observe(e)
 	}
 
-	return s
+	if err := sc.Err(); err != nil {
+		return s, fmt.Errorf("opencode's output has a line over %d bytes: %w", maxStreamLine, err)
+	}
+
+	return s, nil
 }
 
 // observe folds one event into the stream: its session, its step and its usage, or its first failure.

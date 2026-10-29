@@ -5,11 +5,13 @@ package prompt
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/nateinaction/factory/foreman/internal/boundedfile"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -65,7 +67,7 @@ func ReadRepoDocs(dir string) ([]Doc, error) {
 	budget := DocsLimitChars
 
 	for _, rel := range paths {
-		raw, err := root.ReadFile(rel)
+		raw, err := readDoc(root, rel)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // a repository need not have every document; setup checks are a separate rule
 		}
@@ -359,4 +361,18 @@ func Retro(r RetroRequest) string {
 	}
 
 	return b.String()
+}
+
+// readDoc reads at most the first DocsLimitChars characters' worth of bytes of a regular file under
+// root. A character is at most utf8.UTFMax bytes, so this never drops text the cap would keep, and a
+// document the repository made enormous is not read whole.
+func readDoc(root *os.Root, rel string) ([]byte, error) {
+	f, err := boundedfile.Open(root, rel)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(f, int64(DocsLimitChars)*utf8.UTFMax))
+
+	return raw, errors.Join(err, f.Close())
 }
