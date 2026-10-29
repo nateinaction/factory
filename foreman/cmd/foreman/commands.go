@@ -81,19 +81,37 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 	return root, nil
 }
 
-// executeCommand runs one command line. When sudo started foreman, the line may carry no flag at all:
-// only `run` and its three positional arguments are permitted, so a flag cannot point the factory half
-// at another sandbox binary, key file, skills directory, config or foreman itself. It is checked
-// against the raw arguments, before cobra parses or acts on anything, so even --help is refused.
-func executeCommand(ctx context.Context, root *cobra.Command, args []string, underSudo bool) (*cobra.Command, error) {
-	if underSudo {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "-") {
-				return root, fmt.Errorf(
-					"sudo permits only the agent role, repository and issue: refusing %q", arg,
-				)
-			}
+// sudoRunArgs is the exact command line sudo may start: the verb `run` and its three positional
+// arguments, the agent role, repository and issue.
+const sudoRunArgs = roleArgCount + 1
+
+// sudoRun reports whether args is exactly the one shape sudo permits: the verb `run` followed by
+// exactly three positional arguments, with no flag anywhere. Nothing else is a run, so no flag can
+// point the factory half at another sandbox binary, key file, skills directory, config or foreman
+// itself, and no other verb or an extra positional can run as the factory user.
+func sudoRun(args []string) bool {
+	if len(args) != sudoRunArgs || args[0] != "run" {
+		return false
+	}
+
+	for _, arg := range args[1:] {
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			return false
 		}
+	}
+
+	return true
+}
+
+// executeCommand runs one command line. When sudo started foreman, only `run` with exactly its three
+// positional arguments is permitted. It is checked against the raw arguments, before cobra parses or
+// acts on anything, so even --help is refused.
+func executeCommand(ctx context.Context, root *cobra.Command, args []string, underSudo bool) (*cobra.Command, error) {
+	if underSudo && !sudoRun(args) {
+		return root, fmt.Errorf(
+			"sudo permits only `foreman run` followed by exactly the agent role, repository and issue: "+
+				"refusing %q", strings.Join(args, " "),
+		)
 	}
 
 	root.SetArgs(args)

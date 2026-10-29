@@ -219,10 +219,10 @@ var _ = Describe("the foreman command", func() {
 			h.sudo = true
 		})
 
-		DescribeTable("refuses every flag before anything runs",
+		DescribeTable("refuses everything but a run with exactly its three arguments",
 			func(args ...string) {
 				Expect(h.execute(args...)).To(Equal(ExitUsage))
-				Expect(h.logs.String()).To(ContainSubstring("sudo permits only the agent role, repository and issue"))
+				Expect(h.logs.String()).To(ContainSubstring("sudo permits only `foreman run`"))
 				Expect(h.runner.cmds).To(BeEmpty())
 			},
 			Entry("a settings flag", "run", "--srt", "/tmp/elsewhere", "implementer", "o/r", "5"),
@@ -231,6 +231,15 @@ var _ = Describe("the foreman command", func() {
 			Entry("an assigned flag", "run", "--srt=/tmp/elsewhere", "implementer", "o/r", "5"),
 			Entry("a help flag", "run", "--help"),
 			Entry("a flag on another verb", "start", "--key-file", "/tmp/elsewhere", "implementer", "o/r", "5"),
+			Entry("poll", "poll"),
+			Entry("status", "status"),
+			Entry("logs", "logs", "o/r", "5"),
+			Entry("start", "start", "implementer", "o/r", "5"),
+			Entry("run with no arguments", "run"),
+			Entry("run with one argument", "run", "implementer"),
+			Entry("run with two arguments", "run", "implementer", "o/r"),
+			Entry("run with an extra argument", "run", "implementer", "o/r", "5", "extra"),
+			Entry("an empty argument", "run", "implementer", "", "5"),
 		)
 
 		It("accepts the agent role, repository and issue", func() {
