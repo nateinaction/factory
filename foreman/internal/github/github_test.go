@@ -357,9 +357,18 @@ var _ = Describe("Client", func() {
 			pr = pullRequest()
 		})
 
-		It("approves a clean review", func() {
-			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", true)).To(Succeed())
-			Expect(p.Bodies("POST", reviewPath(pr))).To(ConsistOf(ContainSubstring(`"event":"APPROVE"`)))
+		It("posts an approval as a native review", func() {
+			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", workflow.Approve)).To(Succeed())
+			Expect(p.Bodies("POST", reviewPath(pr))).To(ConsistOf(And(
+				ContainSubstring(`"event":"APPROVE"`), ContainSubstring(`"commit_id":"sha"`),
+			)))
+		})
+
+		It("posts a request for changes as a native review", func() {
+			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", workflow.RequestChanges)).To(Succeed())
+			Expect(p.Bodies("POST", reviewPath(pr))).To(ConsistOf(And(
+				ContainSubstring(`"event":"REQUEST_CHANGES"`), ContainSubstring(`"commit_id":"sha"`),
+			)))
 		})
 
 		It("falls back to a comment review when GitHub refuses the approval", func() {
@@ -375,21 +384,83 @@ var _ = Describe("Client", func() {
 
 				p.Forward(w, r)
 			})
-			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", true)).To(Succeed())
+			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", workflow.Approve)).To(Succeed())
 
 			got := p.Bodies("POST", reviewPath(pr))
 			Expect(got).To(HaveLen(2))
 			Expect(got[1]).To(And(ContainSubstring(`"event":"COMMENT"`), ContainSubstring("also the pull request's author")))
 		})
 
-		It("posts findings as a comment review", func() {
-			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", false)).To(Succeed())
-			Expect(p.Bodies("POST", reviewPath(pr))).To(ConsistOf(ContainSubstring(`"event":"COMMENT"`)))
+		It("falls back to a comment review when GitHub refuses the request for changes", func() {
+			n := 0
+
+			p.Handle("POST /repos/o/r/pulls/"+itoa(pr.Number)+"/reviews", func(w http.ResponseWriter, r *http.Request) {
+				n++
+				if n == 1 {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+
+					return
+				}
+
+				p.Forward(w, r)
+			})
+
+			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "body", workflow.RequestChanges)).To(Succeed())
+			Expect(p.Bodies("POST", reviewPath(pr))).To(ContainElement(ContainSubstring(`"event":"COMMENT"`)))
 		})
 
 		It("passes on any other error", func() {
 			p.Status("POST /repos/o/r/pulls/"+itoa(pr.Number)+"/reviews", http.StatusInternalServerError)
-			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "b", true)).NotTo(Succeed())
+			Expect(c.PostReview(ctx, "o/r", pr.Number, "sha", "b", workflow.Approve)).NotTo(Succeed())
+		})
+	})
+
+	Describe("UpdatePR", func() {
+		It("updates the pull request's title and body", func() {
+			pr := pullRequest()
+
+			Expect(c.UpdatePR(ctx, "o/r", pr.Number, "New", "New body")).To(Succeed())
+			Expect(p.Bodies("PATCH", "/repos/o/r/pulls/"+itoa(pr.Number))).To(ConsistOf(And(
+				ContainSubstring(`"title":"New"`), ContainSubstring(`"body":"New body"`),
+			)))
+		})
+	})
+
+	Describe("PostReplies", func() {
+		It("comments the replies on the pull request, keyed by commit", func() {
+			pr := pullRequest()
+
+			Expect(c.PostReplies(ctx, "o/r", pr.Number, "sha", "replies")).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(ConsistOf(
+				ContainSubstring("replies")))
+		})
+
+		It("updates the keyed comment instead of adding a second", func() {
+			pr := pullRequest()
+			body := workflow.RepliesMarker("sha") + "\nold"
+			Expect(emulator.Do(ctx, http.MethodPost, "/repos/o/r/issues/"+itoa(pr.Number)+"/comments",
+				ghtest.AdminToken, map[string]string{"body": body}, nil)).To(Succeed())
+
+			Expect(c.PostReplies(ctx, "o/r", pr.Number, "sha", "again")).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(pr.Number)+"/comments")).To(BeEmpty(), "posted a duplicate")
+			Expect(p.Summary()).To(ContainElement(ContainSubstring("PATCH /repos/o/r/issues/comments/")))
+		})
+	})
+
+	Describe("RequestReviewers", func() {
+		It("asks the named people to review the pull request", func() {
+			pr := pullRequest()
+
+			Expect(c.RequestReviewers(ctx, "o/r", pr.Number, []string{"o"})).To(Succeed())
+			Expect(p.Bodies("POST", "/repos/o/r/pulls/"+itoa(pr.Number)+"/requested_reviewers")).To(ConsistOf(
+				ContainSubstring(`"reviewers":["o"]`)))
+		})
+
+		It("asks for nothing when there is no one to ask", func() {
+			pr := pullRequest()
+
+			Expect(c.RequestReviewers(ctx, "o/r", pr.Number, nil)).To(Succeed())
+			Expect(p.Calls()).To(BeEmpty())
 		})
 	})
 })
