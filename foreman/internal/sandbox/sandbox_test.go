@@ -70,8 +70,10 @@ var _ = Describe("Spec", func() {
 		Expect(got.Filesystem.DenyRead).To(ConsistOf(append([]string{"/"}, layout.Hidden...)),
 			"the host is hidden by default, not only the named sensitive paths")
 		Expect(got.Filesystem.AllowRead).To(ContainElements(
-			"/nix/store", "/usr", layout.Skills, layout.RunDir, layout.Clone),
+			"/nix/store", "/usr", "/private/var", layout.Skills, layout.RunDir, layout.Clone),
 			"the operating system and this run's paths are bound back")
+		Expect(got.Filesystem.AllowRead).NotTo(ContainElements("/opt", "/Library"),
+			"a path outside the toolchain's needs must not widen the documented allowlist")
 		Expect(got.Filesystem.AllowWrite).To(ConsistOf(layout.RunDir, layout.Scratch, layout.Clone),
 			"the scratch directory covers the output file")
 		Expect(got.Filesystem.DenyWrite).To(ConsistOf(filepath.Join(layout.Clone, ".git")))
