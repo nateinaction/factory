@@ -110,6 +110,42 @@
         mode: "0440"
         validate: visudo -cf %s
 
+    # Enrollment is where an OS the sandbox adapter cannot serve is refused. srt is the only backend,
+    # and it uses Seatbelt on macOS and bubblewrap on Linux; the hosts are Linux.
+    - name: Fail on a worker host the sandbox cannot serve
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['system'] == 'Linux'
+          - ansible_facts['architecture'] in ['aarch64', 'x86_64']
+        fail_msg: >-
+          the sandbox serves Linux arm64 and amd64 worker hosts only; this host is
+          {{ ansible_facts['system'] }}/{{ ansible_facts['architecture'] }}
+
+    - name: Install the pinned sandbox runtime
+      ansible.builtin.command: >-
+        /nix/var/nix/profiles/default/bin/nix profile add
+        --profile /nix/var/nix/profiles/default
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#sandbox-runtime
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#bubblewrap
+        github:NixOS/nixpkgs/{{ factory_nixpkgs_rev }}#socat
+      args:
+        creates: /nix/var/nix/profiles/default/bin/srt
+      environment:
+        PATH: /nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+
+    - name: Read the installed sandbox runtime version
+      ansible.builtin.command: /nix/var/nix/profiles/default/bin/srt --version
+      register: agent_srt_installed
+      changed_when: false
+      check_mode: false
+
+    - name: Fail on a sandbox runtime other than the pinned version
+      ansible.builtin.assert:
+        that: agent_srt_installed.stdout | trim == factory_srt_version
+        fail_msg: >-
+          sandbox runtime {{ agent_srt_installed.stdout | trim }} is installed, but the factory pins
+          {{ factory_srt_version }}; update factory_nixpkgs_rev and factory_srt_version together
+
     - name: Map the CPU architecture to opencode's release naming
       ansible.builtin.set_fact:
         opencode_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"

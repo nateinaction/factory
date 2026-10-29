@@ -1,6 +1,6 @@
 {#- foreman's view of factory_models: model, context cap and compaction per agent role. -#}
 {%- set agents = {} -%}
 {%- for role, m in factory_models.items() -%}
-{%- set _ = agents.update({role: {'model': m.model, 'context_cap': m.context_cap | default(factory_context_cap) | int, 'compaction': m.compaction}}) -%}
+{%- set _ = agents.update({role: {'model': m.model, 'context_cap': m.context_cap | default(factory_context_cap) | int, 'compaction': m.compaction, 'egress': {'allowed_domains': factory_egress.get(role, [])}}}) -%}
 {%- endfor -%}
 {{ {'roles': github_apps | list | sort, 'agents': agents} | to_nice_json }}

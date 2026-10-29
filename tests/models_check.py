@@ -26,6 +26,9 @@ def main(out: str) -> None:
     assert family("reviewer") != family("implementer"), "reviewer and implementer share a model family"
     on = sorted(r for r in ROLES if cfg["agents"][r]["compaction"])
     assert on == ["implementer", "researcher"], "compaction on for " + str(on)
+    for role in ROLES:
+        egress = cfg["agents"][role]["egress"]["allowed_domains"]
+        assert isinstance(egress, list), role + ": egress is not a list"
     assert "model" not in oc, "a global model would let an agent role fall back to it"
 
 
