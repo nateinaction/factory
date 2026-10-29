@@ -34,6 +34,8 @@ type Cmd struct {
 	Timeout time.Duration
 	// Capture returns stdout instead of passing it through.
 	Capture bool
+	// Stderr receives the process's standard error in place of the runner's own.
+	Stderr io.Writer
 }
 
 // ExitError is a process that ran and exited non-zero.
@@ -96,6 +98,10 @@ func (r ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	}
 
 	cmd.Stderr = r.Stderr
+	if c.Stderr != nil {
+		cmd.Stderr = c.Stderr
+	}
+
 	err := cmd.Run()
 
 	return waitResult(c.Argv[0], captured.String(), ctx.Err(), err)
