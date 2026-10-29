@@ -60,6 +60,12 @@ _Avoid_: orchestrator, coordinator, workflow engine
 A host that runs agent role runs for the factory; it takes the agent roles it lists, or all of them.
 _Avoid_: runner, node, slot
 
+**Security event**:
+One structured log record for something the factory refused or detected, carrying a stable event name,
+an outcome and the host concerned, and never a token, a key or a request header. The egress proxy emits
+one for every request it refuses; docs are in `foreman/docs/sandbox.md`.
+_Avoid_: security log, alert, audit line
+
 **Ansible role**:
 A unit of host provisioning under `roles/`.
 _Avoid_: role (bare)

@@ -63,8 +63,10 @@ type EgressProxy interface {
 	URL() string
 	// Address is the loopback host:port srt settings point at.
 	Address() string
-	// Domains is every host the run was refused or reached: the proxy records a refusal too.
+	// Domains is every host the proxy allowed.
 	Domains() []string
+	// Refused is every host the proxy refused, listed apart from the allowed ones.
+	Refused() []string
 	// Close stops the proxy.
 	Close() error
 }

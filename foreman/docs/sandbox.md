@@ -109,7 +109,8 @@ The adapter therefore gives srt one loopback port and delegates the decision to
 - srt settings set `network.httpProxyPort` to the run's egress proxy, so srt still blocks direct
   outbound traffic and routes HTTP(S) through that port.
 - The egress proxy enforces the agent role's allowlist (empty means open), refuses anything else, and
-  records every host it is asked for — allowed or refused — for the usage line.
+  records every host it is asked for for the usage line: `domains` lists the allowed hosts and
+  `refused_domains` the refused ones, apart. Each refused request also emits a security event (below).
 - It also refuses a destination whose address is not publicly routable, whatever the allowlist
   says: loopback, private space, shared space (`100.64.0.0/10`, which is where a tailnet lives),
   link-local addresses including `169.254.169.254`, `0.0.0.0/8`, multicast and unspecified
@@ -132,6 +133,27 @@ This is a deliberate deviation from "srt's proxy is always in front": srt's prox
 the forwarding decision and the domain log live in foreman's proxy, which srt forces all HTTP
 traffic through. The OpenRouter key never enters the sandbox; only the key proxy holds it. The
 decision is recorded in `docs/adr/0001-egress-proxy-in-front-of-srt.md`.
+
+### Security events
+
+The proxy emits one structured **security event** (a `slog` record at warn level, defined in
+`foreman/internal/security`) for every request it does not allow, on the `CONNECT`, plain-HTTP and API
+paths. An allowed request emits none. Later tickets reuse this shape.
+
+| Field        | Meaning                                                                          |
+| ------------ | -------------------------------------------------------------------------------- |
+| `msg`        | always `security event`, so one filter finds them all                            |
+| `event`      | stable event name; `egress_refused` for a refused proxy request                  |
+| `outcome`    | why: `refused_by_policy`, `refused_not_routable`, `refused_tunnel_limit`, `refused_bad_token` |
+| `host`       | the destination asked for (`openrouter.ai` for an API-path refusal)              |
+| `agent_role` | the run's agent role                                                             |
+| `repository` | the run's repository, `owner/name`                                               |
+| `issue`      | the run's issue number                                                           |
+
+`refused_by_policy` covers a host the allowlist leaves out, a path the proxy does not serve and a
+malformed `CONNECT` destination; `refused_not_routable` an address that is not publicly routable;
+`refused_tunnel_limit` a tunnel past `MaxTunnels`; `refused_bad_token` a missing or wrong run token.
+The event carries only these fields: never the run token, the key or a request header.
 
 ## Fail closed
 

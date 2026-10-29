@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
@@ -296,7 +298,10 @@ var _ = Describe("the opencode adapter", func() {
 
 				return proxy, nil
 			}
-			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
+			egress := &fakeEgress{
+				url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"},
+				refused: []string{"blocked.example"},
+			}
 			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
@@ -313,6 +318,8 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
 			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
+			Expect(lines[0]).To(HaveKeyWithValue("refused_domains", []any{"blocked.example"}),
+				"refused domains are listed apart from allowed ones")
 		})
 
 		It("is one JSON line per run, summed over the run and its retro", func() {
@@ -342,6 +349,83 @@ var _ = Describe("the opencode adapter", func() {
 			}
 
 			Expect(lines[0]["missing"]).To(HaveLen(6))
+		})
+
+		It("carries the duration, the attempts and the outcome of a run that succeeds", func() {
+			// A clock that moves one second per reading makes the duration a whole number of seconds.
+			tick := time.Date(2026, 10, 28, 10, 0, 0, 0, time.UTC)
+			h.deps.Now = func() time.Time { tick = tick.Add(time.Second); return tick }
+
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("attempts", 1.0), HaveKeyWithValue("outcome", "handed_off"),
+				Not(HaveKey("failure_kind")),
+			))
+			Expect(lines[0]["duration_ms"]).To(BeNumerically(">=", 1000))
+			duration, isNumber := lines[0]["duration_ms"].(float64)
+			Expect(isNumber).To(BeTrue(), "duration_ms is not a number")
+			Expect(math.Mod(duration, 1000)).To(BeZero())
+			Expect(lines[0]["missing"]).NotTo(ContainElements("duration_ms", "attempts"))
+		})
+
+		It("counts the attempts of a model that is retried and then succeeds", func() {
+			h.answerOpencode(errStream("APIError", 429), okStream("ses_1"))
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("attempts", 2.0), HaveKeyWithValue("outcome", "handed_off"),
+				Not(HaveKey("failure_kind")),
+			))
+		})
+
+		DescribeTable("names the failure kind of a run that fails",
+			func(stream string, attempts float64, kind string, agent func(config.AgentConfig) config.AgentConfig) {
+				h.answerOpencode(stream)
+				_, err := h.runImpl(agent(testAgent()))
+				Expect(err).To(HaveOccurred())
+
+				lines := h.usageLines()
+				Expect(lines).To(HaveLen(1))
+				Expect(lines[0]).To(SatisfyAll(
+					HaveKeyWithValue("outcome", "failed"), HaveKeyWithValue("failure_kind", kind),
+					HaveKeyWithValue("attempts", attempts),
+				))
+			},
+			Entry("rate limit", errStream("APIError", 429), 3.0, "rate limit", same),
+			Entry("server", errStream("APIError", 503), 3.0, "server error", same),
+			Entry("timeout", errStream("TimeoutError", 0), 3.0, "timeout", same),
+			Entry("step cap", stepsStream(3), 1.0, "step cap", func(a config.AgentConfig) config.AgentConfig {
+				a.Steps = 3
+
+				return a
+			}),
+			Entry("other", errStream("APIError", 400), 1.0, "model error", same),
+		)
+
+		It("lists the attempts as missing for a run that failed before the model ran", func() {
+			h.deps.Settings.KeyFile = filepath.Join(h.dir, "no-such-key")
+			_, err := h.runImpl(testAgent())
+			Expect(err).To(HaveOccurred())
+
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("outcome", "failed"), HaveKeyWithValue("failure_kind", "model error"),
+				Not(HaveKey("attempts")),
+			))
+			Expect(lines[0]["missing"]).To(ContainElement("attempts"))
+		})
+
+		It("reports a review that found problems as rework", func() {
+			h.reviewerGH(nil)
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
+			Expect(Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)).
+				To(Equal(workflow.ReviewFindings))
+			Expect(h.usageLines()).To(ConsistOf(HaveKeyWithValue("outcome", "rework")))
 		})
 
 		It("is still logged when the run fails", func() {
@@ -389,3 +473,6 @@ var _ = Describe("the opencode adapter", func() {
 			ContainSubstring("#5"), ContainSubstring("work")))
 	})
 })
+
+// same leaves an agent role's config as it is.
+func same(a config.AgentConfig) config.AgentConfig { return a }
