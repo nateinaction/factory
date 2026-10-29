@@ -1,0 +1,9 @@
+[Unit]
+Description=Write the SoC temperature and throttling bits for node_exporter
+After=local-fs.target
+Documentation=file:///usr/local/bin/factory-host-health
+
+[Service]
+Type=oneshot
+Environment=TEXTFILE_DIR={{ factory_host_health_textfile_dir }}
+ExecStart=/usr/local/bin/factory-host-health

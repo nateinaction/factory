@@ -273,11 +273,37 @@ factory_collector_allowed_attributes:
   - host.name
   - factory.agent_role
   - factory.outcome
+  # Host health's metric attributes: the disk's mountpoint, device and filesystem type, and the
+  # throttling bit's kind and state (now or since boot).
+  - mountpoint
+  - fstype
+  - device
+  - kind
+  - state
 # Fixed bounds. While the backend is unreachable the queue holds at most this many batches, each of at
 # most factory_collector_batch_size spans or data points; memory is capped separately.
 factory_collector_queue_size: 1000
 factory_collector_batch_size: 512
 factory_collector_memory_limit_mib: 128
+
+# Host health, on every host. node_exporter (nixpkgs, loopback only) reports memory and filesystem
+# use; a timer writes the SoC temperature and the firmware's throttling bits to its textfile
+# collector, which node_exporter cannot read on a Pi. Each host's collector scrapes both and forwards
+# them, so a slow run can be told apart from a hot host. Do not widen node_exporter's host either.
+factory_host_health: true
+factory_host_health_host: 127.0.0.1
+factory_host_health_port: 9100
+factory_host_health_textfile_dir: /var/lib/node_exporter/textfile
+factory_host_health_interval_seconds: 30
+factory_host_health_scrape_interval: 30s
+# The metric families the collector keeps from node_exporter. Everything else node_exporter exposes
+# is dropped at scrape time, before any exporter sees it.
+factory_host_health_metrics:
+  - factory_host_.*
+  - node_memory_MemTotal_bytes
+  - node_memory_MemAvailable_bytes
+  - node_filesystem_size_bytes
+  - node_filesystem_avail_bytes
 
 # The telemetry backend, on the dagu server only (nixpkgs packages at the revision above): Prometheus
 # (OTLP metrics), Tempo (traces), Loki (diagnostics) and Grafana in front. Every service binds
@@ -305,3 +331,9 @@ factory_telemetry_memory_max_mib:
   tempo: 192
   loki: 192
   grafana: 160
+# A regex for a foreman run's root span name. The spanmetrics connector turns every span into
+# traces_span_metrics_duration (in Prometheus, traces_span_metrics_duration_bucket); the dashboard's
+# run-duration panel keeps only names matching this, so it reports the run, not its stages. It covers
+# the names the tracing tickets may pick; an operator can override it in the dashboard without a
+# redeploy.
+factory_telemetry_run_span: "(foreman[. ])?run"

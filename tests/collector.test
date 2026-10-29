@@ -91,6 +91,10 @@ for name in ("otlp_grpc/traces", "otlp_http/metrics", "otlp_http/logs"):
     assert q["storage"] in c["service"]["extensions"]
     assert q["storage"].startswith("file_storage")
 '
+check "the collector creates its queue directory, so a fresh host does not crash-loop" conf '
+storage = next(v for k, v in c["extensions"].items() if k.startswith("file_storage"))
+assert storage.get("create_directory") is True, storage
+'
 check "the memory limit is set" conf \
   'assert c["processors"]["memory_limiter"]["limit_mib"] == v["factory_collector_memory_limit_mib"]'
 

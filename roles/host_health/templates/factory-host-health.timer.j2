@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect the SoC temperature and throttling bits every {{ factory_host_health_interval_seconds }} seconds
+
+[Timer]
+OnBootSec={{ factory_host_health_interval_seconds }}s
+OnUnitActiveSec={{ factory_host_health_interval_seconds }}s
+AccuracySec=5s
+Unit=factory-host-health.service
+
+[Install]
+WantedBy=timers.target

@@ -13,6 +13,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
 | `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the factory's own forked skills (`roles/agent/files/skills/`, each naming the upstream path and ref it was forked from; nothing is cloned or pinned upstream at run time), and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
+| `host_health` | `node_exporter` on every host, loopback only, for memory and filesystem use, plus a timer that writes the SoC temperature and the firmware's throttling bits (`vcgencmd get_throttled`) to its textfile collector. Each host's `collector` scrapes both and forwards them |
 | `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards traces, metrics and diagnostics to the telemetry backend (`factory_collector_backend_host`). The egress proxy refuses loopback, so a sandboxed run cannot reach it |
 | `telemetry` | the telemetry backend on the dagu server, from nixpkgs: Prometheus (OTLP metrics), Tempo (traces), Loki (diagnostics) and Grafana in front. Every service binds loopback and `tailscale serve` exposes it to the tailnet only; every store is bounded by age or size; see ADR 0002 |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
@@ -125,6 +126,13 @@ To follow a run, open Explore with the Tempo datasource and search by the run's 
 links to the run's diagnostics (Loki) and metrics (Prometheus); in Loki, `{} | trace_id="<id>"`
 finds the diagnostics directly. Retention is `factory_telemetry_*_retention*`; the memory the stack
 may use is `factory_telemetry_memory_budget_mib`.
+
+Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
+host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk
+use, so a slow run can be told apart from a hot or throttled host. The run-duration panel matches
+the run's root span (`factory_telemetry_run_span`, a regex that covers `run` and `foreman.run` by
+default); the dashboard's "Run root span" variable overrides it for one view. Every host reports these with its own collector, via
+`host_health` (see `factory_host_health_*`); node_exporter and the collector both listen on loopback.
 
 ## Issue agent
 

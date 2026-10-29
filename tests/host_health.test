@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Host health: every host reports temperature, throttling, memory and disk use through its collector,
+# the dashboard pairs run duration with temperature and throttling per host, and the health reporter
+# writes its two metrics atomically, so a failure never leaves a partial or stale value. Run against
+# the real group_vars; no host needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+}
+
+# conf <python>: runs the assertions with the parsed collector `c`, dashboard `dash` and group_vars
+# `v` in scope.
+conf() {
+  python3 -I -c '
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+c, dash, v = data["collector"], data["dashboard"], data["v"]
+exec(sys.argv[2])
+' "$out/config.json" "$1"
+}
+
+if ! ansible-playbook "$root/tests/host_health.yml" >"$out/.log" 2>&1; then
+  cat "$out/.log" >&2
+  echo "FAIL render playbook" >&2
+  exit 1
+fi
+
+# --- every host reports the four signals through its collector ---
+check "the collector scrapes host health on loopback" conf '
+scrape = c["receivers"]["prometheus/host_health"]["config"]["scrape_configs"][0]
+targets = scrape["static_configs"][0]["targets"]
+assert targets == ["127.0.0.1:%d" % v["factory_host_health_port"]], targets
+assert scrape["scrape_interval"].endswith("s")
+assert "prometheus/host_health" in c["service"]["pipelines"]["metrics"]["receivers"]
+'
+check "only the health metric families are scraped" conf '
+keep = c["receivers"]["prometheus/host_health"]["config"]["scrape_configs"][0]["metric_relabel_configs"][0]
+assert keep["action"] == "keep", keep
+pattern = re.compile(keep["regex"])  # Prometheus anchors metric relabel regexes.
+for name in (
+    "factory_host_temperature_celsius",
+    "factory_host_throttled",
+    "node_memory_MemTotal_bytes",
+    "node_memory_MemAvailable_bytes",
+    "node_filesystem_size_bytes",
+    "node_filesystem_avail_bytes",
+):
+    assert pattern.fullmatch(name), name
+assert not pattern.fullmatch("node_load1"), keep["regex"]
+'
+check "every metric from a host names that host" conf '
+statements = c["processors"]["transform/host"]["metric_statements"]
+resource = next(s for s in statements if s["context"] == "resource")
+assert any("host.name" in statement for statement in resource["statements"]), resource
+processors = c["service"]["pipelines"]["metrics"]["processors"]
+assert processors.index("transform/host") < processors.index("redaction"), processors
+'
+check "the health metric attributes survive redaction" conf '
+allowed = c["processors"]["redaction"]["allowed_keys"]
+for key in ("host.name", "mountpoint", "fstype", "device", "kind", "state"):
+    assert key in allowed, key
+'
+
+# --- the health reporter's two metrics ---
+reporter="$root/roles/host_health/files/factory-host-health"
+textfile="$out/textfile"
+mkdir -p "$textfile"
+printf '54321\n' >"$out/temp"
+cat >"$out/vcgencmd" <<'EOF'
+#!/bin/sh
+echo "throttled=0x50005"
+EOF
+chmod +x "$out/vcgencmd"
+
+check "the reporter writes the SoC temperature in Celsius" env \
+  TEXTFILE_DIR="$textfile" THERMAL_ZONE="$out/temp" VCGENCMD="$out/vcgencmd" "$reporter"
+check "the temperature is the millidegrees reading over 1000" \
+  grep -Fxq 'factory_host_temperature_celsius 54.321' "$textfile/factory_host.prom"
+check "node_exporter's DynamicUser can read the reporter's file" python3 -I -c \
+  'import os,sys; assert (os.stat(sys.argv[1]).st_mode & 0o777) == 0o644, oct(os.stat(sys.argv[1]).st_mode)' \
+  "$textfile/factory_host.prom"
+check "the reporter writes the current throttling bits" bash -c "
+  grep -Fxq 'factory_host_throttled{kind=\"under_voltage\",state=\"now\"} 1' '$textfile/factory_host.prom' &&
+  grep -Fxq 'factory_host_throttled{kind=\"arm_frequency_capped\",state=\"now\"} 0' '$textfile/factory_host.prom' &&
+  grep -Fxq 'factory_host_throttled{kind=\"throttled\",state=\"now\"} 1' '$textfile/factory_host.prom' &&
+  grep -Fxq 'factory_host_throttled{kind=\"soft_temperature_limit\",state=\"now\"} 0' '$textfile/factory_host.prom'"
+check "the reporter writes the throttling that happened since boot" bash -c "
+  grep -Fxq 'factory_host_throttled{kind=\"under_voltage\",state=\"since_boot\"} 1' '$textfile/factory_host.prom' &&
+  grep -Fxq 'factory_host_throttled{kind=\"throttled\",state=\"since_boot\"} 1' '$textfile/factory_host.prom' &&
+  grep -Fxq 'factory_host_throttled{kind=\"arm_frequency_capped\",state=\"since_boot\"} 0' '$textfile/factory_host.prom'"
+
+# A failed reading keeps the last good file rather than publishing a partial one.
+cp "$textfile/factory_host.prom" "$out/last-good"
+check "a failed throttling read fails the reporter" bash -c "
+  ! TEXTFILE_DIR='$textfile' THERMAL_ZONE='$out/temp' VCGENCMD=/bin/false '$reporter'"
+check "a failed read leaves the last good metrics in place" cmp -s "$out/last-good" "$textfile/factory_host.prom"
+
+# --- the units ---
+check "node_exporter listens on loopback only" grep -Fxq \
+  'ExecStart=/nix/var/nix/profiles/default/bin/node_exporter --web.listen-address=127.0.0.1:9100 --collector.disable-defaults --collector.meminfo --collector.filesystem --collector.textfile --collector.textfile.directory=/var/lib/node_exporter/textfile' \
+  "$out/node_exporter.service"
+check "node_exporter reads the reporter's textfile directory" grep -Fq -- \
+  '--collector.textfile.directory=/var/lib/node_exporter/textfile' "$out/node_exporter.service"
+check "the reporter runs as a oneshot unit" bash -c "
+  grep -Fxq 'Type=oneshot' '$out/factory-host-health.service' &&
+  grep -Fxq 'ExecStart=/usr/local/bin/factory-host-health' '$out/factory-host-health.service'"
+check "the reporter writes where node_exporter reads" bash -c "
+  grep -Fxq 'Environment=TEXTFILE_DIR=/var/lib/node_exporter/textfile' '$out/factory-host-health.service' &&
+  grep -Fq -- '--collector.textfile.directory=/var/lib/node_exporter/textfile' '$out/node_exporter.service'"
+check "the reporter runs every 30 seconds" bash -c "
+  grep -Fxq 'OnUnitActiveSec=30s' '$out/factory-host-health.timer' &&
+  grep -Fxq 'Unit=factory-host-health.service' '$out/factory-host-health.timer'"
+
+# --- the dashboard pairs run duration with temperature and throttling ---
+check "the dashboard shows run duration per worker host" conf '
+exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+run = next(expr for title, expr in exprs.items() if "Run duration" in title)
+assert "traces_span_metrics_duration_bucket" in run, run
+assert "host_name" in run, run
+assert "span_name" in run, run
+'
+check "the dashboard shows each host temperature beside the durations" conf '
+exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+temp = next(expr for title, expr in exprs.items() if "temperature" in title.lower())
+assert "factory_host_temperature_celsius" in temp, temp
+assert "host_name" in temp, temp
+'
+check "the dashboard shows each host throttling beside the durations" conf '
+exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+throttle = next(expr for title, expr in exprs.items() if "throttl" in title.lower())
+assert "factory_host_throttled" in throttle, throttle
+assert "host_name" in throttle, throttle
+'
+check "the dashboard shows memory and disk use per host" conf '
+exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+memory = next(expr for title, expr in exprs.items() if "memory" in title.lower())
+disk = next(expr for title, expr in exprs.items() if "disk" in title.lower())
+assert "node_memory_MemAvailable_bytes" in memory and "host_name" in memory, memory
+assert "node_filesystem_avail_bytes" in disk and "host_name" in disk, disk
+'
+check "every dashboard panel reads the provisioned Prometheus datasource" conf '
+assert {p["datasource"]["uid"] for p in dash["panels"]} == {"prometheus"}, dash["panels"]
+'
+check "the run span name is a dashboard variable, defaulting to the group var" conf '
+variable = next(t for t in dash["templating"]["list"] if t["name"] == "run_span")
+assert variable["query"] == v["factory_telemetry_run_span"], variable
+'
+check "the provider loads dashboards from the factory directory" bash -c "
+  grep -Fq 'path: /etc/grafana/dashboards' '$out/dashboards.yaml' &&
+  grep -Fq 'folder: Factory' '$out/dashboards.yaml'"
+
+[ "$failures" -eq 0 ]
