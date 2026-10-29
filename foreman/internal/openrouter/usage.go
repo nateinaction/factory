@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/nateinaction/factory/foreman/internal/sum"
 )
 
 // maxUsageLine bounds one line of a response body the proxy reads for usage.
@@ -22,40 +24,12 @@ type Usage struct {
 
 // Add sums two usage reports, keeping a field neither report carried unknown.
 func (u Usage) Add(o Usage) Usage {
-	u.Input = addInt(u.Input, o.Input)
-	u.Output = addInt(u.Output, o.Output)
-	u.Cached = addInt(u.Cached, o.Cached)
-	u.Cost = addFloat(u.Cost, o.Cost)
+	u.Input = sum.Add(u.Input, o.Input)
+	u.Output = sum.Add(u.Output, o.Output)
+	u.Cached = sum.Add(u.Cached, o.Cached)
+	u.Cost = sum.Add(u.Cost, o.Cost)
 
 	return u
-}
-
-// addInt sums two optional ints: missing only when both are.
-func addInt(a, b *int) *int {
-	switch {
-	case a == nil:
-		return b
-	case b == nil:
-		return a
-	}
-
-	sum := *a + *b
-
-	return &sum
-}
-
-// addFloat sums two optional costs: missing only when both are.
-func addFloat(a, b *float64) *float64 {
-	switch {
-	case a == nil:
-		return b
-	case b == nil:
-		return a
-	}
-
-	sum := *a + *b
-
-	return &sum
 }
 
 // usageJSON is the subset of a response body the proxy reads: a completion, or one SSE chunk.
