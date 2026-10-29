@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Behaviour of roles/agent/files/drain-check, against a fake dagu whose
+# `status <dag>` output is set per DAG by files under $FAKE/<dag>.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+script="$root/roles/agent/files/drain-check"
+fake="$(mktemp -d)"
+trap 'rm -rf "$fake"' EXIT
+
+cat >"$fake/dagu" <<'STUB'
+#!/usr/bin/env bash
+# Fake dagu: `dagu status <dag>` prints $FAKE/<dag> and exits with $FAKE/<dag>.rc (default 0).
+[ "$1" = status ] || exit 64
+cat "$FAKE/$2" 2>/dev/null || exit 1
+exit "$(cat "$FAKE/$2.rc" 2>/dev/null || echo 0)"
+STUB
+chmod +x "$fake/dagu"
+export FAKE="$fake"
+
+failures=0
+# expect <want-exit> <name> <args...>
+expect() {
+  local want="$1" name="$2"
+  shift 2
+  "$script" "$@" >/dev/null 2>&1
+  local got=$?
+  if [ "$got" -ne "$want" ]; then
+    echo "FAIL $name: want exit $want, got $got" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   $name"
+  fi
+}
+
+printf 'Status: succeeded\n' >"$fake/a"
+printf 'Status: failed\n' >"$fake/b"
+printf 'Status: running\n' >"$fake/c"
+printf 'Status: Queued\n' >"$fake/d"
+printf 'something unrecognised\n' >"$fake/e"
+printf 'no runs found\n' >"$fake/f"
+printf '1\n' >"$fake/f.rc"
+
+expect 0 "idle runs pass" "$fake/dagu" a b
+expect 1 "running run blocks" "$fake/dagu" a c
+expect 1 "queued run blocks (case-insensitive)" "$fake/dagu" d
+expect 1 "unrecognised status fails closed" "$fake/dagu" e
+expect 1 "dagu error fails closed" "$fake/dagu" missing
+expect 1 "nonzero exit blocks even with benign text" "$fake/dagu" f
+expect 2 "no DAG names is a usage error" "$fake/dagu"
+expect 2 "no arguments is a usage error"
+
+[ "$failures" -eq 0 ]

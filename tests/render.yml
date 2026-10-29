@@ -1,0 +1,32 @@
+---
+# Renders the agent role's templates into $RENDER_DIR with the real group_vars,
+# so tests/render.test can assert on the output without a host.
+- name: Render the agent templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  vars:
+    dagu_mode: server
+  tasks:
+    - name: Render the poll DAG
+      ansible.builtin.template:
+        src: ../roles/agent/templates/factory-poll.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/factory-poll.yaml"
+        mode: "0644"
+
+    - name: Render one DAG per agent role
+      ansible.builtin.template:
+        src: ../roles/agent/templates/factory-role.yaml.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/factory-{{ agent_role }}.yaml"
+        mode: "0644"
+      loop: "{{ factory_agent_roles }}"
+      loop_control:
+        loop_var: agent_role
+
+    - name: Render the sudoers file
+      ansible.builtin.template:
+        src: ../roles/agent/templates/dagu-agent.sudoers.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/dagu-agent.sudoers"
+        mode: "0440"

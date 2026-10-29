@@ -58,7 +58,7 @@ func TestPollClaimsReviewsBeforeWork(t *testing.T) {
 	}
 	enq := h.runner.find("dagu", "enqueue")
 	if len(enq) != 1 || !slices.Equal(enq[0].Argv, []string{
-		"/usr/local/bin/dagu", "enqueue", "finances-agent-work", "--", "REPO=o/r", "ROLE=reviewer", "ISSUE=12",
+		"/usr/local/bin/dagu", "enqueue", "factory-reviewer", "--", "REPO=o/r", "ISSUE=12",
 	}) {
 		t.Errorf("enqueue %v", enq)
 	}
@@ -81,7 +81,7 @@ func TestPollClaimsWorkWhenNoReviewWaits(t *testing.T) {
 		t.Errorf("comment %v", got)
 	}
 	enq := h.runner.find("enqueue")
-	if len(enq) != 1 || !slices.Contains(enq[0].Argv, "ROLE=implementer") || !slices.Contains(enq[0].Argv, "ISSUE=5") {
+	if len(enq) != 1 || !slices.Contains(enq[0].Argv, "factory-implementer") || !slices.Contains(enq[0].Argv, "ISSUE=5") {
 		t.Errorf("enqueue %v", enq)
 	}
 }

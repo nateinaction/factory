@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Exit 0 only if the latest run of every named DAG has finished.
+# Usage: drain-check <dagu-binary> <dag-name>...
+# Fails closed: a dagu error, or a status this script does not recognise, blocks.
+set -uo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: drain-check <dagu-binary> <dag-name>..." >&2
+  exit 2
+fi
+
+dagu="$1"
+shift
+
+active='running|queued|waiting|not[_ ]started|retrying'
+finished='succeeded|failed|cancel+ed|aborted|partially[_ ]succeeded|rejected'
+
+blocked=0
+for dag in "$@"; do
+  if ! out="$("$dagu" status "$dag" 2>&1)"; then
+    echo "drain-check: dagu could not report on $dag: $out" >&2
+    blocked=1
+  elif grep -Eiq "$active" <<<"$out"; then
+    echo "drain-check: $dag has an active run" >&2
+    blocked=1
+  elif ! grep -Eiq "$finished" <<<"$out"; then
+    echo "drain-check: unrecognised status for $dag: $out" >&2
+    blocked=1
+  fi
+done
+exit "$blocked"

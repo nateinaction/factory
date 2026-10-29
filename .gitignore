@@ -4,3 +4,4 @@ secrets/*
 !secrets/*.example.yml
 !secrets/.gitkeep
 *.pem
+.build/

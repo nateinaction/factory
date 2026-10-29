@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Syntax-check the playbook and run the Ansible-side tests. Used by CI.
+# ansible-lint is not part of this gate yet: the roles predate it and fail it.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+ansible-playbook --syntax-check site.yml
+for t in tests/*.test; do
+  echo "== $t"
+  "$t"
+done

@@ -1,0 +1,4 @@
+# secure_path: sudo resets PATH, which would hide git and the other nix-profile tools from the agent.
+Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
+# One command, as one user. The wildcards are the agent role, repository and issue; foreman rejects anything else.
+{{ dagu_user }} ALL=({{ factory_user }}) NOPASSWD: /usr/local/bin/foreman run *

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# What the agent role's templates render to: the factory-* DAGs call foreman
+# start, no finances-agent name survives, and sudoers allows only `foreman run *`.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+if ! ansible-playbook "$root/tests/render.yml" >"$out/.log" 2>&1; then
+  cat "$out/.log" >&2
+  echo "FAIL render playbook" >&2
+  exit 1
+fi
+
+failures=0
+# check <name> <command...>: passes when the command succeeds.
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+}
+
+for role in planner researcher implementer reviewer curator; do
+  dag="$out/factory-$role.yaml"
+  check "$role DAG calls foreman start with its role" \
+    grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE}" "$dag"
+  check "$role DAG declares REPO" grep -Eq 'name: REPO' "$dag"
+  check "$role DAG declares ISSUE" grep -Eq 'name: ISSUE' "$dag"
+  check "$role DAG targets agent workers" grep -Fq 'runner: agent' "$dag"
+done
+
+check "poll DAG runs foreman poll" grep -Fq '/usr/local/bin/foreman poll' "$out/factory-poll.yaml"
+check "poll DAG runs one at a time" grep -Fq 'max_active_runs: 1' "$out/factory-poll.yaml"
+check "no old name in any rendered file" bash -c '! grep -rq finances-agent "$1"' _ "$out"
+
+check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$out/dagu-agent.sudoers"
+# Exactly one command on the NOPASSWD line, and it is foreman run *.
+check "sudoers has exactly one permitted command" bash -c \
+  'grep -E "NOPASSWD:" "$1" | sed "s/.*NOPASSWD: *//" | grep -Fxq "/usr/local/bin/foreman run *"' _ "$out/dagu-agent.sudoers"
+if command -v visudo >/dev/null 2>&1; then
+  check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
+fi
+
+[ "$failures" -eq 0 ]

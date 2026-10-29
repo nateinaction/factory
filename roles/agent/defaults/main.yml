@@ -1,0 +1,4 @@
+---
+# What foreman replaces. Removed with state: absent, and kept here for one release.
+agent_old_dags: [finances-agent-poll, finances-agent-work]
+agent_old_binary: /usr/local/bin/finances-agent
