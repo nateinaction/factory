@@ -58,6 +58,12 @@ func (r Run) Active() bool {
 	return false
 }
 
+// Waiting reports whether the run is waiting for a worker: dagu has it queued but no worker has
+// started it.
+func (r Run) Waiting() bool {
+	return r.Status == StatusQueued || r.Status == StatusNotStarted
+}
+
 // ActiveStatuses are the run statuses Active accepts, as `dagu history --status` names them.
 func ActiveStatuses() []string {
 	return []string{StatusQueued, StatusRunning, StatusWaiting, StatusNotStarted}

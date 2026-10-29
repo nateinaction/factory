@@ -78,15 +78,20 @@ database, so it sees the run as it happened.
 - A failed run gets a retro too, except a context overflow, running out of credits or an unknown
   model. A dropped or invalid retro is logged and never changes the run's outcome.
 
-## What the permissions cannot express
+## Where the permissions are set
 
-opencode's `external_directory` is static in the rendered config, so it allows the work root
-(`~/work/**`), which holds every run's clone and scratch files, and denies the rest. The sandbox is
-the first layer that narrows a run to its own directories; the permission is the second. A denied
-action still reaches the dagu run log, because foreman echoes the whole opencode stream.
+opencode's `external_directory` is static in the rendered config, so the rendered `opencode.json`
+denies every external path. foreman's per-run inline config (`OPENCODE_CONFIG_CONTENT`) is the only
+place that names paths, and it allows only this run's own directories and files: its run directory,
+its scratch/output directory and its retro file. That is the same boundary srt enforces, as a second
+layer, so a sibling run's scratch directory is denied by both. A denied action still reaches the dagu
+run log, because foreman echoes the whole opencode stream.
 
-`git push` and `gh` writes are denied for every agent role. The read-only roles may run a fixed list
-of inspection commands; the Implementer and Reviewer may run anything else.
+`git push` and every `gh` write are denied for every agent role. The Implementer and Reviewer may run
+anything else. Their `gh` rule denies the whole command and re-allows the inspection subcommands
+(`view`, `list`, `diff`, `checks`, `status`, and `api` with a GET method), so `gh pr comment`,
+`gh pr review` and the `gh api -f`/`-F`/`--input` forms that POST are denied. The read-only roles may
+run a fixed list of inspection commands; their bash is denied by default.
 
 
 ## Does opencode still read AGENTS.md with project config disabled?

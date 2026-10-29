@@ -22,6 +22,9 @@ type Layout struct {
 	RunDir string
 	// Clone is the repository clone the model works in.
 	Clone string
+	// Scratch is the run's own scratch directory outside the clone, which holds its outputs. Empty
+	// when the run has none.
+	Scratch string
 	// Output is the one result file the run may write. Empty when the agent role writes none.
 	Output string
 	// Skills is the factory's forked skills, read-only.
@@ -55,15 +58,26 @@ func Plan(role workflow.Role, layout Layout) Spec {
 	writableClone := role == workflow.Implementer || role == workflow.Reviewer
 
 	readWrite := []string{layout.RunDir}
+	if layout.Scratch != "" {
+		readWrite = append(readWrite, layout.Scratch)
+	}
+
 	if writableClone {
 		readWrite = append(readWrite, layout.Clone)
 	}
 
-	if layout.Output != "" {
+	// The output sits in the run's scratch directory, which is already writable; name it only when
+	// there is no scratch directory to cover it.
+	if layout.Output != "" && layout.Scratch == "" {
 		readWrite = append(readWrite, layout.Output)
 	}
 
-	readOnly := append([]string{layout.Skills}, layout.Toolchain...)
+	readOnly := []string{}
+	if layout.Skills != "" {
+		readOnly = append(readOnly, layout.Skills)
+	}
+
+	readOnly = append(readOnly, layout.Toolchain...)
 	denyWrite := []string{}
 
 	// An agent role without a clone leaves the path empty; an empty path would otherwise become a
@@ -79,6 +93,18 @@ func Plan(role workflow.Role, layout Layout) Spec {
 	return Spec{
 		ReadWrite: readWrite, ReadOnly: readOnly, Hidden: slices.Clone(layout.Hidden), DenyWrite: denyWrite,
 	}
+}
+
+// hostRead is the operating system every run may still read. The sandbox hides the host by
+// denying `/` and binding back only these paths (plus the run's own), so the list is the host's
+// share, never the factory's: it holds the OS, its device and process files, and /nix/store.
+// Both Linux and macOS paths are listed; srt skips an entry that does not exist.
+var hostRead = []string{ //nolint:gochecknoglobals // a read-only list
+	"/nix/store",
+	"/usr", "/bin", "/sbin", "/lib", "/lib64",
+	"/etc", "/opt",
+	"/dev", "/proc", "/sys",
+	"/System", "/Library", "/private/etc", "/private/var",
 }
 
 // settings is the srt settings file's shape. Only the fields foreman sets are here.
@@ -110,19 +136,22 @@ func Settings(spec Spec, proxyPort int) ([]byte, error) {
 		return nil, errors.New("srt settings: an egress proxy port is required")
 	}
 
-	// Reads are open by default in srt, so re-allowing what is hidden is what reopens the clone and
-	// the run directory beneath a denied parent such as the work root.
-	allowRead := append(slices.Clone(spec.ReadOnly), spec.ReadWrite...)
+	// The host is hidden by default: srt's read model is deny-then-allow, and denying `/` denies
+	// every directory in it. allowRead then binds back the OS paths in hostRead and the paths of
+	// this run alone. The named hidden paths stay denied even though they sit under an allowed
+	// region, which is the defence srt provides for a more specific deny.
+	denyRead := append([]string{"/"}, spec.Hidden...)
+	allowRead := append(append(slices.Clone(hostRead), spec.ReadOnly...), spec.ReadWrite...)
 
 	raw, err := json.Marshal(settings{
 		Network: networkSettings{
 			AllowedDomains: []string{}, DeniedDomains: []string{}, HTTPProxyPort: proxyPort,
 		},
 		Filesystem: filesystemSettings{
-			AllowRead:  nonNil(allowRead),
-			AllowWrite: nonNil(spec.ReadWrite),
-			DenyRead:   nonNil(spec.Hidden),
-			DenyWrite:  nonNil(spec.DenyWrite),
+			AllowRead:  nonNil(nonEmpty(allowRead)),
+			AllowWrite: nonNil(nonEmpty(spec.ReadWrite)),
+			DenyRead:   nonNil(nonEmpty(denyRead)),
+			DenyWrite:  nonNil(nonEmpty(spec.DenyWrite)),
 		},
 	})
 	if err != nil {
@@ -140,6 +169,20 @@ func nonNil(paths []string) []string {
 	}
 
 	return paths
+}
+
+// nonEmpty drops empty path entries. A spec built for a run without a skills directory or a clone
+// would otherwise name "" as an allowed path, which srt refuses as an invalid config.
+func nonEmpty(paths []string) []string {
+	kept := make([]string, 0, len(paths))
+
+	for _, path := range paths {
+		if path != "" {
+			kept = append(kept, path)
+		}
+	}
+
+	return kept
 }
 
 // srtPrefixArgs is how many arguments precede the wrapped command: the binary, --settings, the

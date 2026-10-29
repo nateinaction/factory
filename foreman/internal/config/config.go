@@ -145,6 +145,10 @@ type Config struct {
 	// UnhostedRoles are the agent roles no worker host takes, rendered by Ansible from the worker
 	// hosts' role labels. Empty means every agent role has a host.
 	UnhostedRoles []workflow.Role `json:"unhosted_roles" mapstructure:"unhosted_roles"`
+	// RoleCapacity is how many runs of each agent role the fleet may run at once, rendered by Ansible
+	// as the worker hosts' run cap times the hosts that take the agent role. An agent role it does not
+	// name has no capacity, so the poll never claims for it.
+	RoleCapacity map[string]int `json:"role_capacity" mapstructure:"role_capacity"`
 	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
 	// Empty means no repository is configured, so such a promotion fails closed.
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
@@ -153,6 +157,12 @@ type Config struct {
 // Unhosted reports whether no worker host takes the agent role. Its issues stay queued.
 func (c Config) Unhosted(role workflow.Role) bool {
 	return slices.Contains(c.UnhostedRoles, role)
+}
+
+// Capacity is how many runs of the agent role the fleet may run at once. An agent role the config
+// does not name has no capacity, so the poll never claims for it.
+func (c Config) Capacity(role workflow.Role) int {
+	return c.RoleCapacity[string(role)]
 }
 
 // RetroBudget is the retro budget of the agent role's config entry. Load has checked every known
@@ -221,7 +231,27 @@ func validate(path string, c Config) error {
 		return err
 	}
 
+	if err := validateRoleCapacity(path, c.RoleCapacity); err != nil {
+		return err
+	}
+
 	return validateFactoryRepo(path, c.FactoryRepo)
+}
+
+// validateRoleCapacity rejects a capacity for an agent role the workflow does not know, and a
+// negative one. A missing agent role is allowed: it has no capacity, and its issues stay queued.
+func validateRoleCapacity(path string, capacity map[string]int) error {
+	for _, name := range slices.Sorted(maps.Keys(capacity)) {
+		if _, err := workflow.ParseRole(name); err != nil {
+			return fmt.Errorf("config %s: role capacity: %w", path, err)
+		}
+
+		if capacity[name] < 0 {
+			return fmt.Errorf("config %s: role capacity for %s must not be negative", path, name)
+		}
+	}
+
+	return nil
 }
 
 // validateLimits checks the dead-run margin, the review rounds and the CI deadline.

@@ -20,7 +20,7 @@ import (
 // one Curator run for the repository, at most one at a time and once a day.
 func redrawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
-	repo workflow.Repo, roles []workflow.Role, busy map[workflow.Role]bool, role workflow.Role,
+	repo workflow.Repo, roles []workflow.Role, waiting map[workflow.Role]bool, role workflow.Role,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
@@ -48,7 +48,7 @@ func redrawDashboard(
 	}
 	state, settle := run.run(ctx, state, number, found)
 
-	number, due, err := drawDashboard(ctx, d, cfg, c, repo, reports, state, roles, busy, number, body, found)
+	number, due, err := drawDashboard(ctx, d, cfg, c, repo, reports, state, roles, waiting, number, body, found)
 	if err != nil {
 		return err
 	}
@@ -72,10 +72,10 @@ func redrawDashboard(
 func drawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo,
 	reports []workflow.DashboardReport, state workflow.DashboardState, roles []workflow.Role,
-	busy map[workflow.Role]bool, number int, body string, found bool,
+	waiting map[workflow.Role]bool, number int, body string, found bool,
 ) (int, bool, error) {
 	now := d.now()
-	due := curatorWanted(roles, cfg, reports, state, now, busy[workflow.Curator])
+	due := curatorWanted(roles, cfg, reports, state, now, waiting[workflow.Curator])
 
 	if due {
 		state = state.WithCuratorClaim(now)
@@ -104,13 +104,13 @@ func settleCommands(ctx context.Context, d Deps, c github.Client, repo workflow.
 }
 
 // curatorWanted reports whether a repository's dashboard should start a Curator run now. A repository
-// whose Curator App is not installed, whose curator has no configured deadline, or whose Curator DAG is
-// already busy starts none.
+// whose Curator App is not installed, whose curator has no configured deadline, or whose Curator DAG
+// already has a run waiting for a worker starts none.
 func curatorWanted(
 	roles []workflow.Role, cfg config.Config, reports []workflow.DashboardReport,
-	state workflow.DashboardState, now time.Time, busy bool,
+	state workflow.DashboardState, now time.Time, waiting bool,
 ) bool {
-	if busy || cfg.Unhosted(workflow.Curator) || !slices.Contains(roles, workflow.Curator) {
+	if waiting || cfg.Unhosted(workflow.Curator) || !slices.Contains(roles, workflow.Curator) {
 		return false
 	}
 

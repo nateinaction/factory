@@ -252,12 +252,22 @@ func pipeline(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, record settle, sec secrets,
 	baseURL, token, proxyAddr string, network sandbox.Network, files sandboxFiles,
 ) (runResult, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role))
+	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.ref.Number)
 	if err != nil {
 		return runResult{}, err
 	}
 
-	paths, err := newRunPaths(d.Settings.WorkRoot, role, spec.ref.Number)
+	// The model may touch only this run's directories and output file outside its clone. The
+	// inline opencode config denies every other external path, so a sibling run's scratch
+	// directory is never reachable even though it sits under the same work root.
+	external := []string{files.dir, paths.scratch}
+	if rr.retro {
+		external = append(external, retroPath(d.Settings.WorkRoot, spec.ref.Number, role))
+	}
+
+	j, err := loadJob(
+		ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role), external,
+	)
 	if err != nil {
 		return runResult{}, err
 	}
