@@ -31,7 +31,7 @@ var _ = Describe("SettingsViper", func() {
 		Expect(s.ConfigFile).To(Equal("/etc/factory-agent/config.json"))
 		Expect(s.KeyFile).To(Equal("/home/factory/.config/factory-agent/openrouter-key"))
 		Expect(s.WorkRoot).To(Equal("/home/factory/work"))
-		Expect(s.TokenPath(workflow.Reviewer)).To(Equal("/run/factory/gh-token-reviewer"))
+		Expect(s.TokenPath(workflow.Reviewer, "r1")).To(Equal("/run/factory/gh-token-reviewer-r1"))
 		Expect(s.API).To(Equal("https://api.github.com"))
 		Expect(s.Self).To(Equal("/usr/local/bin/foreman"))
 		Expect(s.TokenHelper).To(Equal("/usr/local/bin/github-app-token"))
@@ -61,10 +61,15 @@ var _ = Describe("SettingsViper", func() {
 })
 
 var _ = Describe("Settings.TokenPath", func() {
-	It("names each run's token file for its agent role", func() {
+	It("names each run's token file for its agent role and run", func() {
 		s := config.Settings{TokenDir: "/run/factory"}
-		Expect(s.TokenPath(workflow.Reviewer)).To(Equal("/run/factory/gh-token-reviewer"))
-		Expect(s.TokenPath(workflow.Reviewer)).NotTo(Equal(s.TokenPath(workflow.Implementer)))
+		Expect(s.TokenPath(workflow.Reviewer, "r1")).To(Equal("/run/factory/gh-token-reviewer-r1"))
+		Expect(s.TokenPath(workflow.Reviewer, "r1")).NotTo(Equal(s.TokenPath(workflow.Implementer, "r1")))
+	})
+
+	It("gives two runs of one agent role different token files", func() {
+		s := config.Settings{TokenDir: "/run/factory"}
+		Expect(s.TokenPath(workflow.Implementer, "r1")).NotTo(Equal(s.TokenPath(workflow.Implementer, "r2")))
 	})
 })
 

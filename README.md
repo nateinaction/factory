@@ -125,7 +125,8 @@ no code path that merges.
    up to the host's run cap (`factory_agent_run_cap`, one at a time by default).
    It mints a one-hour token of that agent role's App scoped to the repo
    (`github-app-token token --app <agent role> --repo`), writes it to
-   `/run/factory/gh-token-<agent role>`, and runs
+   `/run/factory/gh-token-<agent role>-<run id>` (one file per run, written
+   atomically), and runs
    `foreman run <agent role> <owner/repo> <issue>` as `factory` through a
    single-purpose sudoers rule.
 3. Plan (`run`): the Planner reads the issue and its thread and writes a round
