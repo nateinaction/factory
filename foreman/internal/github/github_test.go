@@ -369,6 +369,27 @@ var _ = Describe("Client", func() {
 		})
 	})
 
+	Describe("RemoveLabel", func() {
+		It("takes one label off and is safe to repeat", func() {
+			number := issue(workflow.LabelReviewing, "bug")
+
+			Expect(c.RemoveLabel(ctx, ref(number), workflow.LabelReviewing)).To(Succeed())
+			Expect(c.RemoveLabel(ctx, ref(number), workflow.LabelReviewing)).To(Succeed())
+
+			got, err := emulator.Issue(ctx, "o/r", number)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Labels).To(ConsistOf(HaveField("Name", "bug")))
+		})
+
+		It("passes on any other delete error", func() {
+			number := issue(workflow.LabelReviewing)
+			p.Status("DELETE /repos/o/r/issues/"+itoa(number)+"/labels/factory:reviewing",
+				http.StatusBadGateway)
+
+			Expect(c.RemoveLabel(ctx, ref(number), workflow.LabelReviewing)).To(HaveOccurred())
+		})
+	})
+
 	Describe("ExistingPR", func() {
 		It("finds the open pull request for the owner's branch", func() {
 			pr := pullRequest()

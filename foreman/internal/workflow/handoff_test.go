@@ -261,13 +261,33 @@ var _ = Describe("recovery", func() {
 	It("re-applies the state the latest marker names when the issue does not carry it", func() {
 		issue := workflow.Issue{Labels: []string{"factory:implement"}}
 
-		state, repair := workflow.Repair(issue, transition, true)
+		plan, repair := workflow.Repair(issue, transition, true)
 		Expect(repair).To(BeTrue())
-		Expect(state).To(Equal(workflow.Implementing))
+		Expect(plan.Add).To(Equal(workflow.Implementing))
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing))
+	})
+
+	It("leaves exactly the state the marker names, dropping the stale one", func() {
+		// A finish that posted its marker but failed to take the running label off leaves the issue
+		// in two states at once; recovery keeps only the one the marker names.
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing, workflow.LabelImplement}}
+
+		plan, repair := workflow.Repair(issue, transition, true)
+		Expect(repair).To(BeTrue())
+		Expect(plan.Add).To(BeEmpty(), "added a state the issue already carries")
+		Expect(plan.Remove).To(ConsistOf(workflow.Implement))
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing))
+	})
+
+	It("keeps a label that is not a handoff state", func() {
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing, "bug"}}
+
+		plan, _ := workflow.Repair(issue, transition, true)
+		Expect(plan.Apply(issue.Labels)).To(ConsistOf(workflow.LabelImplementing, "bug"))
 	})
 
 	It("does nothing when the issue already carries that state", func() {
-		issue := workflow.Issue{Labels: []string{"factory:implement", "factory:implementing"}}
+		issue := workflow.Issue{Labels: []string{workflow.LabelImplementing}}
 
 		_, repair := workflow.Repair(issue, transition, true)
 		Expect(repair).To(BeFalse())

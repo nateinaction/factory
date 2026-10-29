@@ -427,12 +427,12 @@ func prepareIssue(
 		return fmt.Errorf("read the latest marker on #%d: %w", issue.Number, err)
 	}
 
-	if state, repair := workflow.Repair(issue, latest.Transition, found); repair {
-		if err := repairIssue(ctx, d, repo, issue, latest.Transition, state); err != nil {
+	if plan, repair := workflow.Repair(issue, latest.Transition, found); repair {
+		if err := repairIssue(ctx, d, repo, issue, latest.Transition, plan); err != nil {
 			return err
 		}
 
-		issue.Labels = append(issue.Labels, string(state))
+		issue.Labels = plan.Apply(issue.Labels)
 	}
 
 	woke, err := wakeIssue(ctx, d, perms, c, repo, issue, comments, latest, found)
@@ -456,11 +456,14 @@ func prepareIssue(
 	return nil
 }
 
-// repairIssue re-applies the state the latest marker names with the token of the agent role that
-// made the transition. The polling App's token never stands in for it: an issue whose owning role
-// cannot mint stays stranded for the next poll.
+// repairIssue leaves the issue carrying exactly the state the latest marker names, with the token of
+// the agent role that made the transition. The polling App's token never stands in for it: an issue
+// whose owning role cannot mint stays stranded for the next poll. The state is added before the stale
+// ones are removed, so a failed repair leaves the marker's state to retry rather than an unlabelled
+// issue the next poll would route afresh.
 func repairIssue(
-	ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue, t workflow.Transition, state workflow.State,
+	ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue, t workflow.Transition,
+	plan workflow.RepairPlan,
 ) error {
 	if t.Role == "" {
 		return fmt.Errorf("repair #%d: the marker names no agent role", issue.Number)
@@ -471,9 +474,25 @@ func repairIssue(
 		return fmt.Errorf("repair #%d as %s: %w", issue.Number, t.Role, err)
 	}
 
-	d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state, "agent_role", t.Role)
+	ref := workflow.IssueRef{Repo: repo, Number: issue.Number}
+	c := d.client(token)
 
-	return d.client(token).AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state))
+	d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number,
+		"state", plan.Add, "stale", plan.Remove, "agent_role", t.Role)
+
+	if plan.Add != "" {
+		if err := c.AddLabel(ctx, ref, string(plan.Add)); err != nil {
+			return err
+		}
+	}
+
+	for _, stale := range plan.Remove {
+		if err := c.RemoveLabel(ctx, ref, string(stale)); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // wakeIssue moves an issue a writer has commented on out of the state that was waiting for them: a
