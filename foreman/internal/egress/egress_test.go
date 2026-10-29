@@ -719,6 +719,37 @@ var _ = Describe("Proxy", func() {
 			}
 		})
 
+		It("refuses the telemetry collector's OTLP address and never connects to it", func() {
+			// The collector listens on loopback (OTLP gRPC 4317, HTTP 4318). A sandboxed run reaches
+			// the network only through this proxy, so the proxy refusing loopback keeps the run off it.
+			ln, err := (&net.ListenConfig{}).Listen(GinkgoT().Context(), "tcp", "127.0.0.1:0")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(ln.Close)
+
+			accepted := make(chan struct{}, 1)
+
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return // the listener closed at cleanup
+				}
+
+				accepted <- struct{}{}
+
+				_ = conn.Close() // test cleanup: a close error changes no assertion
+			}()
+
+			p := start(policy(), "")
+			DeferCleanup(p.Close)
+
+			resp, conn := connect(p.Address(), ln.Addr().String())
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Consistently(accepted, 200*time.Millisecond).ShouldNot(Receive())
+		})
+
 		It("refuses a plain HTTP request to every range that is not publicly routable", func() {
 			p := start(policy(), "")
 			DeferCleanup(p.Close)

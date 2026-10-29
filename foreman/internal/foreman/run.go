@@ -168,10 +168,9 @@ type session struct {
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
 	settings string
-	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
-	key string
-	// token is the run's proxy token, kept only to scrub it from anything echoed.
-	token string
+	// secrets are every secret the run holds (the OpenRouter key, the proxy token and the model's
+	// read-only GitHub token), kept only to scrub them from anything the model process writes.
+	secrets []string
 }
 
 // git runs git in the clone.
@@ -207,8 +206,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
-		key:      j.sec.openrouterKey,
-		token:    j.token,
+		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
 

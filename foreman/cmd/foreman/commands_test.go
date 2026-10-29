@@ -161,6 +161,9 @@ var _ = Describe("the foreman command", func() {
 			Entry("logs with an extra argument", "logs", "o/r", "5", "extra"),
 			Entry("logs with a malformed repository", "logs", "not-a-repo", "5"),
 			Entry("logs with a word for an issue", "logs", "o/r", "five"),
+			Entry("history alone", "history"),
+			Entry("history with an extra argument", "history", "o/r", "5"),
+			Entry("history with a malformed repository", "history", "not-a-repo"),
 		)
 
 		DescribeTable("fails closed on an unknown agent role",
@@ -234,6 +237,7 @@ var _ = Describe("the foreman command", func() {
 			Entry("poll", "poll"),
 			Entry("status", "status"),
 			Entry("logs", "logs", "o/r", "5"),
+			Entry("history", "history", "o/r"),
 			Entry("start", "start", "implementer", "o/r", "5"),
 			Entry("run with no arguments", "run"),
 			Entry("run with one argument", "run", "implementer"),
@@ -286,6 +290,7 @@ var _ = Describe("the foreman command", func() {
 		Expect(help).To(ContainSubstring("run"))
 		Expect(help).To(ContainSubstring("status"))
 		Expect(help).To(ContainSubstring("logs"))
+		Expect(help).To(ContainSubstring("history"))
 		Expect(help).NotTo(ContainSubstring("completion"))
 	})
 
@@ -299,6 +304,7 @@ var _ = Describe("the foreman command", func() {
 		Entry("run", "run", "foreman run <agent-role> <owner/repo> <issue> [flags]"),
 		Entry("status", "status", "foreman status [flags]"),
 		Entry("logs", "logs", "foreman logs <owner/repo> <issue> [flags]"),
+		Entry("history", "history", "foreman history <owner/repo> [flags]"),
 	)
 
 	Context("with no runs in dagu", func() {
