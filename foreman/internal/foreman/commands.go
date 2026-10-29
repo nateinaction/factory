@@ -41,7 +41,7 @@ func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []string {
 		Capture: true, Timeout: MintTimeout,
 	})
 	if err != nil {
-		d.logf("list %s installations: %v", role, err)
+		d.log().Warn("cannot list installations; treating the App as installed nowhere", "role", role, "error", err)
 		return nil
 	}
 
@@ -132,7 +132,9 @@ func Poll(ctx context.Context, d Deps, roles []workflow.Role) (int, error) {
 func pollQueue(ctx context.Context, d Deps, repo string, q queueStep) (code int, done bool, err error) {
 	token, err := d.mintToken(ctx, q.role, repo)
 	if err != nil {
-		d.logf("%v; treating %s as unassigned for %s", err, repo, q.role)
+		d.log().Warn("cannot mint token; treating the repository as unassigned",
+			"role", q.role, "repo", repo, "error", err)
+
 		return 0, false, nil
 	}
 
@@ -174,7 +176,7 @@ func claimAndEnqueue(ctx context.Context, d Deps, c github.Client, repo string, 
 		"REPO=" + repo, "ISSUE=" + strconv.Itoa(number),
 	}})
 	if err != nil {
-		d.logf("%v", err)
+		d.log().Error("enqueue failed", "role", q.role, "repo", repo, "issue", number, "error", err)
 		return 1, c.Finish(ctx, repo, number, q.dst, workflow.LabelFailed, "Could not queue the agent run; see the dagu log.")
 	}
 
@@ -245,7 +247,8 @@ func finishAs(ctx context.Context, d Deps, role workflow.Role, repo string, numb
 		return d.client(token).Finish(ctx, repo, number, src, dst, text)
 	}
 
-	d.logf("%v", err)
+	d.log().Error("cannot mint the owning App's token; reporting the failure as another App",
+		"role", role, "repo", repo, "issue", number, "error", err)
 
 	notice := fmt.Sprintf("The %s's GitHub App credential is missing or the App is no longer installed here. "+
 		"Fix that, then re-queue the issue.", role)
@@ -270,7 +273,7 @@ func finishAs(ctx context.Context, d Deps, role workflow.Role, repo string, numb
 func factoryExit(ctx context.Context, d Deps, role workflow.Role, repo string, number int) int {
 	code, err := runAsFactory(ctx, d, role, repo, number)
 	if err != nil {
-		d.logf("%v", err)
+		d.log().Error("run as factory failed", "role", role, "repo", repo, "issue", number, "error", err)
 		return -1
 	}
 

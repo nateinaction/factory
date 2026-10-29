@@ -231,7 +231,7 @@ func implement(
 	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
 	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session)
 	if err != nil {
-		d.logf("retro failed: %v", err)
+		d.log().Warn("retro failed", "repo", repo, "issue", number, "error", err)
 	}
 
 	return res.Usage.Add(retroUsage), nil

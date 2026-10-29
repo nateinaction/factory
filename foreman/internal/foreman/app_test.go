@@ -30,6 +30,11 @@ var _ = Describe("Main", func() {
 		DescribeTable("rejects a bad invocation with the usage exit, doing nothing",
 			func(args ...string) {
 				Expect(main(args...)).To(Equal(ExitUsage))
+				Expect(h.logs.String()).To(And(
+					ContainSubstring("ERROR bad invocation"),
+					ContainSubstring("reason="),
+					ContainSubstring("usage="),
+				))
 				h.expectNoWork()
 			},
 			Entry("no verb"),
@@ -47,7 +52,7 @@ var _ = Describe("Main", func() {
 		DescribeTable("fails closed on an unknown agent role",
 			func(verb string) {
 				Expect(main(verb, "janitor", "o/r", "5")).NotTo(BeZero())
-				Expect(h.errb.String()).To(ContainSubstring(`unknown agent role "janitor"`))
+				Expect(h.logs.String()).To(ContainSubstring(`unknown agent role "janitor"`))
 				h.expectNoWork()
 			},
 			Entry(nil, "start"), Entry(nil, "run"),
@@ -59,27 +64,27 @@ var _ = Describe("Main", func() {
 
 		It("polls where the configured agent roles' Apps are installed", func() {
 			h.queue(nil)
-			Expect(main("poll")).To(BeZero(), h.errb.String())
+			Expect(main("poll")).To(BeZero(), h.logs.String())
 			Expect(h.gh.Calls()[0].Path).To(Equal("/repos/o/r/issues"))
 		})
 
 		It("returns the review verdict as the exit code of run", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
-			Expect(main("run", "reviewer", "o/r", "5")).To(Equal(workflow.ReviewFindings), h.errb.String())
+			Expect(main("run", "reviewer", "o/r", "5")).To(Equal(workflow.ReviewFindings), h.logs.String())
 			Expect(h.runner.find("opencode run --agent reviewer")).To(HaveLen(1), "model from config not used")
 		})
 
 		It("runs the whole Implementer handoff on start", func() {
 			h.acceptWrites("5")
-			Expect(main("start", "implementer", "o/r", "5")).To(BeZero(), h.errb.String())
+			Expect(main("start", "implementer", "o/r", "5")).To(BeZero(), h.logs.String())
 		})
 
 		It("never puts a token in an error", func() {
 			h.gh.Status("GET /repos/o/r/issues", 500)
 			Expect(main("poll")).To(Equal(1))
-			Expect(h.errb.String()).To(ContainSubstring("foreman: "))
-			Expect(h.errb.String()).NotTo(ContainSubstring("minted-token"))
+			Expect(h.logs.String()).To(ContainSubstring("ERROR foreman failed"))
+			Expect(h.logs.String()).NotTo(ContainSubstring("minted-token"))
 		})
 	})
 

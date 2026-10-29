@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,13 +76,72 @@ func (r *fakeRunner) wrap(fn func(c proc.Cmd, base func(proc.Cmd) (string, error
 	r.fn = func(c proc.Cmd) (string, error) { return fn(c, base) }
 }
 
+// logEntry is one captured diagnostic record.
+type logEntry struct {
+	level slog.Level
+	msg   string
+	attrs map[string]string
+}
+
+// logCapture is a slog.Handler that keeps records for assertions instead of formatting them.
+type logCapture struct {
+	mu      sync.Mutex
+	entries []logEntry
+}
+
+// Enabled accepts every level, so a spec sees whatever foreman emits.
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle records r and its attributes.
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	e := logEntry{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+	r.Attrs(func(a slog.Attr) bool {
+		e.attrs[a.Key] = a.Value.String()
+
+		return true
+	})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.entries = append(c.entries, e)
+
+	return nil
+}
+
+// WithAttrs returns the same handler: the harness never logs through a derived logger.
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+
+// WithGroup returns the same handler: the harness never logs through a derived logger.
+func (c *logCapture) WithGroup(string) slog.Handler { return c }
+
+// String renders the captured records as "LEVEL message key=value ..." lines, for matching.
+func (c *logCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var b strings.Builder
+
+	for _, e := range c.entries {
+		fmt.Fprintf(&b, "%s %s", e.level, e.msg)
+
+		for _, key := range slices.Sorted(maps.Keys(e.attrs)) {
+			fmt.Fprintf(&b, " %s=%s", key, e.attrs[key])
+		}
+
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 // harness wires Deps to a fake GitHub, a fake runner and a temp directory.
 type harness struct {
 	gh     *fakegh.Server
 	runner *fakeRunner
 	deps   Deps
 	out    *bytes.Buffer
-	errb   *bytes.Buffer
+	logs   *logCapture
 	dir    string
 	// installed maps an agent role to the repositories its App is installed on.
 	installed map[workflow.Role][]string
@@ -107,7 +168,7 @@ func newHarness() *harness {
 	Expect(os.WriteFile(key, []byte("or-key\n"), 0o600)).To(Succeed())
 
 	h := &harness{
-		gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, errb: &bytes.Buffer{}, dir: dir,
+		gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, logs: &logCapture{}, dir: dir,
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
@@ -117,7 +178,7 @@ func newHarness() *harness {
 			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
-		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Err: h.errb,
+		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs),
 		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 	}
 

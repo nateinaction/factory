@@ -99,7 +99,7 @@ var _ = Describe("Poll", func() {
 			return base(c)
 		})
 		Expect(poll()).To(Equal(1))
-		Expect(h.errb.String()).To(ContainSubstring("dagu down"))
+		Expect(h.logs.String()).To(ContainSubstring("dagu down"))
 		labels := h.gh.Bodies("POST", "/repos/o/r/issues/5/labels")
 		Expect(labels).To(HaveLen(2))
 		Expect(labels[1]).To(ContainSubstring(workflow.LabelFailed))
@@ -184,7 +184,12 @@ var _ = Describe("Poll", func() {
 		h.acceptWrites("3")
 		Expect(poll()).To(BeZero())
 		Expect(h.gh.Summary()).To(And(HaveLen(4), ContainElement("DELETE /repos/o/r/issues/3/labels/ready-for-agent")))
-		Expect(h.errb.String()).To(ContainSubstring("reviewer"))
+		Expect(h.logs.String()).To(And(
+			ContainSubstring("WARN cannot mint token"),
+			ContainSubstring("role=reviewer"),
+			ContainSubstring("repo=o/r"),
+			ContainSubstring("error="),
+		))
 	})
 
 	It("treats an App that cannot list its installations as installed nowhere", func() {

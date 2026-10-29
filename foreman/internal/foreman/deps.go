@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -55,8 +56,8 @@ type Deps struct {
 	HTTP *http.Client
 	// Out receives normal output.
 	Out io.Writer
-	// Err receives diagnostics.
-	Err io.Writer
+	// Log receives diagnostics as leveled, structured records. The edge builds it; nil logs nowhere.
+	Log *slog.Logger
 	// Host names this worker host in the usage report; empty is reported as missing.
 	Host string
 	// Sleep waits between model retries; nil waits on the clock.
@@ -78,10 +79,14 @@ func (d Deps) run(ctx context.Context, c proc.Cmd) (string, error) {
 	return out, nil
 }
 
-// logf writes a diagnostic line.
-func (d Deps) logf(format string, args ...any) {
-	// A failed diagnostic write has nowhere left to be reported.
-	_, _ = fmt.Fprintf(d.Err, "foreman: "+format+"\n", args...)
+// log returns d's logger. A Deps built without one, as a spec that ignores diagnostics does, logs
+// nowhere rather than panicking.
+func (d Deps) log() *slog.Logger {
+	if d.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+
+	return d.Log
 }
 
 // writeLine writes text and a newline.

@@ -97,13 +97,13 @@ var _ = Describe("Run", func() {
 				return base(c)
 			})
 			Expect(run(workflow.Implementer)).To(BeZero())
-			Expect(h.errb.String()).To(And(ContainSubstring("retro failed"), ContainSubstring("retro blew up")))
+			Expect(h.logs.String()).To(And(ContainSubstring("retro failed"), ContainSubstring("retro blew up")))
 		})
 
 		It("logs an empty retro and posts nothing", func() {
 			h.opencodeWrites("--session", retroOut(), "  \n")
 			Expect(run(workflow.Implementer)).To(BeZero())
-			Expect(h.errb.String()).To(ContainSubstring("the retro wrote nothing"))
+			Expect(h.logs.String()).To(ContainSubstring("the retro wrote nothing"))
 			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/41/comments")).To(BeEmpty())
 		})
 

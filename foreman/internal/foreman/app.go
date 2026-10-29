@@ -33,15 +33,15 @@ func Main(ctx context.Context, args []string, d Deps) int {
 	return usageError(d, "bad invocation")
 }
 
-// usageError prints the usage and returns ExitUsage.
+// usageError reports the bad invocation with the usage and returns ExitUsage.
 func usageError(d Deps, why string) int {
-	d.logf("%s\n%s", why, usage)
+	d.log().Error("bad invocation", "reason", why, "usage", usage)
 	return ExitUsage
 }
 
 // fail reports err and returns exit code 1. Messages never carry tokens: errors name the call, not its credentials.
 func fail(d Deps, err error) int {
-	d.logf("%v", err)
+	d.log().Error("foreman failed", "error", err)
 	return 1
 }
 
@@ -89,7 +89,7 @@ func roleVerb(ctx context.Context, d Deps, verb string, rest []string) int {
 	}
 
 	if err != nil {
-		d.logf("%v", err)
+		d.log().Error("foreman failed", "error", err)
 
 		if code == 0 {
 			code = 1

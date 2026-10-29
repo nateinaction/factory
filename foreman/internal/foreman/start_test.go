@@ -82,7 +82,7 @@ var _ = Describe("Start", func() {
 
 			labels, _ := h.outcome()
 			Expect(labels[0]).To(ContainSubstring(workflow.LabelFailed))
-			Expect(h.errb.String()).To(ContainSubstring("sudo missing"))
+			Expect(h.logs.String()).To(ContainSubstring("sudo missing"))
 		})
 	})
 

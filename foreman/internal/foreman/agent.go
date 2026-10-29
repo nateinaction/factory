@@ -64,7 +64,7 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 		Argv: opencode.Argv(r), Dir: s.workdir, Env: s.agentEnv, Timeout: timeout, Capture: true,
 	})
 	if out != "" {
-		s.d.logf("%s", s.redact(out))
+		s.d.log().Info("agent output", "text", s.redact(out))
 	}
 
 	return opencode.ParseStream(out), err
@@ -104,11 +104,11 @@ func withState(root string, role workflow.Role, number int, fn func(db string) e
 func (d Deps) logUsage(r opencode.UsageReport) {
 	line, err := json.Marshal(r)
 	if err != nil {
-		d.logf("usage report: %v", err)
+		d.log().Error("usage report failed", "error", err)
 		return
 	}
 
 	if err := writeLine(d.Out, string(line)); err != nil {
-		d.logf("usage report: %v", err)
+		d.log().Error("usage report failed", "error", err)
 	}
 }

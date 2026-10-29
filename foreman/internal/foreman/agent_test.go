@@ -135,7 +135,7 @@ var _ = Describe("the opencode adapter", func() {
 			`"data":{"statusCode":400,"message":"bad key or-key"}}}` + "\n")
 		_, err := h.runImpl(testAgent())
 		Expect(err).To(HaveOccurred())
-		Expect(h.errb.String()).NotTo(ContainSubstring("or-key"))
+		Expect(h.logs.String()).NotTo(ContainSubstring("or-key"))
 		Expect(h.out.String()).NotTo(ContainSubstring("or-key"))
 	})
 

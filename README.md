@@ -112,6 +112,10 @@ model, context cap and compaction setting come from `factory_models`.
 Things to know:
 
 - The worker's dagu unit sets `NoNewPrivileges=false` so `sudo` can run.
+- foreman writes diagnostics to stderr as `log/slog` text records (leveled, with
+  key/value attributes). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
+  `warn`, `error`); unset or unknown means `info`. Stdout carries only program
+  output, never diagnostics.
 - A run past an hour loses its token, and the agent has a one-hour cap.
 - GitHub does not let a PR's author approve it, and the App opens the PRs, so the
   review agent's approval is rejected. It then posts a comment review saying so;
