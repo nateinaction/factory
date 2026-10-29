@@ -188,7 +188,7 @@ func (s session) curatorClient(
 		return c, nil
 	}
 
-	token, err := s.d.mintToken(ctx, workflow.Curator, dest)
+	token, err := s.d.mint(ctx, workflow.Curator, dest, writableToken)
 	if err != nil {
 		return github.Client{}, fmt.Errorf("mint a token for %s: %w", dest, err)
 	}
