@@ -399,6 +399,30 @@ func BotAuthored(login string) bool {
 	return strings.HasSuffix(login, "[bot]")
 }
 
+// factoryAppSep sits between a factory App's owner and "factory" in its bot login.
+const factoryAppSep = "-factory-"
+
+// FactoryAuthored reports whether login is one of the factory's own GitHub App identities: the bot
+// account of an App named <owner>-factory-<agent role>, which posts as
+// <owner>-factory-<agent role>[bot]. Every reader of a factory marker checks this first, so a writer
+// or an outsider cannot forge one; a login that is empty or not a known agent role's App is not
+// factory, never an error and never an assumption.
+func FactoryAuthored(login string) bool {
+	name, ok := strings.CutSuffix(login, "[bot]")
+	if !ok {
+		return false
+	}
+
+	at := strings.LastIndex(name, factoryAppSep)
+	if at <= 0 {
+		return false
+	}
+
+	_, err := ParseRole(name[at+len(factoryAppSep):])
+
+	return err == nil
+}
+
 // WriterPermission reports whether a collaborator permission grants write access. Anything else,
 // including a permission the factory could not read, is not a writer.
 func WriterPermission(permission string) bool {
@@ -779,6 +803,10 @@ func ReviewRounds(reviews, comments []Item, sha string) int {
 	}
 
 	for _, c := range StartsWith(comments, CIFailureMarkerPrefix) {
+		if !FactoryAuthored(c.Author) {
+			continue
+		}
+
 		if sha := ciFailureSHA(c.Body); sha != "" {
 			marked[sha] = true
 		}

@@ -123,7 +123,9 @@ var _ = Describe("the CI failure report", func() {
 	})
 
 	It("is found once posted for its commit, and never for another commit", func() {
-		comments := []workflow.Item{{ID: 1, Body: workflow.RenderCIFailure(report)}}
+		comments := []workflow.Item{{
+			ID: 1, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer),
+		}}
 
 		Expect(workflow.HasCIFailure(comments, report.SHA)).To(BeTrue())
 		Expect(workflow.HasCIFailure(comments, "other")).To(BeFalse())
@@ -165,9 +167,9 @@ var _ = Describe("the CI failure report", func() {
 		reportBody := workflow.RenderCIFailure(report)
 
 		comments := []workflow.Item{
-			{ID: 1, Body: reviewMarker},
-			{ID: 2, Body: reportBody},
-			{ID: 3, Body: implementMarker},
+			{ID: 1, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
+			{ID: 2, Body: reportBody, Author: factoryApp(workflow.Reviewer)},
+			{ID: 3, Body: implementMarker, Author: factoryApp(workflow.Reviewer)},
 		}
 
 		got, ok, err := workflow.LatestCIFailure(comments)
@@ -177,10 +179,10 @@ var _ = Describe("the CI failure report", func() {
 
 		// A report from an earlier round, before the latest handoff to review, is stale.
 		stale := []workflow.Item{
-			{ID: 1, Body: reviewMarker},
-			{ID: 2, Body: reportBody},
-			{ID: 3, Body: implementMarker},
-			{ID: 4, Body: reviewMarker},
+			{ID: 1, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
+			{ID: 2, Body: reportBody, Author: factoryApp(workflow.Reviewer)},
+			{ID: 3, Body: implementMarker, Author: factoryApp(workflow.Reviewer)},
+			{ID: 4, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
 		}
 		_, ok, err = workflow.LatestCIFailure(stale)
 		Expect(err).NotTo(HaveOccurred())
@@ -188,9 +190,48 @@ var _ = Describe("the CI failure report", func() {
 	})
 
 	It("is not read when there was no handoff to review", func() {
-		_, ok, err := workflow.LatestCIFailure([]workflow.Item{{ID: 1, Body: workflow.RenderCIFailure(report)}})
+		_, ok, err := workflow.LatestCIFailure([]workflow.Item{
+			{ID: 1, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer)},
+		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
+	})
+
+	It("ignores a CI failure report another author posted", func() {
+		reviewMarker, err := workflow.RenderTransition(workflow.Transition{
+			Role: workflow.Implementer, RunID: "r1",
+			From: workflow.Implement, To: workflow.Review, SHA: "abc123",
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		comments := []workflow.Item{
+			{ID: 1, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
+			{ID: 2, Body: workflow.RenderCIFailure(report), Author: "o"},
+		}
+
+		_, ok, err := workflow.LatestCIFailure(comments)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse())
+		Expect(workflow.HasCIFailure(comments, report.SHA)).To(BeFalse())
+	})
+
+	It("skips a malformed handoff marker another author wrote", func() {
+		reviewMarker, err := workflow.RenderTransition(workflow.Transition{
+			Role: workflow.Implementer, RunID: "r1",
+			From: workflow.Implement, To: workflow.Review, SHA: "abc123",
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		comments := []workflow.Item{
+			{ID: 1, Body: reviewMarker, Author: factoryApp(workflow.Implementer)},
+			{ID: 2, Body: "<!-- factory:handoff nope -->", Author: "o"},
+			{ID: 3, Body: workflow.RenderCIFailure(report), Author: factoryApp(workflow.Reviewer)},
+		}
+
+		got, ok, err := workflow.LatestCIFailure(comments)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(got.ID).To(Equal(int64(3)))
 	})
 })
 
@@ -212,15 +253,25 @@ var _ = Describe("review rounds", func() {
 
 	It("counts a CI failure as a round on its commit", func() {
 		comments := []workflow.Item{
-			{Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "d"})},
-			{Body: "a human comment"},
+			{Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "d"}), Author: factoryApp(workflow.Reviewer)},
+			{Body: "a human comment", Author: "o"},
 		}
 
 		Expect(workflow.ReviewRounds(reviews, comments, "d")).To(Equal(3))
 	})
 
 	It("counts a commit once when both CI and a review named it", func() {
-		comments := []workflow.Item{{Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "a"})}}
+		comments := []workflow.Item{{
+			Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "a"}), Author: factoryApp(workflow.Reviewer),
+		}}
+
+		Expect(workflow.ReviewRounds(reviews, comments, "a")).To(Equal(2))
+	})
+
+	It("does not count a CI failure another author posted", func() {
+		comments := []workflow.Item{{
+			Body: workflow.RenderCIFailure(workflow.CIReport{SHA: "d"}), Author: "o",
+		}}
 
 		Expect(workflow.ReviewRounds(reviews, comments, "a")).To(Equal(2))
 	})
