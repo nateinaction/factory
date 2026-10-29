@@ -77,6 +77,27 @@ var _ = Describe("ParseRetro", func() {
 		Expect(findings[0].Evidence).To(Equal("line one\nline two"))
 	})
 
+	It("reports every problem in a retro at once, naming the finding each is in", func() {
+		_, err := workflow.ParseRetro(`{"version":2,"findings":[` +
+			`{"target":"other:x","group":"Not A Key","severity":"urgent","claim":"","evidence":""},` +
+			`{"target":"factory:retro","group":"g","severity":"low","claim":"c","evidence":""}]}`)
+
+		Expect(problems(err)).To(ConsistOf(
+			ContainSubstring("version must be 1"),
+			And(ContainSubstring("findings[0]:"), ContainSubstring(`unknown retro target kind "other"`)),
+			And(ContainSubstring("findings[0]:"), ContainSubstring(`group key "Not A Key"`)),
+			And(ContainSubstring("findings[0]:"), ContainSubstring(`unknown retro severity "urgent"`)),
+			And(ContainSubstring("findings[0]:"), ContainSubstring("retro claim is empty")),
+			And(ContainSubstring("findings[0]:"), ContainSubstring("retro evidence is empty")),
+			And(ContainSubstring("findings[1]:"), ContainSubstring("retro evidence is empty")),
+		))
+	})
+
+	It("reports a retro that names no findings at all", func() {
+		_, err := workflow.ParseRetro(`{"version":1}`)
+		Expect(problems(err)).To(ConsistOf(ContainSubstring("findings")))
+	})
+
 	DescribeTable("rejects a whole invalid retro",
 		func(text string) {
 			_, err := workflow.ParseRetro(text)

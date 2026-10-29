@@ -173,6 +173,39 @@ var _ = Describe("ParseReviewerOutput", func() {
 	)
 })
 
+var _ = Describe("rejecting an output file", func() {
+	// A file every agent role writes is read by the one strict decoder: it names its own file, and it
+	// reports the problem the file shares with every other and the one only it has, both at once.
+	DescribeTable("reports every problem at once, through an output error naming the file",
+		func(file, text, want string, parse func(string) error) {
+			err := parse(text)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(file))
+			Expect(problems(err)).To(ContainElements(
+				ContainSubstring("version must be 1"), ContainSubstring(want)))
+		},
+		Entry("implementer-output.json", workflow.ImplementerOutputFile,
+			`{"version":2,"commit_message":""}`, "commit_message is required",
+			func(text string) error { _, err := workflow.ParseImplementerOutput(text, false, ""); return err }),
+		Entry("researcher-output.json", workflow.ResearcherOutputFile,
+			`{"version":2,"branch":"","resolution":"r","decision_line":"d"}`, "branch name",
+			func(text string) error { _, err := workflow.ParseResearcherOutput(text); return err }),
+		Entry("reviewer-output.json", workflow.ReviewerOutputFile,
+			`{"version":2,"verdict":"APPROVE","summary":""}`, "summary is required",
+			func(text string) error { _, err := workflow.ParseReviewerOutput(text); return err }),
+		Entry("planner-output.json", workflow.PlannerOutputFile,
+			`{"version":2,"kind":"questions","comment":""}`, "comment is required",
+			func(text string) error { _, err := workflow.ParsePlannerOutput(text); return err }),
+		Entry("curator-output.json", workflow.CuratorOutputFile,
+			`{"version":2}`, "merges is required",
+			func(text string) error { _, err := workflow.ParseCuratorOutput(text); return err }),
+		Entry("retro.json", workflow.RetroOutputFile,
+			`{"version":2,"findings":[{"target":"other:x","group":"g","severity":"low",`+
+				`"claim":"c","evidence":"e"}]}`, `unknown retro target kind "other"`,
+			func(text string) error { _, err := workflow.ParseRetro(text); return err }),
+	)
+})
+
 var _ = Describe("rendering an output file", func() {
 	It("keys replies to the commit they answer", func() {
 		body := workflow.RenderReplies("abc", []workflow.Reply{
