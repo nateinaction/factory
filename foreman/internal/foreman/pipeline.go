@@ -207,8 +207,8 @@ func committerIdentity() []string {
 func runRole(ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun) (int, error) {
 	return withSandboxRun(d, spec, role, func(files sandboxFiles) (runResult, []string, error) {
 		return withRunSecrets(ctx, d, spec, role,
-			func(sec secrets, baseURL, proxyAddr string, network sandbox.Network) (runResult, error) {
-				return pipeline(ctx, d, spec, role, rr, sec, baseURL, proxyAddr, network, files)
+			func(sec secrets, baseURL, token, proxyAddr string, network sandbox.Network) (runResult, error) {
+				return pipeline(ctx, d, spec, role, rr, sec, baseURL, token, proxyAddr, network, files)
 			})
 	})
 }
@@ -217,9 +217,9 @@ func runRole(ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr r
 // agent, then the agent role's post-agent step and the retro epilogue.
 func pipeline(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, sec secrets,
-	baseURL, proxyAddr string, network sandbox.Network, files sandboxFiles,
+	baseURL, token, proxyAddr string, network sandbox.Network, files sandboxFiles,
 ) (runResult, error) {
-	j, err := loadJob(ctx, d, sec, baseURL, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role))
+	j, err := loadJob(ctx, d, sec, baseURL, token, spec.ref.Repo, role, spec.agent, spec.ref.Number, files.db(role))
 	if err != nil {
 		return runResult{}, err
 	}

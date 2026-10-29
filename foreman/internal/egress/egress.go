@@ -6,6 +6,7 @@ package egress
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,6 +54,7 @@ const (
 type Proxy struct {
 	policy    sandbox.Network
 	api       *url.URL
+	token     string
 	server    *http.Server
 	listener  net.Listener
 	transport *http.Transport
@@ -68,12 +70,17 @@ type Proxy struct {
 }
 
 // StartWithLogger binds a proxy for policy on addr. apiURL is the OpenRouter key proxy that
-// origin-form API calls are forwarded to; empty refuses them. addr must be loopback. Any bind or
-// parse failure is an error: the run has no egress without its proxy. logger records traffic the
-// proxy refuses; nil discards those diagnostics.
+// origin-form API calls are forwarded to; empty refuses them. token is the run's random token, and
+// an API call without it is refused before anything is forwarded, so no other local caller can spend
+// the key. addr must be loopback. Any bind or parse failure is an error: the run has no egress
+// without its proxy. logger records traffic the proxy refuses; nil discards those diagnostics.
 func StartWithLogger(
-	ctx context.Context, policy sandbox.Network, apiURL, addr string, logger *slog.Logger,
+	ctx context.Context, policy sandbox.Network, apiURL, token, addr string, logger *slog.Logger,
 ) (*Proxy, error) {
+	if token == "" {
+		return nil, fmt.Errorf("egress proxy: a per-run token is required")
+	}
+
 	if err := loopback(addr); err != nil {
 		return nil, err
 	}
@@ -93,7 +100,7 @@ func StartWithLogger(
 	}
 
 	p := &Proxy{
-		policy: policy, api: api, listener: ln, log: logger,
+		policy: policy, api: api, token: token, listener: ln, log: logger,
 		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
 	p.transport = transport()
@@ -399,9 +406,16 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	p.forwarder.ServeHTTP(w, r)
 }
 
-// apiCall forwards the model's API requests to the run's OpenRouter key proxy. Any other
-// origin-form path is refused: the sandbox gets no general-purpose reverse proxy.
+// apiCall forwards the model's API requests to the run's OpenRouter key proxy. A request that does
+// not carry the run's token is refused before it is forwarded, and any other origin-form path is
+// refused too: the sandbox gets no general-purpose reverse proxy.
 func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
+	if !p.authorized(r) {
+		http.Error(w, "egress proxy: run token required", http.StatusUnauthorized)
+
+		return
+	}
+
 	if p.api == nil || !underAPIPrefix(r.URL.Path) {
 		http.Error(w, "egress proxy: only the OpenRouter API is served", http.StatusForbidden)
 
@@ -416,6 +430,17 @@ func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
 
 	p.record(APIDomain)
 	p.apiProxy.ServeHTTP(w, r)
+}
+
+// authorized reports whether r carries the run's token in its Authorization header. The comparison
+// is constant time, and the token never reaches a log.
+func (p *Proxy) authorized(r *http.Request) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(got), []byte(p.token)) == 1
 }
 
 // apiURL is r as a request to the key proxy: the same path beneath /api/v1, nothing that could

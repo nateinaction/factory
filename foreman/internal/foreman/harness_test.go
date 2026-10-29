@@ -28,6 +28,9 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
+// testToken is the per-run proxy token every spec uses.
+const testToken = "run-proxy-token"
+
 // fakeRunner records every process and answers through fn.
 type fakeRunner struct {
 	mu   sync.Mutex
@@ -254,6 +257,7 @@ func newHarness() *harness {
 		},
 		Runner: h.runner, HTTP: gh.Client(), Out: h.out, Log: slog.New(h.logs), RunID: "run-1",
 		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
+		Token: func() (string, error) { return testToken, nil },
 	}
 
 	return h

@@ -23,11 +23,14 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
+// acceptanceToken is the per-run proxy token the acceptance test's model sends.
+const acceptanceToken = "acceptance-run-token"
+
 // opencodeConfig is the inline configuration that points a real opencode run at the acceptance
 // test's fake provider, with a named implementer agent.
 const opencodeConfig = `{
   "provider": {"openrouter": {
-    "options": {"baseURL": %q, "apiKey": "factory-egress-proxy"},
+    "options": {"baseURL": %q, "apiKey": %q},
     "models": {"acceptance": {"id": "acceptance/model"}}
   }},
   "agent": {"implementer": {"mode": "primary", "model": "openrouter/acceptance", "permission": "allow"}},
@@ -248,7 +251,8 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 		provider := fakeProvider()
 		DeferCleanup(provider.Close)
 
-		proxy, err := egress.StartWithLogger(GinkgoT().Context(), openNetwork(), provider.URL+"/api/v1", egress.Loopback, nil)
+		proxy, err := egress.StartWithLogger(
+			GinkgoT().Context(), openNetwork(), provider.URL+"/api/v1", acceptanceToken, egress.Loopback, nil)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(proxy.Close)
 
@@ -288,7 +292,7 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 			"OPENCODE_DISABLE_PROJECT_CONFIG=1",
 			"OPENCODE_DISABLE_EXTERNAL_SKILLS=1",
 			"OPENCODE_DB=" + filepath.Join(runDir, "opencode.db"),
-			"OPENCODE_CONFIG_CONTENT=" + fmt.Sprintf(opencodeConfig, proxy.URL()),
+			"OPENCODE_CONFIG_CONTENT=" + fmt.Sprintf(opencodeConfig, proxy.URL(), acceptanceToken),
 		}
 
 		var out bytes.Buffer
