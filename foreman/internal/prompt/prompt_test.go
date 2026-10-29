@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -208,5 +209,30 @@ var _ = Describe("ReadRepoDocs", func() {
 		docs, err := ReadRepoDocs(dir)
 		Expect(err).To(MatchError(ContainSubstring("AGENTS.md")))
 		Expect(docs).To(BeNil())
+	})
+
+	It("refuses a document that is a symlink even inside the repository", func() {
+		write("real.md", "real")
+		Expect(os.Symlink("real.md", filepath.Join(dir, "AGENTS.md"))).To(Succeed())
+
+		docs, err := ReadRepoDocs(dir)
+		Expect(err).To(MatchError(And(ContainSubstring("AGENTS.md"), ContainSubstring("not a regular file"))))
+		Expect(docs).To(BeNil())
+	})
+
+	It("refuses a FIFO document instead of blocking on it", func() {
+		Expect(syscall.Mkfifo(filepath.Join(dir, "GLOSSARY.md"), 0o600)).To(Succeed())
+
+		docs, err := ReadRepoDocs(dir)
+		Expect(err).To(MatchError(And(ContainSubstring("GLOSSARY.md"), ContainSubstring("not a regular file"))))
+		Expect(docs).To(BeNil())
+	})
+
+	It("truncates a document far over the cap to the cap", func() {
+		write("AGENTS.md", strings.Repeat("a", 10*DocsLimitChars))
+
+		docs, err := ReadRepoDocs(dir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(chars(docs)).To(Equal(DocsLimitChars))
 	})
 })
