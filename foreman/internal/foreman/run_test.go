@@ -412,6 +412,33 @@ var _ = Describe("Run", func() {
 		Expect(h.out.String()).To(HavePrefix(prURL + "\n"))
 	})
 
+	It("on a rework lists the issue's comments once", func() {
+		h.implementerGH(map[string]any{"number": 8, "html_url": "http://github/pr/8"},
+			[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
+		h.writeToken(workflow.Implementer, "repo-token")
+		h.roleWrites(workflow.Implementer, 5, reworkOutput)
+
+		listed := 0
+		seen := false
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) && !seen {
+				seen = true
+
+				for _, call := range h.gh.Summary() {
+					if call == "GET /repos/o/r/issues/5/comments" {
+						listed++
+					}
+				}
+			}
+
+			return base(c)
+		})
+
+		Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+		Expect(listed).To(Equal(1), "the thread and the CI report read the issue's comments separately")
+	})
+
 	Describe("the Reviewer", func() {
 		It("approves a clean review of the head commit, posts its retro and asks a human to merge", func() {
 			h.reviewerGH(nil)

@@ -469,14 +469,20 @@ func buildImplementerPrompt(
 }
 
 // rework reads what a run that was sent back must answer: every comment since the marker that woke
-// the issue, and the CI failure report when that is why it came back.
+// the issue, and the CI failure report when that is why it came back. Both come from one listing of
+// the issue's comments.
 func rework(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, string, error) {
-	thread, err := guidance(ctx, c, ref)
+	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return nil, "", err
 	}
 
-	ci, err := ciFeedback(ctx, c, ref)
+	thread, err := issueThread(ctx, c, ref, comments)
+	if err != nil {
+		return nil, "", err
+	}
+
+	ci, err := ciFeedback(comments, ref)
 
 	return thread, ci, err
 }
@@ -489,10 +495,21 @@ func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]wo
 		return nil, err
 	}
 
+	return issueThread(ctx, c, ref, comments)
+}
+
+// issueThread is the guidance the issue's comments carry: the open pull request's comments join them,
+// everything is put in id order, and the markers that woke the issue are read.
+func issueThread(
+	ctx context.Context, c github.Client, ref workflow.IssueRef, comments []workflow.Item,
+) ([]workflow.Item, error) {
 	pr, err := c.ExistingPR(ctx, ref.Repo, workflow.BranchName(ref.Number))
 	if err != nil {
 		return nil, err
 	}
+
+	// The caller's listing is left as it is: the CI report reads the same issue's comments.
+	thread := slices.Clone(comments)
 
 	if pr != nil {
 		onPR, err := c.ListComments(ctx, workflow.IssueRef{Repo: ref.Repo, Number: pr.Number})
@@ -500,24 +517,19 @@ func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]wo
 			return nil, err
 		}
 
-		comments = append(comments, onPR...)
+		thread = append(thread, onPR...)
 	}
 
-	slices.SortStableFunc(comments, func(a, b workflow.Item) int {
+	slices.SortStableFunc(thread, func(a, b workflow.Item) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
 
-	return workflow.Guidance(comments, ref.Repo.Owner()), nil
+	return workflow.Guidance(thread, ref.Repo.Owner()), nil
 }
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
 // handoff that sent the pull request to review. A report from an earlier round is stale and left out.
-func ciFeedback(ctx context.Context, c github.Client, ref workflow.IssueRef) (string, error) {
-	comments, err := c.ListComments(ctx, ref)
-	if err != nil {
-		return "", err
-	}
-
+func ciFeedback(comments []workflow.Item, ref workflow.IssueRef) (string, error) {
 	report, ok, err := workflow.LatestCIFailure(comments, ref.Repo.Owner())
 	if err != nil || !ok {
 		return "", err
