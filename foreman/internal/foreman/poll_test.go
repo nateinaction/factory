@@ -272,21 +272,84 @@ var _ = Describe("Poll", func() {
 	})
 
 	Describe("recovery", func() {
-		It("re-applies the state the latest marker names when the issue does not carry it", func() {
-			h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 5}}})
+		// strand seeds o/r#5 carrying label with a marker from the Implementer that names to.
+		strand := func(label string, to workflow.State) {
+			GinkgoHelper()
+			h.queue(map[string][]map[string]any{label: {{"number": 5}}})
 
 			marker, err := workflow.RenderTransition(workflow.Transition{
-				Role: workflow.Implementer, RunID: "old-run",
-				From: workflow.Implement, To: workflow.Implementing,
+				Role: workflow.Implementer, RunID: "old-run", From: workflow.State(label), To: to,
 			})
 			Expect(err).NotTo(HaveOccurred())
 			h.comment(5, appLogin(workflow.Implementer), marker)
+		}
+
+		// labelWrites counts the calls after the first n that write o/r#5's labels.
+		labelWrites := func(n int) int {
+			GinkgoHelper()
+
+			writes := 0
+
+			for _, call := range h.gh.Calls()[n:] {
+				if call.Path == "/repos/o/r/issues/5/labels" || strings.HasPrefix(call.Path, "/repos/o/r/issues/5/labels/") {
+					writes++
+				}
+			}
+
+			return writes
+		}
+
+		It("re-applies the state the latest marker names when the issue does not carry it", func() {
+			strand(workflow.LabelImplement, workflow.Implementing)
 
 			Expect(poll()).Error().NotTo(HaveOccurred())
 
-			Expect(h.labels(5)).To(ContainElements(workflow.LabelImplement, workflow.LabelImplementing))
+			Expect(h.labels(5)).To(ConsistOf(workflow.LabelImplementing), "left a state the marker does not name")
 			Expect(h.runner.find("enqueue")).To(BeEmpty(), "ran an issue the marker says is claimed")
 			Expect(h.logs.String()).To(ContainSubstring("repairing a stranded issue"))
+		})
+
+		It("leaves exactly the state label its latest marker names", func() {
+			// A finish whose marker landed but whose running label stayed on leaves two states.
+			strand(workflow.LabelImplementing, workflow.Done)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelDone))
+		})
+
+		It("leaves exactly the label a failed finish names", func() {
+			strand(workflow.LabelReviewing, workflow.Failed)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelFailed))
+		})
+
+		It("keeps a paused overlay while it repairs", func() {
+			// Paused is not a state: a person's overlay is never removed by recovery.
+			strand(workflow.LabelImplementing, workflow.Done)
+			Expect(emulator.Do(context.Background(), http.MethodPost, "/repos/o/r/issues/5/labels",
+				ghtest.AdminToken, map[string]any{"labels": []string{workflow.LabelPaused}}, nil)).To(Succeed())
+
+			expectNothingReady()
+
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelPaused, workflow.LabelImplementing),
+				"repaired a paused issue")
+		})
+
+		It("changes nothing when it recovers the same issue twice", func() {
+			strand(workflow.LabelImplementing, workflow.Done)
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelDone))
+
+			before := len(h.gh.Calls())
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			Expect(labelWrites(before)).To(BeZero(), "wrote a label on the second recovery")
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelDone))
 		})
 
 		It("re-applies the state with the token of the agent role that made the transition", func() {
@@ -335,20 +398,12 @@ var _ = Describe("Poll", func() {
 			Expect(h.logs.String()).To(ContainSubstring("skipping an issue the poll cannot read"))
 		})
 
-		It("does not repair an issue that already carries the state", func() {
-			h.queue(map[string][]map[string]any{workflow.LabelImplement: {{"number": 5}}})
-
-			marker, err := workflow.RenderTransition(workflow.Transition{
-				Role: workflow.Implementer, RunID: "old-run",
-				From: workflow.Implement, To: workflow.Implementing,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			h.comment(5, appLogin(workflow.Implementer), marker)
-			Expect(emulator.Do(context.Background(), http.MethodPost, "/repos/o/r/issues/5/labels",
-				ghtest.AdminToken, map[string]any{"labels": []string{workflow.LabelImplementing}}, nil)).To(Succeed())
+		It("does not repair an issue that already carries only the state", func() {
+			strand(workflow.LabelImplementing, workflow.Implementing)
 
 			expectNothingReady()
-			Expect(h.labels(5)).To(ConsistOf(workflow.LabelImplement, workflow.LabelImplementing))
+			Expect(h.factoryLabels(5)).To(ConsistOf(workflow.LabelImplementing))
+			Expect(labelWrites(0)).To(BeZero(), "wrote a label for an issue already in its state")
 			Expect(h.runner.find("enqueue")).To(BeEmpty())
 		})
 	})

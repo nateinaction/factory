@@ -536,6 +536,16 @@ func (c Client) AddLabel(ctx context.Context, ref workflow.IssueRef, label strin
 		labelsRequest{Labels: []string{label}}, nil)
 }
 
+// RemoveLabel takes one label off an issue. A label already gone is not an error, so the removal is
+// safe to repeat.
+func (c Client) RemoveLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
+	if err := c.removeLabel(ctx, ref, label); err != nil && !isStatus(err, http.StatusNotFound) {
+		return err
+	}
+
+	return nil
+}
+
 // removeLabel removes one label from an issue.
 func (c Client) removeLabel(ctx context.Context, ref workflow.IssueRef, label string) error {
 	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", ref.Repo, ref.Number, url.PathEscape(label))

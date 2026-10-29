@@ -722,15 +722,60 @@ func ParseTransition(body string) (Transition, bool, error) {
 	return t, true, nil
 }
 
-// Repair returns the state label to re-apply when the latest marker names a state the issue does not
-// carry. A paused issue is frozen, so it is never repaired. A closed ticket has no label to apply.
-func Repair(issue Issue, latest Transition, found bool) (State, bool) {
-	if !found || latest.To == Closed || HasLabel(issue, LabelPaused) ||
-		HasLabel(issue, string(latest.To)) {
-		return "", false
+// RepairPlan is what recovery changes to leave an issue carrying exactly the state its latest marker
+// names: the state to add when the issue lacks it, and the stale handoff labels to remove.
+type RepairPlan struct {
+	// Add is the state the issue does not carry yet, or the empty state.
+	Add State
+	// Remove are the handoff labels the marker no longer names, in the issue's order.
+	Remove []State
+}
+
+// Apply returns labels with the plan applied: the stale handoff labels dropped and the state added
+// when it was missing. Every other label, the paused overlay included, is kept.
+func (p RepairPlan) Apply(labels []string) []string {
+	out := make([]string, 0, len(labels)+1)
+
+	for _, label := range labels {
+		if !slices.Contains(p.Remove, State(label)) {
+			out = append(out, label)
+		}
 	}
 
-	return latest.To, true
+	if p.Add != "" {
+		out = append(out, string(p.Add))
+	}
+
+	return out
+}
+
+// Repair plans the label changes that leave an issue carrying exactly the state its latest marker
+// names, so a finish that posted its marker but failed to take the old state off is not left in two
+// states. Repairing again plans nothing once the issue carries that state alone. A paused issue is
+// frozen, so it is never repaired. A closed ticket has no label to apply.
+func Repair(issue Issue, latest Transition, found bool) (RepairPlan, bool) {
+	if !found || latest.To == Closed || HasLabel(issue, LabelPaused) {
+		return RepairPlan{}, false
+	}
+
+	plan := RepairPlan{}
+	if !HasLabel(issue, string(latest.To)) {
+		plan.Add = latest.To
+	}
+
+	for _, label := range issue.Labels {
+		if state := State(label); state != latest.To && isHandoffLabel(state) {
+			plan.Remove = append(plan.Remove, state)
+		}
+	}
+
+	return plan, plan.Add != "" || len(plan.Remove) > 0
+}
+
+// isHandoffLabel reports whether s is a label that carries a handoff state. Paused is not one: it
+// overlays any state and a person sets it. Closed has no label, so neither is one.
+func isHandoffLabel(s State) bool {
+	return s != Paused && s != Closed && slices.Contains(States(), s)
 }
 
 // BranchName is the branch an issue's work lives on.
