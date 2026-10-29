@@ -59,6 +59,11 @@ check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$
 # Exactly one command on the NOPASSWD line, and it is foreman run *.
 check "sudoers has exactly one permitted command" bash -c \
   'grep -E "NOPASSWD:" "$1" | sed "s/.*NOPASSWD: *//" | grep -Fxq "/usr/local/bin/foreman run *"' _ "$out/dagu-agent.sudoers"
+# The agent never inherits the factory's configuration through sudo: no FACTORY_* variable is kept.
+check "sudoers keeps no FACTORY_ variable" bash -c '! grep -Eq "FACTORY_" "$1"' _ "$out/dagu-agent.sudoers"
+# The check above is not vacuous: env_keep is present, and names only the dagu run id.
+check "sudoers keeps only DAG_RUN_ID in the environment" bash -c \
+  'kept="$(grep -E "env_keep" "$1" | sed "s/.*env_keep *+\?= *//" | tr -d "\"" | tr " " "\n" | sort -u)"; [ "$kept" = "DAG_RUN_ID" ]' _ "$out/dagu-agent.sudoers"
 if command -v visudo >/dev/null 2>&1; then
   check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
 fi
