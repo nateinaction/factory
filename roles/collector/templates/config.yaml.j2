@@ -36,7 +36,7 @@ processors:
     metric_statements:
       - context: resource
         statements:
-          - set(attributes["host.name"], "{{ inventory_hostname }}")
+          - set(resource.attributes["host.name"], "{{ inventory_hostname }}")
   # Anything not in allowed_keys is redacted, so a new attribute is dropped until it is added to
   # factory_collector_allowed_attributes. summary: info logs which keys were dropped, never values.
   redaction:
