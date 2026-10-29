@@ -1,5 +1,6 @@
-# Runs on the server and involves no model: claim one ready issue and queue its
-# run. One poll at a time, so two polls cannot claim the same issue.
+# Runs on the server and involves no model: claim a ready issue for every agent role
+# with free run capacity, up to that capacity, and queue each run. One poll at a time,
+# so two polls cannot claim the same issue.
 type: graph
 schedule: "*/5 * * * *"
 max_active_runs: 1

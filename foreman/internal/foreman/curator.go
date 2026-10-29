@@ -38,7 +38,8 @@ func curatorInputs(
 	return reports, state, repository.Private, nil
 }
 
-// cloneDefault clones only the default branch, which is all the Curator reads.
+// cloneDefault clones only the default branch. That is all the Planner reads: the repository docs
+// for its prompt, and the flake the run's toolchain resolves from. No other branch is cloned.
 func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch string) error {
 	_, err := s.d.run(ctx, proc.Cmd{
 		Argv: []string{
