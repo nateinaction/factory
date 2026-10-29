@@ -364,8 +364,8 @@ func (h *harness) factoryLabels(number int) []string {
 	return out
 }
 
-// markerComments are the factory transition markers posted on o/r#number, oldest first.
-func (h *harness) markerComments(number int) []string {
+// postedComments decodes the comments posted on o/r#number, oldest first, keeping those keep accepts.
+func (h *harness) postedComments(number int, keep func(body string) bool) []string {
 	GinkgoHelper()
 
 	var out []string
@@ -376,12 +376,19 @@ func (h *harness) markerComments(number int) []string {
 		}
 		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
 
-		if strings.HasPrefix(body.Body, workflow.MarkerPrefix) {
+		if keep(body.Body) {
 			out = append(out, body.Body)
 		}
 	}
 
 	return out
+}
+
+// markerComments are the factory transition markers posted on o/r#number, oldest first.
+func (h *harness) markerComments(number int) []string {
+	return h.postedComments(number, func(body string) bool {
+		return strings.HasPrefix(body, workflow.MarkerPrefix)
+	})
 }
 
 // defaultRun answers token minting and git queries, and a clone makes its directory, as git does;
@@ -633,70 +640,30 @@ func (h *harness) reviewPath() string {
 	return fmt.Sprintf("/repos/o/r/pulls/%d/reviews", pr)
 }
 
-// retroOut is where a run's retro.json is written for o/r#5.
-func (h *harness) retroOut(role workflow.Role) string {
-	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("issue-5-%s.retro.json", role))
-}
+// rolePaths is where the agent role's run on number works, scratches and writes, named exactly as the
+// run pipeline names them: the agent role table owns the names. Nothing is created.
+func (h *harness) rolePaths(role workflow.Role, number int) runPaths {
+	GinkgoHelper()
 
-// curatorOut is where a Curator run on number writes its output file.
-func (h *harness) curatorOut(number int) string {
-	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("curator-out-%d", number),
-		workflow.CuratorOutputFile)
-}
+	paths, err := runPathsFor(h.deps.Settings.WorkRoot, role, number)
+	Expect(err).NotTo(HaveOccurred())
 
-// curatorWrites makes the Curator's run on number write text as its output file.
-func (h *harness) curatorWrites(number int, text string) {
-	out := h.curatorOut(number)
-
-	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if isModel(c) && strings.Contains(joined(c), "--agent curator ") {
-			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
-			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
-		}
-
-		return base(c)
-	})
+	return paths
 }
 
 // retroComments are the retro marker comments posted on o/r#5, oldest first.
 func (h *harness) retroComments() []string {
-	GinkgoHelper()
-
-	var out []string
-
-	for _, raw := range h.gh.Bodies("POST", "/repos/o/r/issues/5/comments") {
-		var body struct {
-			Body string `json:"body"`
-		}
-		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
-
-		if strings.HasPrefix(body.Body, workflow.RetroMarkerPrefix) {
-			out = append(out, body.Body)
-		}
-	}
-
-	return out
+	return h.postedComments(5, func(body string) bool {
+		return strings.HasPrefix(body, workflow.RetroMarkerPrefix)
+	})
 }
 
 // reportComments are the comments posted on o/r#5 that are not handoff markers: what a run says
 // about its own outcome, not the state machine's transition records.
 func (h *harness) reportComments() []string {
-	GinkgoHelper()
-
-	var out []string
-
-	for _, raw := range h.gh.Bodies("POST", "/repos/o/r/issues/5/comments") {
-		var body struct {
-			Body string `json:"body"`
-		}
-		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
-
-		if !strings.HasPrefix(body.Body, workflow.MarkerPrefix+"handoff ") {
-			out = append(out, body.Body)
-		}
-	}
-
-	return out
+	return h.postedComments(5, func(body string) bool {
+		return !strings.HasPrefix(body, workflow.MarkerPrefix+"handoff ")
+	})
 }
 
 // seedComment posts a comment on issue 5 as the factory's Implementer App and returns its id: the
@@ -786,35 +753,15 @@ func (h *harness) reviewerGH(reviews []workflow.Item) {
 	h.writeToken(workflow.Reviewer, "repo-token")
 }
 
-// reviewOut is where a Reviewer run on issue 5 writes its verdict.
-func (h *harness) reviewOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "reviewer-5", workflow.ReviewerOutputFile)
+// runDir is where the agent role's run on number keeps its HOME, TMPDIR, state and settings: the
+// pipeline itself deletes it.
+func (h *harness) runDir(role workflow.Role, number int) string {
+	return filepath.Join(h.deps.Settings.WorkRoot, runDirName(role, number))
 }
 
-// implOut is where an Implementer run on issue 5 writes its output.
-func (h *harness) implOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "implementer-5", workflow.ImplementerOutputFile)
-}
-
-// researchOut is where a Researcher run on issue 5 writes its output.
-func (h *harness) researchOut() string {
-	return filepath.Join(h.deps.Settings.WorkRoot, "researcher-5", workflow.ResearcherOutputFile)
-}
-
-// researcherWrites makes the Researcher's run on issue 5 write text as its output file, leaving the
-// retro alone.
-func (h *harness) researcherWrites(text string) {
-	out := h.researchOut()
-
-	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if isModel(c) && strings.Contains(joined(c), "--agent researcher ") &&
-			!strings.Contains(joined(c), "--session") {
-			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
-			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
-		}
-
-		return base(c)
-	})
+// reviewSpec is the issue spec file a Reviewer run on number reads, beside its output file.
+func (h *harness) reviewSpec(number int) string {
+	return filepath.Join(h.rolePaths(workflow.Reviewer, number).scratch, reviewSpecFile)
 }
 
 // researchTicket creates issue 5 as a research ticket and a parent map as issue 6, linked by the
@@ -889,19 +836,37 @@ const cleanReview = `{"version":1,"verdict":"APPROVE","summary":"fine","findings
 const blockingReview = `{"version":1,"verdict":"REQUEST_CHANGES","summary":"bad","findings":[` +
 	`{"severity":"high","path":"a.go","line":1,"claim":"bug"}]}`
 
-// opencodeWrites makes opencode runs write text to the file at path, for the runs whose argv contains
-// marker.
-func (h *harness) opencodeWrites(marker, path, text string) {
+// modelWrites is the one write stub: a model run of the agent role writes text to path, for the run
+// itself when retro is false and for the retro that resumes it when true. The run reports whatever the
+// harness otherwise answers for it, while the retro always reports a finished step, so a spec can fail
+// the run itself and still give its retro a working model.
+func (h *harness) modelWrites(role workflow.Role, retro bool, path, text string) {
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if isModel(c) && strings.Contains(joined(c), marker) {
-			Expect(os.MkdirAll(filepath.Dir(path), 0o700)).To(Succeed())
-			Expect(os.WriteFile(path, []byte(text), 0o600)).To(Succeed())
+		if !isModel(c) || !strings.Contains(joined(c), "--agent "+string(role)+" ") ||
+			strings.Contains(joined(c), "--session") != retro {
+			return base(c)
+		}
 
+		Expect(os.MkdirAll(filepath.Dir(path), 0o700)).To(Succeed())
+		Expect(os.WriteFile(path, []byte(text), 0o600)).To(Succeed())
+
+		if retro {
 			return okStream("ses_1"), nil
 		}
 
 		return base(c)
 	})
+}
+
+// roleWrites makes the agent role's run on number write text as its output file, leaving the retro
+// alone.
+func (h *harness) roleWrites(role workflow.Role, number int, text string) {
+	h.modelWrites(role, false, h.rolePaths(role, number).out, text)
+}
+
+// roleWritesRetro makes the agent role's retro of its run on o/r#5 write text as its retro file.
+func (h *harness) roleWritesRetro(role workflow.Role, text string) {
+	h.modelWrites(role, true, retroPath(h.deps.Settings.WorkRoot, 5, role), text)
 }
 
 // baseURL is the OpenRouter base URL one opencode process was given.
@@ -1040,31 +1005,9 @@ func (h *harness) answerOpencode(outs ...string) {
 func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
 	h.writeToken(workflow.Implementer, "repo-token\n")
-	h.implementerWrites(firstRunOutput)
+	h.roleWrites(workflow.Implementer, 5, firstRunOutput)
 
 	return Run(context.Background(), h.deps, workflow.Implementer, testRef(5), agent, testRetro(), 3)
-}
-
-// implementerWrites makes the Implementer's run write text as its output file, leaving the retro
-// alone, and passes the process on to whatever the harness otherwise answers.
-func (h *harness) implementerWrites(text string) {
-	h.implementerWritesFor(5, text)
-}
-
-// implementerWritesFor makes an Implementer run on number write text to that run's output file.
-func (h *harness) implementerWritesFor(number int, text string) {
-	out := filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("implementer-%d", number),
-		workflow.ImplementerOutputFile)
-
-	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
-		if isModel(c) && strings.Contains(joined(c), "--agent implementer ") &&
-			!strings.Contains(joined(c), "--session") {
-			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
-			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
-		}
-
-		return base(c)
-	})
 }
 
 // usageLines are the JSON lines on stdout that are usage reports.

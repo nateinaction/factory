@@ -126,7 +126,7 @@ var _ = Describe("waking on a comment", func() {
 
 		// The Implementer's run reads the comment the writer left on the pull request.
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWritesFor(1, reworkOutput)
+		h.roleWrites(workflow.Implementer, 1, reworkOutput)
 		Expect(Run(context.Background(), h.deps, workflow.Implementer, testRef(1), testAgent(), testRetro(), 3)).
 			Error().NotTo(HaveOccurred())
 
@@ -215,7 +215,7 @@ var _ = Describe("waking on a comment", func() {
 
 		// The Implementer's run reads the guidance the writer left after the failure.
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWritesFor(1, firstRunOutput)
+		h.roleWrites(workflow.Implementer, 1, firstRunOutput)
 		Expect(Run(context.Background(), h.deps, workflow.Implementer, testRef(1), testAgent(), testRetro(), 3)).
 			Error().NotTo(HaveOccurred())
 
@@ -370,8 +370,8 @@ var _ = Describe("dead runs", func() {
 		addLabel(5)
 		h.implementerGH(nil, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWrites(firstRunOutput)
-		h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+		h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+		h.roleWritesRetro(workflow.Implementer, validRetro)
 
 		// The run was claimed long before the retro began, so a poll that still saw the running
 		// label would call it dead while the retro is going.

@@ -38,12 +38,6 @@ var _ = Describe("the Planner", func() {
 		h.ensureIssue(5)
 	})
 
-	// plannerWrites makes the Planner's model write text as its output file.
-	plannerWrites := func(text string) {
-		out := h.deps.Settings.WorkRoot + "/planner-5/" + workflow.PlannerOutputFile
-		h.opencodeWrites("--agent planner ", out, text)
-	}
-
 	// runPlanner runs the Planner on issue 5.
 	runPlanner := func() (int, error) {
 		h.writeToken(workflow.Planner, "repo-token\n")
@@ -52,7 +46,7 @@ var _ = Describe("the Planner", func() {
 	}
 
 	It("posts a round of questions, moves the issue to waiting and runs no retro", func() {
-		plannerWrites(plannerQuestions)
+		h.roleWrites(workflow.Planner, 5, plannerQuestions)
 
 		Expect(runPlanner()).To(BeZero())
 
@@ -69,14 +63,14 @@ var _ = Describe("the Planner", func() {
 
 		Expect(h.opencodeCalls()).To(HaveLen(1), "the questions round has no retro")
 		Expect(h.runner.find("--session")).To(BeEmpty())
-		Expect(h.runner.find("git clone", "plan-5")).To(HaveLen(1),
+		Expect(h.runner.find("git clone", h.rolePaths(workflow.Planner, 5).workdir)).To(HaveLen(1),
 			"the Planner reads the default branch's docs from a read-only clone")
 		Expect(h.runner.find("commit -m")).To(BeEmpty(), "the Planner never commits")
 	})
 
 	It("gives the model the repository docs, the issue thread, the output path and a read-only token", func() {
 		h.comment(5, "o", "Earlier context for the plan")
-		plannerWrites(plannerQuestions)
+		h.roleWrites(workflow.Planner, 5, plannerQuestions)
 
 		// git clone makes the directory; the docs come from the default branch it holds.
 		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
@@ -108,7 +102,7 @@ var _ = Describe("the Planner", func() {
 			ContainSubstring("Widget: a unit of work."),
 			ContainSubstring("ADRs live in docs/adr."),
 			ContainSubstring("We write Go."),
-			ContainSubstring("Write the JSON to "+h.deps.Settings.WorkRoot+"/planner-5/"+workflow.PlannerOutputFile),
+			ContainSubstring("Write the JSON to "+h.rolePaths(workflow.Planner, 5).out),
 			ContainSubstring("Domain changes"),
 		))
 		Expect(joined(oc[0])).NotTo(ContainSubstring("or-key"))
@@ -116,8 +110,8 @@ var _ = Describe("the Planner", func() {
 	})
 
 	It("stores a final round's proposal hidden in the comment and keys its retro by the comment id", func() {
-		plannerWrites(plannerSingle)
-		h.opencodeWrites("--session", h.retroOut(workflow.Planner), validRetro)
+		h.roleWrites(workflow.Planner, 5, plannerSingle)
+		h.roleWritesRetro(workflow.Planner, validRetro)
 
 		Expect(runPlanner()).To(BeZero())
 
@@ -150,7 +144,7 @@ var _ = Describe("the Planner", func() {
 	})
 
 	It("rejects an invalid output, applying nothing", func() {
-		plannerWrites(`{"version":1,"kind":"questions","comment":"","labels":["factory:plan"]}`)
+		h.roleWrites(workflow.Planner, 5, `{"version":1,"kind":"questions","comment":"","labels":["factory:plan"]}`)
 
 		code, err := runPlanner()
 		Expect(code).To(Equal(workflow.ExitReported))

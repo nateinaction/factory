@@ -50,8 +50,8 @@ var _ = Describe("the sandbox", func() {
 		h = newHarness()
 		h.implementerGH(nil, nil)
 		h.writeToken(workflow.Implementer, "repo-token\n")
-		h.implementerWrites(firstRunOutput)
-		h.opencodeWrites("--session", h.retroOut(workflow.Implementer), validRetro)
+		h.roleWrites(workflow.Implementer, 5, firstRunOutput)
+		h.roleWritesRetro(workflow.Implementer, validRetro)
 	})
 
 	// settingsOn reads the settings file of the run and retro commands as they start.
@@ -81,11 +81,11 @@ var _ = Describe("the sandbox", func() {
 		Expect(calls).To(HaveLen(2), "want the run and its retro")
 		Expect(settings).To(HaveLen(2))
 
-		work := filepath.Join(h.deps.Settings.WorkRoot, "issue-5")
-		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5")
-		scratch := filepath.Join(h.deps.Settings.WorkRoot, "implementer-5")
-		otherRun := filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-6")
-		otherScratch := filepath.Join(h.deps.Settings.WorkRoot, "implementer-6")
+		work := h.rolePaths(workflow.Implementer, 5).workdir
+		runDir := h.runDir(workflow.Implementer, 5)
+		scratch := h.rolePaths(workflow.Implementer, 5).scratch
+		otherRun := h.runDir(workflow.Implementer, 6)
+		otherScratch := h.rolePaths(workflow.Implementer, 6).scratch
 
 		for _, c := range calls {
 			Expect(c.Argv[0]).To(Equal("srt"))
@@ -142,8 +142,9 @@ var _ = Describe("the sandbox", func() {
 
 	It("deletes the run's HOME, XDG directories and toolchain afterwards", func() {
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
-		Expect(filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5")).NotTo(BeAnExistingFile())
-		Expect(filepath.Join(h.deps.Settings.WorkRoot, "toolchain-implementer-5")).NotTo(BeAnExistingFile())
+		Expect(h.runDir(workflow.Implementer, 5)).NotTo(BeAnExistingFile())
+		Expect(filepath.Join(h.deps.Settings.WorkRoot, toolchainDirName(workflow.Implementer, 5))).
+			NotTo(BeAnExistingFile())
 	})
 
 	It("resolves the toolchain from the default branch's flake, not the working branch", func() {
@@ -179,8 +180,7 @@ var _ = Describe("the sandbox", func() {
 		Expect(joined(nix[0])).To(ContainSubstring("--flake path:" + toolchain))
 		Expect(joined(nix[0])).NotTo(ContainSubstring(workdir), "the working branch's flake was used")
 		Expect(nix[0].Env).To(HaveKeyWithValue("PATH", HavePrefix("/nix/var/nix/profiles/default/bin:")))
-		Expect(nix[0].Env).To(HaveKeyWithValue("HOME",
-			filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5", "home")))
+		Expect(nix[0].Env).To(HaveKeyWithValue("HOME", filepath.Join(h.runDir(workflow.Implementer, 5), "home")))
 	})
 
 	It("fails closed when the sandbox backend is not configured", func() {
@@ -259,21 +259,20 @@ var _ = Describe("the sandbox", func() {
 		h.installed[workflow.Planner] = []string{"o/r"}
 		h.writeToken(workflow.Planner, "repo-token\n")
 		h.ensureIssue(5)
-		h.opencodeWrites("--agent planner ",
-			filepath.Join(h.deps.Settings.WorkRoot, "planner-5", workflow.PlannerOutputFile), plannerSingle)
-		h.opencodeWrites("--session", h.retroOut(workflow.Planner), validRetro)
+		h.roleWrites(workflow.Planner, 5, plannerSingle)
+		h.roleWritesRetro(workflow.Planner, validRetro)
 		settingsOn(&settings)
 
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Planner, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 
 		Expect(h.runner.find("srt --settings")).To(HaveLen(2), "want the run and its retro")
 		Expect(settings).To(HaveLen(2))
-		Expect(h.runner.find("git clone", "plan-5")).To(HaveLen(1),
+		Expect(h.runner.find("git clone", h.rolePaths(workflow.Planner, 5).workdir)).To(HaveLen(1),
 			"the Planner reads the default branch's docs from a clone")
 
-		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-planner-5")
-		clone := filepath.Join(h.deps.Settings.WorkRoot, "plan-5")
-		scratch := filepath.Join(h.deps.Settings.WorkRoot, "planner-5")
+		runDir := h.runDir(workflow.Planner, 5)
+		clone := h.rolePaths(workflow.Planner, 5).workdir
+		scratch := h.rolePaths(workflow.Planner, 5).scratch
 
 		for _, s := range settings {
 			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
@@ -289,8 +288,8 @@ var _ = Describe("the sandbox", func() {
 		h.installed[workflow.Researcher] = []string{"o/r"}
 		h.writeToken(workflow.Researcher, "repo-token\n")
 		h.researchTicket()
-		h.researcherWrites(researcherRun)
-		h.opencodeWrites("--session", h.retroOut(workflow.Researcher), validRetro)
+		h.roleWrites(workflow.Researcher, 5, researcherRun)
+		h.roleWritesRetro(workflow.Researcher, validRetro)
 
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Researcher, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 

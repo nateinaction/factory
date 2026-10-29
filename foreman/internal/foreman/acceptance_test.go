@@ -164,11 +164,19 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 		work := filepath.Join(root, "work")
 		Expect(os.MkdirAll(work, 0o700)).To(Succeed())
 
+		// pathsOf is where the Implementer's run of an issue keeps its directories.
+		pathsOf := func(number int) runPaths {
+			paths, pathsErr := runPathsFor(work, workflow.Implementer, number)
+			Expect(pathsErr).NotTo(HaveOccurred())
+
+			return paths
+		}
+
 		type run struct{ runDir, scratch string }
 
 		runs := []run{
-			{filepath.Join(work, "run-implementer-1"), filepath.Join(work, "implementer-1")},
-			{filepath.Join(work, "run-implementer-2"), filepath.Join(work, "implementer-2")},
+			{filepath.Join(work, runDirName(workflow.Implementer, 1)), pathsOf(1).scratch},
+			{filepath.Join(work, runDirName(workflow.Implementer, 2)), pathsOf(2).scratch},
 		}
 
 		for i, r := range runs {
