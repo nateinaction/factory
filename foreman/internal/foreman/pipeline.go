@@ -305,7 +305,6 @@ func pipeline(
 	record(ctx, oc.code, oc.err)
 
 	usage := res.Usage
-
 	if oc.retro {
 		usage = usage.Add(s.retroEpilogue(
 			ctx, j, spec.ref.Repo, spec.ref.Number, role, res.Session, oc.retroKey, oc.err, spec.retro,
