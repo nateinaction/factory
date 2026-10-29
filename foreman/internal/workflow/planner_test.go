@@ -222,7 +222,7 @@ var _ = Describe("the spec a final round stores", func() {
 	}
 
 	It("returns a single proposal's spec", func() {
-		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)})
+		spec, found, err := workflow.StoredSpec([]workflow.Item{stored(single)}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(spec).To(Equal(single.Spec))
@@ -234,7 +234,7 @@ var _ = Describe("the spec a final round stores", func() {
 			Issues: []workflow.PlannedIssue{{Key: "first", Title: "First", Body: "A"}},
 		}
 
-		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)})
+		_, found, err := workflow.StoredSpec([]workflow.Item{stored(slices)}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})
@@ -246,7 +246,7 @@ var _ = Describe("the spec a final round stores", func() {
 		newer := stored(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: newerSpec})
 		newer.ID = 2
 
-		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer})
+		spec, found, err := workflow.StoredSpec([]workflow.Item{older, newer}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(spec).To(Equal(newerSpec))
@@ -256,7 +256,7 @@ var _ = Describe("the spec a final round stores", func() {
 		forged := stored(single)
 		forged.Author = "o"
 
-		_, found, err := workflow.StoredSpec([]workflow.Item{forged})
+		_, found, err := workflow.StoredSpec([]workflow.Item{forged}, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 	})

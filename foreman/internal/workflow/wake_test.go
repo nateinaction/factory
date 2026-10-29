@@ -80,13 +80,13 @@ var _ = Describe("waking on a comment", func() {
 			{ID: 4, Body: "second after", Author: "o"},
 		}
 
-		latest, found, err := workflow.LatestMarker(comments)
+		latest, found, err := workflow.LatestMarker(comments, "o")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(latest.ID).To(BeEquivalentTo(2))
 		Expect(latest.Transition).To(Equal(failed))
 
-		after := workflow.AfterMarker(comments, latest)
+		after := workflow.AfterMarker(comments, latest, "o")
 		Expect(after).To(Equal([]workflow.Item{
 			{ID: 3, Body: "first after", Author: "o"},
 			{ID: 4, Body: "second after", Author: "o"},
@@ -96,7 +96,7 @@ var _ = Describe("waking on a comment", func() {
 	It("fails closed on a malformed marker the factory wrote", func() {
 		_, _, err := workflow.LatestMarker([]workflow.Item{{
 			ID: 1, Body: "<!-- factory:handoff role=planner -->", Author: factoryApp(workflow.Planner),
-		}})
+		}}, "o")
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -130,7 +130,7 @@ var _ = Describe("the guidance of a woken run", func() {
 			{ID: 5, Body: marker(claim), Author: factoryApp(workflow.Planner)},
 		}
 
-		Expect(workflow.Guidance(comments)).To(Equal([]workflow.Item{{ID: 3, Body: "yes, do it", Author: "o"}}))
+		Expect(workflow.Guidance(comments, "o")).To(Equal([]workflow.Item{{ID: 3, Body: "yes, do it", Author: "o"}}))
 	})
 
 	It("includes a comment posted on the pull request, merged by comment id", func() {
@@ -141,7 +141,7 @@ var _ = Describe("the guidance of a woken run", func() {
 			{ID: 5, Body: marker(implementing), Author: factoryApp(workflow.Implementer)},
 		}
 
-		Expect(workflow.Guidance(comments)).To(Equal(
+		Expect(workflow.Guidance(comments, "o")).To(Equal(
 			[]workflow.Item{{ID: 3, Body: "please also handle X", Author: "o"}}))
 	})
 
@@ -153,7 +153,7 @@ var _ = Describe("the guidance of a woken run", func() {
 			{ID: 4, Body: marker(claim), Author: factoryApp(workflow.Planner)},
 		}
 
-		Expect(workflow.Guidance(comments)).To(BeEmpty())
+		Expect(workflow.Guidance(comments, "o")).To(BeEmpty())
 	})
 
 	It("reads nothing when the issue was not woken", func() {
@@ -162,11 +162,11 @@ var _ = Describe("the guidance of a woken run", func() {
 			{ID: 2, Body: "a comment", Author: "o"},
 		}
 
-		Expect(workflow.Guidance(comments)).To(BeEmpty())
+		Expect(workflow.Guidance(comments, "o")).To(BeEmpty())
 	})
 
 	It("reads nothing without a marker", func() {
-		Expect(workflow.Guidance([]workflow.Item{{ID: 1, Body: "hello", Author: "o"}})).To(BeEmpty())
+		Expect(workflow.Guidance([]workflow.Item{{ID: 1, Body: "hello", Author: "o"}}, "o")).To(BeEmpty())
 	})
 
 	It("reads nothing on a later run that no wake started", func() {
@@ -181,7 +181,7 @@ var _ = Describe("the guidance of a woken run", func() {
 			{ID: 5, Body: "another question", Author: "o"},
 		}
 
-		Expect(workflow.Guidance(comments)).To(BeEmpty())
+		Expect(workflow.Guidance(comments, "o")).To(BeEmpty())
 	})
 })
 

@@ -507,7 +507,7 @@ func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]wo
 		return cmp.Compare(a.ID, b.ID)
 	})
 
-	return workflow.Guidance(comments), nil
+	return workflow.Guidance(comments, ref.Repo.Owner()), nil
 }
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
@@ -518,7 +518,7 @@ func ciFeedback(ctx context.Context, c github.Client, ref workflow.IssueRef) (st
 		return "", err
 	}
 
-	report, ok, err := workflow.LatestCIFailure(comments)
+	report, ok, err := workflow.LatestCIFailure(comments, ref.Repo.Owner())
 	if err != nil || !ok {
 		return "", err
 	}
@@ -1034,7 +1034,7 @@ func postVerdict(
 		return workflow.ReviewClean, c.RequestReviewers(ctx, workflow.IssueRef{Repo: repo, Number: pr}, []string{reviewer})
 	}
 
-	if workflow.RoundLimitReached(workflow.ReviewRounds(reviews, comments, sha), limit) {
+	if workflow.RoundLimitReached(workflow.ReviewRounds(reviews, comments, sha, repo.Owner()), limit) {
 		return workflow.ReviewExhausted, nil
 	}
 

@@ -454,14 +454,14 @@ const (
 // StoredSpec returns the spec of the latest stored proposal, when that proposal is a single. The
 // latest stored proposal wins: another shape keeps its spec where that shape puts it, not in the
 // final-round comment.
-func StoredSpec(comments []Item) (string, bool, error) {
+func StoredSpec(comments []Item, owner string) (string, bool, error) {
 	var (
 		spec  string
 		final bool
 	)
 
 	for _, c := range comments {
-		if !FactoryAuthored(c.Author) {
+		if !FactoryAuthored(c.Author, owner) {
 			continue
 		}
 

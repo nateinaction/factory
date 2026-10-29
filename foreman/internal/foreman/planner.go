@@ -107,7 +107,7 @@ func openGate(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Is
 		return false, err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(issue.Number)) {
+	if hasMarker(comments, workflow.AppliedMarker(issue.Number), repo.Owner()) {
 		return true, nil
 	}
 
@@ -133,7 +133,7 @@ func lastWriterComment(
 		ok   bool
 	)
 
-	for _, comment := range workflow.AfterMarker(thread, marker) {
+	for _, comment := range workflow.AfterMarker(thread, marker, repo.Owner()) {
 		if perms.isWriter(ctx, d, c, repo, comment.Author) {
 			last, ok = comment, true
 		}
@@ -172,7 +172,7 @@ func applySingle(ctx context.Context, c github.Client, repo workflow.Repo, from 
 		return err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(from)) {
+	if hasMarker(comments, workflow.AppliedMarker(from), repo.Owner()) {
 		return nil
 	}
 
@@ -275,7 +275,7 @@ func finishMap(ctx context.Context, c github.Client, repo workflow.Repo, from in
 		return err
 	}
 
-	if hasMarker(comments, workflow.AppliedMarker(from)) {
+	if hasMarker(comments, workflow.AppliedMarker(from), repo.Owner()) {
 		return nil
 	}
 
@@ -376,7 +376,7 @@ func postResolution(ctx context.Context, c github.Client, repo workflow.Repo, fr
 	}
 
 	marker := workflow.AppliedMarker(from)
-	if hasMarker(comments, marker) {
+	if hasMarker(comments, marker, repo.Owner()) {
 		return nil
 	}
 
@@ -511,7 +511,7 @@ func finishSlices(
 		return err
 	}
 
-	if !hasMarker(comments, workflow.SlicesMarker(from)) {
+	if !hasMarker(comments, workflow.SlicesMarker(from), repo.Owner()) {
 		t := workflow.Transition{
 			Role: workflow.Planner, RunID: runID, From: workflow.Waiting, To: workflow.Done,
 		}
@@ -539,7 +539,7 @@ func plannedIssues(
 
 	for _, issue := range issues {
 		// Only a factory App's issue stands in for a planned slice; an outsider's marker is ignored.
-		if !workflow.FactoryAuthored(issue.Author) {
+		if !workflow.FactoryAuthored(issue.Author, repo.Owner()) {
 			continue
 		}
 
@@ -643,12 +643,6 @@ func ensureBodyLine(ctx context.Context, c github.Client, ref workflow.IssueRef,
 
 // hasMarker reports whether a factory App's comment starts with marker. Another author's marker is
 // ignored, so an outsider can neither block an apply nor stand in for one.
-func hasMarker(comments []workflow.Item, marker string) bool {
-	for _, comment := range comments {
-		if workflow.FactoryAuthored(comment.Author) && strings.Contains(comment.Body, marker) {
-			return true
-		}
-	}
-
-	return false
+func hasMarker(comments []workflow.Item, marker string, owner string) bool {
+	return len(workflow.FactoryStartsWith(comments, marker, owner)) > 0
 }

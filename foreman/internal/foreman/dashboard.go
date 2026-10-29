@@ -179,7 +179,7 @@ func writeDashboard(
 func findDashboardIssue(
 	ctx context.Context, c github.Client, repo workflow.Repo, issues []workflow.Issue,
 ) (number int, body string, found bool, err error) {
-	number, body, found = findDashboard(issues)
+	number, body, found = findDashboard(issues, repo.Owner())
 	if found {
 		return number, body, found, nil
 	}
@@ -189,7 +189,7 @@ func findDashboardIssue(
 		return 0, "", false, fmt.Errorf("list the dashboard's issues: %w", err)
 	}
 
-	number, body, found = findDashboard(oldest)
+	number, body, found = findDashboard(oldest, repo.Owner())
 
 	return number, body, found, nil
 }
@@ -223,7 +223,7 @@ func retroLog(
 			return nil, nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
 		}
 
-		reports = append(reports, retroReports(d, issue.Number, comments)...)
+		reports = append(reports, retroReports(d, issue.Number, comments, repo.Owner())...)
 
 		group, promoted, err := workflow.ParsePromoted(issue.Body)
 		if err != nil {
@@ -238,11 +238,11 @@ func retroLog(
 
 // retroReports reads one issue's retro comments as dashboard reports. Only a factory App's report
 // counts, so an outsider can never feed findings to the dashboard or the Curator.
-func retroReports(d Deps, number int, comments []workflow.Item) []workflow.DashboardReport {
+func retroReports(d Deps, number int, comments []workflow.Item, owner string) []workflow.DashboardReport {
 	var reports []workflow.DashboardReport
 
 	for _, comment := range comments {
-		if !workflow.FactoryAuthored(comment.Author) {
+		if !workflow.FactoryAuthored(comment.Author, owner) {
 			continue
 		}
 
@@ -273,9 +273,9 @@ func retroReports(d Deps, number int, comments []workflow.Item) []workflow.Dashb
 // open or closed. Another author's issue is never the dashboard, so an outsider cannot file it first. A
 // dashboard a person renames is a new one on the next poll, which is the least surprising thing to do
 // with a body foreman no longer owns.
-func findDashboard(issues []workflow.Issue) (number int, body string, found bool) {
+func findDashboard(issues []workflow.Issue, owner string) (number int, body string, found bool) {
 	for _, issue := range issues {
-		if issue.Title != workflow.DashboardTitle || !workflow.FactoryAuthored(issue.Author) {
+		if issue.Title != workflow.DashboardTitle || !workflow.FactoryAuthored(issue.Author, owner) {
 			continue
 		}
 

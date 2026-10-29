@@ -433,7 +433,7 @@ func prepareIssue(
 		return err
 	}
 
-	latest, found, err := workflow.LatestMarker(comments)
+	latest, found, err := workflow.LatestMarker(comments, repo.Owner())
 	if err != nil {
 		return fmt.Errorf("read the latest marker on #%d: %w", issue.Number, err)
 	}
@@ -570,7 +570,7 @@ func written(
 	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo,
 	thread []workflow.Item, latest workflow.Marker,
 ) bool {
-	for _, comment := range workflow.AfterMarker(thread, latest) {
+	for _, comment := range workflow.AfterMarker(thread, latest, repo.Owner()) {
 		if perms.isWriter(ctx, d, c, repo, comment.Author) {
 			return true
 		}
@@ -947,7 +947,7 @@ func ciFailureBack(
 		return err
 	}
 
-	rounds := workflow.ReviewRounds(reviews, comments, report.SHA)
+	rounds := workflow.ReviewRounds(reviews, comments, report.SHA, repo.Owner())
 
 	dst := workflow.Implement
 	text := "CI failed on the pull request. Sent back to the Implementer with the failure report above; " +
@@ -960,7 +960,7 @@ func ciFailureBack(
 	}
 
 	// The report is keyed by the commit, so a retried poll never posts it twice.
-	if !workflow.HasCIFailure(comments, report.SHA) {
+	if !workflow.HasCIFailure(comments, report.SHA, repo.Owner()) {
 		ref := workflow.IssueRef{Repo: repo, Number: issue.Number}
 
 		if err := c.Comment(ctx, ref, workflow.RenderCIFailure(report)); err != nil {

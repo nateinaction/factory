@@ -26,6 +26,14 @@ func (r Repo) String() string {
 	return r.name
 }
 
+// Owner returns the repository owner, the only owner whose factory Apps are ours. It is empty for
+// the zero Repo, which fails every factory-authorship check closed.
+func (r Repo) Owner() string {
+	owner, _, _ := strings.Cut(r.name, "/")
+
+	return owner
+}
+
 // ParseIssueRef parses the repository and issue number arguments of a command into one IssueRef. On
 // failure it returns the zero IssueRef and an error.
 func ParseIssueRef(repo, number string) (IssueRef, error) {

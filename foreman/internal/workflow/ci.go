@@ -321,14 +321,10 @@ func RenderCIFailure(report CIReport) string {
 
 // HasCIFailure reports whether a factory comment already carries the CI failure report for sha, so a
 // retried poll never posts the same report twice. Another author's marker is not a report.
-func HasCIFailure(comments []Item, sha string) bool {
+func HasCIFailure(comments []Item, sha, owner string) bool {
 	marker := CIFailureMarker(sha)
 
-	for _, c := range comments {
-		if !FactoryAuthored(c.Author) {
-			continue
-		}
-
+	for _, c := range FactoryStartsWith(comments, marker, owner) {
 		if c.Body == marker || strings.HasPrefix(c.Body, marker+"\n") {
 			return true
 		}
@@ -348,8 +344,8 @@ func CIFailureText(body string) string {
 // sent the pull request to review. A report from an earlier round is stale and left out, so a run
 // never reads a failure a later round already answered. Another author's reports and markers are
 // skipped, so a forged one is never read; a malformed factory handoff marker is an error, never skipped.
-func LatestCIFailure(comments []Item) (Item, bool, error) {
-	markers, err := Markers(comments)
+func LatestCIFailure(comments []Item, owner string) (Item, bool, error) {
+	markers, err := Markers(comments, owner)
 	if err != nil {
 		return Item{}, false, err
 	}
@@ -365,10 +361,8 @@ func LatestCIFailure(comments []Item) (Item, bool, error) {
 		}
 	}
 
-	for i, c := range comments {
-		if FactoryAuthored(c.Author) && strings.HasPrefix(c.Body, CIFailureMarkerPrefix) {
-			latestFailure = &comments[i]
-		}
+	for _, c := range FactoryStartsWith(comments, CIFailureMarkerPrefix, owner) {
+		latestFailure = &c
 	}
 
 	if latestFailure == nil || latestReview == 0 || latestFailure.ID <= latestReview {
