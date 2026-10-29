@@ -3,6 +3,9 @@ package openrouter
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
 )
 
 // maxUsageLine bounds one line of a response body the proxy reads for usage.
@@ -109,11 +112,12 @@ type usageStream struct {
 }
 
 // Write consumes p, remembering the last usage it holds. It never fails: the bytes are on their way
-// to the model regardless of whether telemetry parses.
+// to the model regardless of whether telemetry parses. Each pass consumes at least one byte or
+// returns, so the loop is bounded by len(p)+1 passes.
 func (s *usageStream) Write(p []byte) (int, error) {
 	n := len(p)
 
-	for {
+	for pass := 0; pass <= len(p); pass++ {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
 			s.append(p)
@@ -126,6 +130,8 @@ func (s *usageStream) Write(p []byte) (int, error) {
 
 		p = p[i+1:]
 	}
+
+	return n, nil
 }
 
 // append adds p to the current line, dropping anything past the line cap. A line that long is not a
@@ -164,4 +170,60 @@ func (s *usageStream) consume() {
 	if u, ok := parseUsage(line); ok {
 		s.last, s.found = u, true
 	}
+}
+
+// newUsageBody wraps body so the usage it reports reaches record once the body ends or is closed,
+// whichever comes first.
+func newUsageBody(body io.ReadCloser, record func(Usage)) io.ReadCloser {
+	return &usageBody{ReadCloser: body, stream: &usageStream{}, record: record}
+}
+
+// usageBody reads a response body as it streams to the model and records the last usage it
+// reported. Recording once means a body read to EOF and then closed counts once, not twice.
+type usageBody struct {
+	io.ReadCloser
+	stream *usageStream
+	record func(Usage)
+	once   sync.Once
+}
+
+// Read passes p through to the model and feeds it to the usage reader.
+func (b *usageBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		// usageStream.Write never fails: the bytes are already on their way to the model.
+		_, _ = b.stream.Write(p[:n])
+	}
+
+	if err != nil {
+		b.recordOnce()
+
+		//nolint:wrapcheck // io.EOF must stay comparable so the proxy's copy ends normally
+		return n, err
+	}
+
+	return n, nil
+}
+
+// Close ends the body and records the usage it reported before it ended.
+func (b *usageBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.recordOnce()
+
+	if err != nil {
+		return fmt.Errorf("close response body: %w", err)
+	}
+
+	return nil
+}
+
+// recordOnce finishes the last line and records the usage, once per body.
+func (b *usageBody) recordOnce() {
+	b.once.Do(func() {
+		b.stream.Finish()
+
+		if u, ok := b.stream.Total(); ok {
+			b.record(u)
+		}
+	})
 }

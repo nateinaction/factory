@@ -5,11 +5,10 @@ package openrouter
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"path"
 	"strings"
@@ -42,15 +41,14 @@ const (
 
 // Proxy is a running forwarding proxy.
 type Proxy struct {
-	key      string
-	url      string
-	upstream *url.URL
-	ctx      context.Context
-	cancel   context.CancelFunc
-	server   *http.Server
-	client   *http.Client
-	mu       sync.Mutex
-	usage    Usage
+	key       string
+	url       string
+	upstream  *url.URL
+	server    *http.Server
+	transport *http.Transport
+	reverse   *httputil.ReverseProxy
+	mu        sync.Mutex
+	usage     Usage
 }
 
 // Start binds a proxy holding key on addr, forwarding only to OpenRouter's API. addr must be a
@@ -76,11 +74,9 @@ func start(key, addr, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("bind openrouter proxy: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	p := &Proxy{
-		key: key, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest, ctx: ctx, cancel: cancel,
-	}
-	p.client = &http.Client{Transport: transport()}
+	p := &Proxy{key: key, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest}
+	p.transport = transport()
+	p.reverse = p.reverseProxy()
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: headerTimeout}
 
 	go func() {
@@ -119,6 +115,28 @@ func transport() *http.Transport {
 	}
 }
 
+// reverseProxy forwards a request through the standard reverse proxy: it strips every hop-by-hop
+// header, including those a Connection header names, flushes each streamed write as it arrives, and
+// wraps the response body so the usage it reports is recorded.
+func (p *Proxy) reverseProxy() *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL = p.forwardURL(pr.In)
+			// The outbound URL names the destination, so this server's own host must not travel too.
+			pr.Out.Host = ""
+			// The client transport negotiates compression, so the usage reader sees plain text.
+			pr.Out.Header.Del("Accept-Encoding")
+			pr.Out.Header.Set("Authorization", "Bearer "+p.key)
+		},
+		Transport:      p.transport,
+		FlushInterval:  -1,
+		ModifyResponse: p.recordUsage,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			http.Error(w, "openrouter proxy: upstream request failed", http.StatusBadGateway)
+		},
+	}
+}
+
 // URL is the OpenRouter base URL the model should call: this proxy's loopback address.
 func (p *Proxy) URL() string {
 	return p.url
@@ -135,10 +153,8 @@ func (p *Proxy) Usage() Usage {
 // Close stops the proxy, ending the listener and any request still in flight. It is safe to call
 // twice: the listener is already closed the second time.
 func (p *Proxy) Close() error {
-	p.cancel()
-
 	err := p.server.Close()
-	p.client.CloseIdleConnections()
+	p.transport.CloseIdleConnections()
 
 	if err != nil {
 		return fmt.Errorf("stop openrouter proxy: %w", err)
@@ -149,155 +165,53 @@ func (p *Proxy) Close() error {
 
 // serve forwards one request, or refuses it when it names anything but OpenRouter's API.
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
-	dest, ok := p.destination(r)
-	if !ok {
+	if !p.permits(r) {
 		http.Error(w, "openrouter proxy: refused destination", http.StatusForbidden)
 
 		return
 	}
 
-	resp, err := p.client.Do(p.forward(r, dest))
-	if err != nil {
-		http.Error(w, "openrouter proxy: upstream request failed", http.StatusBadGateway)
-
-		return
-	}
-
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-
-	if err := p.relay(w, resp); err != nil {
-		// The headers are already written, so the model's connection ended early and there is
-		// nothing left to report to it.
-		return
-	}
+	p.reverse.ServeHTTP(w, r)
 }
 
-// relay streams the response to the model and records the usage it reports.
-func (p *Proxy) relay(w http.ResponseWriter, resp *http.Response) error {
-	usage := &usageStream{}
-
-	sink := flushWriter{w: w}
-
-	// usage comes first, so the telemetry sees a chunk even when the model's connection fails as it
-	// is written.
-	_, err := io.Copy(io.MultiWriter(usage, sink), resp.Body)
-	// Whatever the response reported before it ended is still worth keeping.
-	usage.Finish()
-	p.record(usage)
-
-	if err != nil {
-		return fmt.Errorf("relay response: %w", err)
+// permits reports whether r names OpenRouter's API. The proxy has one fixed upstream, so no request
+// can choose where the key goes.
+func (p *Proxy) permits(r *http.Request) bool {
+	if r.Method == http.MethodConnect || r.URL.IsAbs() {
+		return false
 	}
+
+	return underAPIPrefix(r.URL.Path)
+}
+
+// forwardURL is the OpenRouter URL for r, which permits has already checked.
+func (p *Proxy) forwardURL(r *http.Request) *url.URL {
+	dest := *p.upstream
+	dest.Path = path.Join(p.upstream.Path, path.Clean(r.URL.Path))
+	dest.RawQuery = r.URL.RawQuery
+
+	return &dest
+}
+
+// underAPIPrefix reports whether p is the API or a path beneath it.
+func underAPIPrefix(p string) bool {
+	clean := path.Clean(p)
+
+	return clean == APIPrefix || strings.HasPrefix(clean, APIPrefix+"/")
+}
+
+// recordUsage wraps the response body so the usage it reports is recorded as the body streams, or
+// as far as it got when the model's connection ends it.
+func (p *Proxy) recordUsage(resp *http.Response) error {
+	resp.Body = newUsageBody(resp.Body, p.record)
 
 	return nil
 }
 
-// forward is the upstream request for r: the key added, the destination fixed, nothing that could
-// redirect the request or hide its body from the usage reader.
-func (p *Proxy) forward(r *http.Request, dest *url.URL) *http.Request {
-	req := r.Clone(p.ctx)
-	req.URL = dest
-	req.RequestURI = ""
-	req.Host = dest.Host
-	req.Header = forwardHeaders(r)
-	req.Header.Set("Authorization", "Bearer "+p.key)
-
-	return req
-}
-
-// forwardHeaders is the client's headers without the ones this connection, not the message, owns.
-// Accept-Encoding goes too, so the client transport negotiates it and the usage reader sees plain
-// text. An Authorization the model invented is replaced by the key.
-func forwardHeaders(r *http.Request) http.Header {
-	h := r.Header.Clone()
-	for _, key := range []string{
-		"Accept-Encoding", "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
-		"Te", "Trailer", "Transfer-Encoding", "Upgrade",
-	} {
-		h.Del(key)
-	}
-
-	return h
-}
-
-// record keeps the usage one response reported, if it reported any.
-func (p *Proxy) record(usage *usageStream) {
-	u, ok := usage.Total()
-	if !ok {
-		return
-	}
-
+// record keeps the usage one response reported.
+func (p *Proxy) record(u Usage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.usage = p.usage.Add(u)
-}
-
-// destination is the upstream request for r, or false when r names anything but OpenRouter's API.
-// The proxy has one fixed upstream, so no request can choose where the key goes.
-func (p *Proxy) destination(r *http.Request) (*url.URL, bool) {
-	if r.Method == http.MethodConnect || r.URL.IsAbs() {
-		return nil, false
-	}
-
-	clean := path.Clean(r.URL.Path)
-	if clean != APIPrefix && !strings.HasPrefix(clean, APIPrefix+"/") {
-		return nil, false
-	}
-
-	dest := *p.upstream
-	dest.Path = path.Join(p.upstream.Path, clean)
-	dest.RawQuery = r.URL.RawQuery
-
-	return &dest, true
-}
-
-// flushWriter sends each write on at once, so a streamed answer is not held in the server's buffer
-// until the handler returns.
-type flushWriter struct {
-	w http.ResponseWriter
-}
-
-// Write writes p and flushes it.
-func (f flushWriter) Write(p []byte) (int, error) {
-	n, err := f.w.Write(p)
-	if err != nil {
-		return n, fmt.Errorf("write response: %w", err)
-	}
-
-	if err := http.NewResponseController(f.w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return n, fmt.Errorf("flush response: %w", err)
-	}
-
-	return n, nil
-}
-
-// copyHeader copies response headers the relay keeps. Length and connection headers are left for
-// this server to decide; the body may be decompressed or streamed.
-func copyHeader(dst, src http.Header) {
-	for key, values := range src {
-		if hopByHop(key) || key == "Content-Length" {
-			continue
-		}
-
-		for _, value := range values {
-			dst.Add(key, value)
-		}
-	}
-}
-
-// hopByHop reports a header that describes one connection rather than the message.
-func hopByHop(key string) bool {
-	switch http.CanonicalHeaderKey(key) {
-	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer",
-		"Transfer-Encoding", "Upgrade":
-		return true
-	}
-
-	return false
 }

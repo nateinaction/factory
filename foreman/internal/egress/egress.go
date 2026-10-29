@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"path"
 	"sort"
@@ -54,7 +55,9 @@ type Proxy struct {
 	api       *url.URL
 	server    *http.Server
 	listener  net.Listener
-	client    *http.Client
+	transport *http.Transport
+	forwarder *httputil.ReverseProxy
+	apiProxy  *httputil.ReverseProxy
 	mu        sync.Mutex
 	domains   map[string]struct{}
 	tunnels   map[net.Conn]struct{}
@@ -93,7 +96,12 @@ func StartWithLogger(
 		policy: policy, api: api, listener: ln, log: logger,
 		domains: map[string]struct{}{}, tunnels: map[net.Conn]struct{}{},
 	}
-	p.client = &http.Client{Transport: transport()}
+	p.transport = transport()
+	p.forwarder = reverseProxy(p.transport, func(*httputil.ProxyRequest) {}, "egress proxy: upstream unavailable")
+	p.apiProxy = reverseProxy(p.transport, func(pr *httputil.ProxyRequest) {
+		pr.Out.URL = p.apiURL(pr.In)
+		pr.Out.Host = ""
+	}, "egress proxy: model endpoint unavailable")
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: headerTimeout}
 
 	go func() {
@@ -151,6 +159,23 @@ func transport() *http.Transport {
 	}
 }
 
+// reverseProxy is a forwarding handler over transport. rewrite names the outbound destination;
+// failure is what an unreachable upstream answers. The standard proxy strips every hop-by-hop
+// header, including those a Connection header names, and flushInterval -1 sends each streamed write
+// on as it arrives.
+func reverseProxy(
+	transport *http.Transport, rewrite func(*httputil.ProxyRequest), failure string,
+) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite:       rewrite,
+		Transport:     transport,
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			http.Error(w, failure, http.StatusBadGateway)
+		},
+	}
+}
+
 // Address is the loopback host:port srt's settings point at.
 func (p *Proxy) Address() string {
 	return p.listener.Addr().String()
@@ -191,7 +216,7 @@ func (p *Proxy) Close() error {
 			_ = conn.Close() // the tunnel's own reader sees the close and ends
 		}
 
-		p.client.CloseIdleConnections()
+		p.transport.CloseIdleConnections()
 
 		if err := p.server.Close(); err != nil {
 			p.closeErr = fmt.Errorf("stop egress proxy: %w", err)
@@ -363,26 +388,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.record(host)
-
-	req := r.Clone(r.Context())
-	req.RequestURI = ""
-	req.Header.Del("Proxy-Authorization")
-	req.Header.Del("Proxy-Connection")
-
-	resp, err := p.client.Do(req) //nolint:gosec // the proxy's job is to forward an allowed destination
-	if err != nil {
-		http.Error(w, "egress proxy: upstream unavailable", http.StatusBadGateway)
-
-		return
-	}
-
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body) // the client's close ends the copy
+	p.forwarder.ServeHTTP(w, r)
 }
 
 // apiCall forwards the model's API requests to the run's OpenRouter key proxy. Any other
@@ -401,26 +407,12 @@ func (p *Proxy) apiCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.record(APIDomain)
-
-	resp, err := p.client.Do(p.apiRequest(r)) //nolint:gosec // the proxy's job is to forward an allowed destination
-	if err != nil {
-		http.Error(w, "egress proxy: model endpoint unavailable", http.StatusBadGateway)
-
-		return
-	}
-
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body) // the client's close ends the copy
+	p.apiProxy.ServeHTTP(w, r)
 }
 
-// apiRequest is r as a request to the key proxy: the same path beneath /api/v1, nothing that could
+// apiURL is r as a request to the key proxy: the same path beneath /api/v1, nothing that could
 // redirect it.
-func (p *Proxy) apiRequest(r *http.Request) *http.Request {
+func (p *Proxy) apiURL(r *http.Request) *url.URL {
 	clean := path.Clean(r.URL.Path)
 
 	dest := *p.api
@@ -432,14 +424,7 @@ func (p *Proxy) apiRequest(r *http.Request) *http.Request {
 
 	dest.RawQuery = r.URL.RawQuery
 
-	req := r.Clone(r.Context())
-	req.URL = &dest
-	req.RequestURI = ""
-	req.Host = dest.Host
-	req.Header.Del("Proxy-Authorization")
-	req.Header.Del("Proxy-Connection")
-
-	return req
+	return &dest
 }
 
 // underAPIPrefix reports whether p is the API or a path beneath it.
@@ -447,28 +432,4 @@ func underAPIPrefix(p string) bool {
 	clean := path.Clean(p)
 
 	return clean == APIPrefix || strings.HasPrefix(clean, APIPrefix+"/")
-}
-
-// copyHeader copies response headers, leaving connection headers and length to this server.
-func copyHeader(dst, src http.Header) {
-	for key, values := range src {
-		if hopByHop(key) || key == "Content-Length" {
-			continue
-		}
-
-		for _, value := range values {
-			dst.Add(key, value)
-		}
-	}
-}
-
-// hopByHop reports a header that describes one connection rather than the message.
-func hopByHop(key string) bool {
-	switch http.CanonicalHeaderKey(key) {
-	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer",
-		"Transfer-Encoding", "Upgrade":
-		return true
-	}
-
-	return false
 }

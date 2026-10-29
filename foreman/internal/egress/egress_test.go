@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -185,6 +187,103 @@ var _ = Describe("Proxy", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(body)).To(Equal("upstream /thing"))
 		Expect(p.Domains()).To(ContainElement("127.0.0.1"))
+	})
+
+	It("strips a header the client names in Connection before forwarding", func() {
+		headers := make(chan http.Header, 1)
+
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			headers <- r.Header.Clone()
+
+			_, _ = io.WriteString(w, "ok")
+		}))
+		DeferCleanup(upstream.Close)
+
+		p := start(policy("127.0.0.1"), "")
+		DeferCleanup(p.Close)
+
+		conn, err := (&net.Dialer{}).DialContext(GinkgoT().Context(), "tcp", p.Address())
+		Expect(err).NotTo(HaveOccurred())
+
+		defer func() { _ = conn.Close() }()
+
+		_, err = fmt.Fprintf(conn, "GET %s/thing HTTP/1.1\r\nHost: %s\r\n"+
+			"Connection: X-Internal-Token\r\nX-Internal-Token: secret\r\n\r\n",
+			upstream.URL, upstream.URL[7:])
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		defer func() { _ = resp.Body.Close() }()
+
+		_, err = io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+
+		var forwarded http.Header
+		Eventually(headers, "5s").Should(Receive(&forwarded))
+
+		Expect(forwarded.Values("X-Internal-Token")).To(BeEmpty())
+		Expect(forwarded.Values("Connection")).To(BeEmpty())
+	})
+
+	It("passes each streamed chunk on before the upstream sends the next one", func() {
+		release := make(chan struct{})
+
+		var once sync.Once
+
+		unblock := func() { once.Do(func() { close(release) }) }
+
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "first\n")
+			_ = http.NewResponseController(w).Flush()
+
+			<-release
+
+			_, _ = io.WriteString(w, "second\n")
+		}))
+		DeferCleanup(upstream.Close)
+		DeferCleanup(unblock)
+
+		p := start(policy("127.0.0.1"), "")
+		DeferCleanup(p.Close)
+
+		client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+			Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: p.Address()}),
+		}}
+
+		req, err := http.NewRequestWithContext(GinkgoT().Context(), http.MethodGet, upstream.URL, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := client.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+
+		defer func() { _ = resp.Body.Close() }()
+
+		reader := bufio.NewReader(resp.Body)
+
+		type read struct {
+			line string
+			err  error
+		}
+
+		first := make(chan read, 1)
+
+		go func() {
+			line, err := reader.ReadString('\n')
+			first <- read{line: line, err: err}
+		}()
+
+		var got read
+		Eventually(first, "5s").Should(Receive(&got))
+		Expect(got.err).NotTo(HaveOccurred())
+		Expect(got.line).To(Equal("first\n"), "the first chunk reached the client before the upstream sent the rest")
+
+		unblock()
+
+		rest, err := io.ReadAll(reader)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(rest)).To(Equal("second\n"))
 	})
 
 	It("serves the OpenRouter API on the proxy's port and records its domain", func() {

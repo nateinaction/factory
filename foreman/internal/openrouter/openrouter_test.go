@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -20,6 +22,7 @@ type upstreamCall struct {
 	authorization string
 	path          string
 	body          string
+	header        http.Header
 }
 
 // upstream is a test server standing in for OpenRouter's API.
@@ -43,6 +46,7 @@ func newUpstream(respond func(http.ResponseWriter, *http.Request)) *upstream {
 
 		u.calls = append(u.calls, upstreamCall{
 			authorization: r.Header.Get("Authorization"), path: r.URL.Path, body: string(body),
+			header: r.Header.Clone(),
 		})
 
 		if u.respond == nil {
@@ -155,6 +159,98 @@ var _ = Describe("the OpenRouter proxy", func() {
 		Expect(p.Usage().Input).To(HaveValue(BeEquivalentTo(10)))
 		Expect(p.Usage().Output).To(HaveValue(BeEquivalentTo(4)))
 		Expect(p.Usage().Cost).To(HaveValue(BeEquivalentTo(0.5)))
+	})
+
+	It("strips a header the client names in Connection before forwarding", func() {
+		up = newUpstream(nil)
+		p, err := start("sk-or-test", Loopback, up.URL)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(p.Close)
+
+		req, err := http.NewRequestWithContext(
+			GinkgoT().Context(), http.MethodGet, p.URL()+"/models", nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Connection", "X-Internal-Token")
+		req.Header.Set("X-Internal-Token", "secret")
+
+		resp, err := proxyClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(resp.Body.Close)
+
+		_, err = io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(up.calls).To(HaveLen(1))
+		Expect(up.calls[0].header.Values("X-Internal-Token")).To(BeEmpty())
+		Expect(up.calls[0].header.Values("Connection")).To(BeEmpty())
+	})
+
+	It("passes each streamed event on before the upstream sends the next one", func() {
+		release := make(chan struct{})
+
+		var once sync.Once
+
+		unblock := func() { once.Do(func() { close(release) }) }
+		DeferCleanup(unblock)
+
+		up = newUpstream(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n")
+			_ = http.NewResponseController(w).Flush()
+
+			<-release
+
+			_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			_ = http.NewResponseController(w).Flush()
+		})
+		p, err := start("sk-or-test", Loopback, up.URL)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(p.Close)
+
+		ctx, cancel := context.WithTimeout(GinkgoT().Context(), 10*time.Second)
+		DeferCleanup(cancel)
+
+		req, err := http.NewRequestWithContext(
+			ctx, http.MethodGet, p.URL()+"/chat/completions", nil,
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := proxyClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(resp.Body.Close)
+
+		reader := bufio.NewReader(resp.Body)
+
+		type read struct {
+			line string
+			err  error
+		}
+
+		first := make(chan read, 1)
+
+		go func() {
+			line, err := reader.ReadString('\n')
+			first <- read{line: line, err: err}
+		}()
+
+		var got read
+		Eventually(first, "5s").Should(Receive(&got))
+		Expect(got.err).NotTo(HaveOccurred())
+		Expect(got.line).To(ContainSubstring(`"content":"first"`),
+			"the first event reached the model before the upstream sent the rest")
+
+		unblock()
+
+		rest, err := io.ReadAll(reader)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(rest)).To(ContainSubstring(`"prompt_tokens":5`))
+		Expect(string(rest)).To(HaveSuffix("data: [DONE]\n\n"))
+
+		Expect(p.Usage().Input).To(HaveValue(BeEquivalentTo(5)))
+		Expect(p.Usage().Output).To(HaveValue(BeEquivalentTo(2)))
 	})
 
 	It("refuses a path outside OpenRouter's API without calling the upstream", func() {
