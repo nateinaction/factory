@@ -51,8 +51,9 @@ func (e *ExitError) Error() string {
 type ExecRunner struct {
 	Stdout io.Writer
 	Stderr io.Writer
-	// WaitDelay bounds the wait for a process that escaped the killed group but still holds the
-	// output pipe. Zero is replaced by DefaultWaitDelay.
+	// WaitDelay bounds the wait when a process outside the step's own tree still holds an output
+	// pipe: one that escaped the killed group, or one a child left behind when it exited. Zero is
+	// replaced by DefaultWaitDelay.
 	WaitDelay time.Duration
 }
 
