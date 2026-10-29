@@ -7,7 +7,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Named agent per agent role, model from `factory_models` | `agent.<role>` in the rendered `opencode.json`, run as `opencode run --agent <role>` |
 | Context cap | the agent's model is an alias (`<role>-200k`) whose `limit.input` is the cap |
 | Compaction on or off per agent role | `OPENCODE_CONFIG_CONTENT={"compaction":{"auto":<bool>},"provider":...}` set per run |
-| Skills: only the factory's own, exactly the role's list | `agent.<role>.permission.skill` allows the role's skills and denies the rest; `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
+| Skills: only the factory's own, exactly the agent role's list | `agent.<role>.permission.skill` allows the agent role's skills and denies the rest; `OPENCODE_DISABLE_EXTERNAL_SKILLS=1` |
 | Permissions: deny by default, never `ask` | `permission.*` in `opencode.json`, rendered per agent role from `group_vars` |
 | No repository config | `OPENCODE_DISABLE_PROJECT_CONFIG=1` |
 | Fresh state, shared with the retro, deleted with the run | `OPENCODE_DB` points at an on-disk database in the run's own state directory, so the retro can resume the run's session by id and the state is removed with the run directory |
@@ -17,7 +17,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Usage | the key proxy sums each response's `usage` (tokens, cached tokens, cost); `step_finish` is the fallback |
 | Every model process runs under srt | `opencode run` is wrapped by `srt --settings <run>/srt-settings.json`; see `foreman/docs/sandbox.md` |
 | Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
-| No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
+| No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the agent role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
 
 ### Where the Reviewer's state lives
 
@@ -38,7 +38,7 @@ no unsandboxed fallback.
 
 opencode sees only `http://127.0.0.1:<port>/api/v1` in `provider.openrouter.options.baseURL`, where
 that port is the run's egress proxy (`foreman/internal/egress`). The egress proxy forwards the
-`/api/v1` path to this key proxy and enforces the role's egress policy. The
+`/api/v1` path to this key proxy and enforces the agent role's egress policy. The
 proxy reads `usage.prompt_tokens`, `usage.completion_tokens`, `usage.prompt_tokens_details.cached_tokens`
 and `usage.cost` from each response (the last SSE message when streaming), and the run's usage line
 takes those totals over the adapter's own.
@@ -119,5 +119,5 @@ it is read twice.
 The adapter assumes `step_finish` events carry `part.tokens.{input,output,cache.read}` and
 `part.cost`, every event carries `sessionID`, and failures arrive as `error` events with
 `error.name` and `error.data.statusCode` (`ContextOverflowError` for an overflow). Fakes in
-`foreman/adapter_test.go` use these shapes. Check them against v1.19.3 output when first run on a
+`foreman/internal/opencode/opencode_test.go` use these shapes. Check them against v1.19.3 output when first run on a
 worker host.
