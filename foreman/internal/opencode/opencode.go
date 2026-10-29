@@ -133,6 +133,28 @@ func (u Usage) Add(o Usage) Usage {
 	return u
 }
 
+// Use lets a report from elsewhere win for the totals it carries. PeakContext stays the adapter's:
+// the proxy sees responses, not the request context that produced them.
+func (u Usage) Use(o Usage) Usage {
+	if o.Input != nil {
+		u.Input = o.Input
+	}
+
+	if o.Output != nil {
+		u.Output = o.Output
+	}
+
+	if o.Cached != nil {
+		u.Cached = o.Cached
+	}
+
+	if o.Cost != nil {
+		u.Cost = o.Cost
+	}
+
+	return u
+}
+
 // event is one line of `opencode run --format json`, reduced to what the adapter reads.
 type event struct {
 	Type      string `json:"type"`
@@ -274,16 +296,21 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 	return "", false
 }
 
-// Env is the environment of one opencode process. The inline config turns compaction on or off
-// for this agent role; the rest keeps repository config and external skills out and state private.
-func Env(openrouterKey, stateDB string, a config.AgentConfig) (map[string]string, error) {
-	inline, err := json.Marshal(map[string]any{"compaction": map[string]bool{"auto": a.Compaction}})
+// Env is the environment of one opencode process. The inline config turns compaction on or off for
+// this agent role and points the OpenRouter provider at the run's proxy; the rest keeps repository
+// config and external skills out and state private. The key is never here: the proxy holds it.
+func Env(baseURL, stateDB string, a config.AgentConfig) (map[string]string, error) {
+	inline, err := json.Marshal(map[string]any{
+		"compaction": map[string]bool{"auto": a.Compaction},
+		"provider": map[string]any{
+			"openrouter": map[string]any{"options": map[string]string{"baseURL": baseURL}},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("encode opencode config: %w", err)
 	}
 
 	return map[string]string{
-		"OPENROUTER_API_KEY":               openrouterKey,
 		"OPENCODE_DISABLE_PROJECT_CONFIG":  "1",
 		"OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
 		"OPENCODE_DB":                      stateDB,

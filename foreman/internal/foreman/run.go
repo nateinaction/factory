@@ -12,6 +12,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
+	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -103,6 +104,8 @@ type session struct {
 	gitEnv   map[string]string
 	agentEnv map[string]string
 	gitArgv  []string
+	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
+	key string
 }
 
 // git runs git in the clone.
@@ -135,6 +138,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
 		gitArgv:  append([]string{"git", "-C", workdir}, identity...),
+		key:      j.sec.openrouterKey,
 	}
 }
 
@@ -147,16 +151,13 @@ type job struct {
 	issue workflow.Issue
 }
 
-// loadJob reads the agent role's secrets and the issue it works.
+// loadJob reads the issue an agent role works and builds its model environment around the run's
+// proxy. The secrets are already read: the key belongs to the proxy, never to the model.
 func loadJob(
-	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, sec secrets, baseURL string,
+	repo string, agent config.AgentConfig, number int, db string,
 ) (job, error) {
-	sec, err := readSecrets(d.Settings, role)
-	if err != nil {
-		return job{}, err
-	}
-
-	env, err := opencode.Env(sec.openrouterKey, db, agent)
+	env, err := opencode.Env(baseURL, db, agent)
 	if err != nil {
 		return job{}, err
 	}
@@ -169,6 +170,47 @@ func loadJob(
 	}
 
 	return job{sec: sec, env: env, c: c, issue: issue}, nil
+}
+
+// withProxy runs fn with the run's OpenRouter proxy up and stops it when fn returns, folding the
+// usage the proxy read into the run's usage. A proxy that cannot start fails the run: the model has
+// no other way to reach OpenRouter, and there is never an unsandboxed fallback.
+func (d Deps) withProxy(
+	key string, fn func(baseURL string) (opencode.Usage, error),
+) (opencode.Usage, error) {
+	p, err := d.proxy(key)
+	if err != nil {
+		return opencode.Usage{}, err
+	}
+
+	usage, err := fn(p.URL())
+	// Read the usage before stopping: a response still being relayed when the model exits cannot be
+	// counted, and Close is what ends it.
+	read := p.Usage()
+	// A failure to stop the proxy is part of the run's outcome, not a diagnostic to drop.
+	err = errors.Join(err, p.Close())
+
+	return usage.Use(reported(read)), err
+}
+
+// proxy starts the run's OpenRouter proxy with key on the configured loopback address.
+func (d Deps) proxy(key string) (Forwarder, error) {
+	start := d.Proxy
+	if start == nil {
+		start = func(key, addr string) (Forwarder, error) { return openrouter.Start(key, addr) }
+	}
+
+	addr := d.ProxyAddr
+	if addr == "" {
+		addr = openrouter.Loopback
+	}
+
+	return start(key, addr)
+}
+
+// reported is the proxy's usage as the adapter's type.
+func reported(u openrouter.Usage) opencode.Usage {
+	return opencode.Usage{Input: u.Input, Output: u.Output, Cached: u.Cached, Cost: u.Cost}
 }
 
 // runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
@@ -194,7 +236,22 @@ func runImplementer(
 func implement(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (opencode.Usage, error) {
-	j, err := loadJob(ctx, d, workflow.Implementer, repo, agent, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Implementer)
+	if err != nil {
+		return opencode.Usage{}, err
+	}
+
+	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
+		return implementRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
+	})
+}
+
+// implementRun is the Implementer's work, with its proxy already up.
+func implementRun(
+	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
+	agent config.AgentConfig, retro config.Budget, number int, db string,
+) (opencode.Usage, error) {
+	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
 	if err != nil {
 		return opencode.Usage{}, err
 	}
@@ -416,7 +473,29 @@ func runReviewer(ctx context.Context, d Deps, repo string, agent config.AgentCon
 func review(
 	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, db string,
 ) (int, opencode.Usage, error) {
-	j, err := loadJob(ctx, d, workflow.Reviewer, repo, agent, number, db)
+	sec, err := readSecrets(d.Settings, workflow.Reviewer)
+	if err != nil {
+		return 1, opencode.Usage{}, err
+	}
+
+	var code int
+
+	usage, err := d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
+		runCode, u, e := reviewRun(ctx, d, sec, baseURL, repo, agent, number, db)
+		code = runCode
+
+		return u, e
+	})
+
+	return code, usage, err
+}
+
+// reviewRun is the Reviewer's work, with its proxy already up.
+func reviewRun(
+	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
+	agent config.AgentConfig, number int, db string,
+) (int, opencode.Usage, error) {
+	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
 	if err != nil {
 		return 1, opencode.Usage{}, err
 	}

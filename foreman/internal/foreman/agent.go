@@ -97,12 +97,11 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 
 // redact removes the OpenRouter key from text bound for a log.
 func (s session) redact(text string) string {
-	key := s.agentEnv["OPENROUTER_API_KEY"]
-	if key == "" {
+	if s.key == "" {
 		return text
 	}
 
-	return strings.ReplaceAll(text, key, "[redacted]")
+	return strings.ReplaceAll(text, s.key, "[redacted]")
 }
 
 // withState gives fn a fresh state database for the role's run and deletes it afterwards. The
