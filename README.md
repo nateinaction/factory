@@ -219,6 +219,11 @@ Things to know:
   output, never diagnostics. The model's transcript (private repository code,
   issue text) is logged only at `debug`, with every secret the run holds redacted;
   at the default level the run log carries no transcript.
+- Each run leaves its usage record out of band, at `<work root>/usage/<run id>.json` on the host
+  that ran it: tokens, cost, duration, attempts and outcome. `foreman status` reports the recent
+  records of the host it runs on. It never reads a run's stdout, so a line there that mimics a
+  record cannot forge a usage figure. The run also prints the same record as one JSON line on
+  stdout, which `foreman logs` and the dagu UI show to a person reading the run log.
 - `foreman --help` lists the verbs (`poll`, `start`, `run`, `status`, `logs`). Settings default to
   the host layout and can be overridden by `FACTORY_*` environment variables or
   by the matching flag (`--work-root`, `--config`, ...); a flag wins over the

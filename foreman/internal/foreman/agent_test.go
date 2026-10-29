@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
@@ -461,6 +462,32 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(lines).To(HaveLen(1))
 			// The failed run and the retro that follows it both spent a step of 1000 input tokens.
 			Expect(lines[0]).To(HaveKeyWithValue("input_tokens", 2000.0))
+		})
+	})
+
+	Describe("the out-of-band usage record", func() {
+		It("is what status reads, the same record the stdout line carries", func() {
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+			Expect(h.usageRecord("run-1")).To(Equal(h.usageLines()[0]),
+				"status reads a different record from the one the run logged")
+		})
+
+		It("is written even when the run fails", func() {
+			h.answerOpencode(okStream("ses_1") + errStream("APIError", 400))
+			_, err := h.runImpl(testAgent())
+			Expect(err).To(HaveOccurred())
+
+			Expect(h.usageRecord("run-1")).To(HaveKeyWithValue("outcome", "failed"))
+		})
+
+		It("is not written for a run id that could leave the usage directory", func() {
+			h.deps.RunID = "../../escape"
+			h.deps.recordUsage(opencode.UsageReport{Event: "usage"})
+
+			_, err := os.Stat(filepath.Join(h.deps.Settings.WorkRoot, "escape.json"))
+			Expect(os.IsNotExist(err)).To(BeTrue(), "a run id escaped the usage directory")
+			Expect(h.logs.String()).To(ContainSubstring("usage record"))
 		})
 	})
 
