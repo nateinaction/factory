@@ -34,9 +34,9 @@ type secrets struct {
 	openrouterKey string
 }
 
-// readSecrets reads the GitHub token left by `start` and the OpenRouter key.
-func readSecrets(s Settings) (secrets, error) {
-	token, err := os.ReadFile(s.TokenFile)
+// readSecrets reads the token left by `start` for the agent role and the OpenRouter key.
+func readSecrets(s Settings, role Role) (secrets, error) {
+	token, err := os.ReadFile(s.TokenPath(role))
 	if err != nil {
 		return secrets{}, fmt.Errorf("read token file: %w", err)
 	}
@@ -108,7 +108,7 @@ func newSession(ctx context.Context, d Deps, sec secrets, workdir string, identi
 
 // runImplementer clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
 func runImplementer(ctx context.Context, d Deps, repo, model string, number int) error {
-	sec, err := readSecrets(d.Settings)
+	sec, err := readSecrets(d.Settings, Implementer)
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,7 @@ func (s session) retro(c Client, repo, model string, number int) error {
 
 // runReviewer clones the pull request's branch, runs the review, posts it, and returns the verdict code.
 func runReviewer(ctx context.Context, d Deps, repo, model string, number int) (int, error) {
-	sec, err := readSecrets(d.Settings)
+	sec, err := readSecrets(d.Settings, Reviewer)
 	if err != nil {
 		return 1, err
 	}

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -45,17 +47,64 @@ func (d Deps) logf(format string, args ...any) {
 	_, _ = fmt.Fprintf(d.Err, "foreman: "+format+"\n", args...)
 }
 
-// mintToken asks the helper for a token scoped to the repository.
-func (d Deps) mintToken(ctx context.Context, repo string) (string, error) {
-	_, name, _ := strings.Cut(repo, "/")
+// mintToken asks the helper for a token of the agent role's own App, scoped to the repository.
+// There is no fallback: if this App can't mint, no other App's token stands in for it.
+func (d Deps) mintToken(ctx context.Context, role Role, repo string) (string, error) {
 	// stderr is inherited so the helper's error reaches the dagu log; it never prints the token there.
 	out, err := d.run(ctx, Cmd{
-		Argv: []string{d.Settings.TokenHelper, "token", "--repo", name}, Capture: true, Timeout: MintTimeout,
+		Argv:    []string{d.Settings.TokenHelper, "token", "--app", string(role), "--repo", repo},
+		Capture: true, Timeout: MintTimeout,
 	})
 	if err != nil {
-		return "", fmt.Errorf("mint token: %w", err)
+		return "", fmt.Errorf("mint %s token for %s: %w", role, repo, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// installedRepos lists the repositories the agent role's App is installed on. An App that can't
+// list its installations is installed nowhere: the failure is logged and the repositories stay unassigned.
+func (d Deps) installedRepos(ctx context.Context, role Role) []string {
+	out, err := d.run(ctx, Cmd{
+		Argv:    []string{d.Settings.TokenHelper, "repositories", "--app", string(role)},
+		Capture: true, Timeout: MintTimeout,
+	})
+	if err != nil {
+		d.logf("list %s installations: %v", role, err)
+		return nil
+	}
+	var repos []string
+	for line := range strings.SplitSeq(out, "\n") {
+		repo := strings.TrimSpace(line)
+		if ValidateRepo(repo) == nil {
+			repos = append(repos, repo)
+		}
+	}
+	return repos
+}
+
+// Assignment says which agent roles' Apps are installed on each assigned repository.
+type Assignment map[string][]Role
+
+// Assigned asks each App where it is installed. A repository with any App installed is assigned.
+func Assigned(ctx context.Context, d Deps, roles []Role) Assignment {
+	a := Assignment{}
+	for _, role := range roles {
+		for _, repo := range d.installedRepos(ctx, role) {
+			if !slices.Contains(a[repo], role) {
+				a[repo] = append(a[repo], role)
+			}
+		}
+	}
+	return a
+}
+
+// Repos lists the assigned repositories in a stable order, at most MaxAssignedRepos of them.
+func (a Assignment) Repos() []string {
+	repos := slices.Sorted(maps.Keys(a))
+	if len(repos) > MaxAssignedRepos {
+		repos = repos[:MaxAssignedRepos]
+	}
+	return repos
 }
 
 // queueStep is one queue a poll looks at, in priority order.
@@ -72,24 +121,44 @@ var pollQueues = []queueStep{
 }
 
 // Poll is deterministic and cheap: no model involved. It claims at most one issue and queues its run.
-func Poll(ctx context.Context, d Deps, repo string) (int, error) {
-	token, err := d.mintToken(ctx, repo)
-	if err != nil {
-		return 1, err
-	}
-	c := d.client(token)
+// It looks only at repositories where one of the roles' Apps is installed, and in each only at the
+// queues of agent roles whose Apps are installed there; every claim uses its own agent role's token.
+func Poll(ctx context.Context, d Deps, roles []Role) (int, error) {
+	assigned := Assigned(ctx, d, roles)
+	repos := assigned.Repos()
 	for _, q := range pollQueues {
-		issues, err := c.ListLabeled(ctx, repo, q.src)
-		if err != nil {
-			return 1, err
+		for _, repo := range repos {
+			if !slices.Contains(assigned[repo], q.role) {
+				continue // that agent role isn't here: its issues wait in the queue
+			}
+			code, done, err := pollQueue(ctx, d, repo, q)
+			if done || err != nil {
+				return code, err
+			}
 		}
-		issue, ok := PickIssue(issues)
-		if !ok {
-			continue
-		}
-		return claimAndEnqueue(ctx, d, c, repo, issue.Number, q)
 	}
 	return 0, writeLine(d.Out, "nothing ready")
+}
+
+// pollQueue looks at one queue of one repository with the owning agent role's token. done is true when
+// the poll is over: an issue was claimed or lost. A token that can't be minted makes the repository unassigned for this role.
+func pollQueue(ctx context.Context, d Deps, repo string, q queueStep) (code int, done bool, err error) {
+	token, err := d.mintToken(ctx, q.role, repo)
+	if err != nil {
+		d.logf("%v; treating %s as unassigned for %s", err, repo, q.role)
+		return 0, false, nil
+	}
+	c := d.client(token)
+	issues, err := c.ListLabeled(ctx, repo, q.src)
+	if err != nil {
+		return 1, true, err
+	}
+	issue, ok := PickIssue(issues)
+	if !ok {
+		return 0, false, nil
+	}
+	code, err = claimAndEnqueue(ctx, d, c, repo, issue.Number, q)
+	return code, true, err
 }
 
 // writeLine writes text and a newline.
@@ -140,25 +209,17 @@ func Start(ctx context.Context, d Deps, role Role, repo string, number int) (int
 // startImplementer implements the issue, then queues it for review or fails it.
 func startImplementer(ctx context.Context, d Deps, repo string, number int) (int, error) {
 	code := factoryExit(ctx, d, Implementer, repo, number)
-	c, err := freshClient(ctx, d, repo) // fresh: the run may have outlived the first token
-	if err != nil {
-		return 1, err
-	}
 	if code == 0 {
-		return 0, c.Finish(ctx, repo, number, LabelWorking, LabelReviewReady,
+		return 0, finishAs(ctx, d, Implementer, repo, number, LabelWorking, LabelReviewReady,
 			"The agent finished; see the linked pull request. Queued for review.")
 	}
-	return 1, c.Finish(ctx, repo, number, LabelWorking, LabelFailed,
+	return 1, finishAs(ctx, d, Implementer, repo, number, LabelWorking, LabelFailed,
 		"The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry.")
 }
 
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
 func startReviewer(ctx context.Context, d Deps, repo string, number int) (int, error) {
 	code := factoryExit(ctx, d, Reviewer, repo, number)
-	c, err := freshClient(ctx, d, repo)
-	if err != nil {
-		return 1, err
-	}
 	dst, text := LabelFailed, "The review failed. Check the dagu run log, then re-apply `ready-for-agent-review` to retry."
 	switch code {
 	case ReviewClean:
@@ -173,16 +234,32 @@ func startReviewer(ctx context.Context, d Deps, repo string, number int) (int, e
 	if code == ReviewClean || code == ReviewFindings {
 		exit = 0
 	}
-	return exit, c.Finish(ctx, repo, number, LabelReviewing, dst, text)
+	return exit, finishAs(ctx, d, Reviewer, repo, number, LabelReviewing, dst, text)
 }
 
-// freshClient mints a token and returns a client for it.
-func freshClient(ctx context.Context, d Deps, repo string) (Client, error) {
-	token, err := d.mintToken(ctx, repo)
-	if err != nil {
-		return Client{}, err
+// finishAs records the outcome with the owning agent role's own token (fresh: the run may have outlived
+// the first one). If that App can't mint, because its credential is missing or it was removed, the run
+// fails closed: an App that is still installed moves the issue to failed and says why. No other App ever
+// makes the owning agent role's transition.
+func finishAs(ctx context.Context, d Deps, role Role, repo string, number int, src, dst, text string) error {
+	token, err := d.mintToken(ctx, role, repo)
+	if err == nil {
+		return d.client(token).Finish(ctx, repo, number, src, dst, text)
 	}
-	return d.client(token), nil
+	d.logf("%v", err)
+	notice := fmt.Sprintf("The %s's GitHub App credential is missing or the App is no longer installed here. "+
+		"Fix that, then re-queue the issue.", role)
+	for _, other := range knownRoles {
+		if other == role {
+			continue
+		}
+		t, mintErr := d.mintToken(ctx, other, repo)
+		if mintErr != nil {
+			continue // that App isn't installed here or has no credential: try the next
+		}
+		return d.client(t).Finish(ctx, repo, number, src, LabelFailed, notice)
+	}
+	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", repo, number, err)
 }
 
 // factoryExit is the exit code of `foreman run <role> <repo> <n>` as the factory user, with the token file
@@ -198,16 +275,17 @@ func factoryExit(ctx context.Context, d Deps, role Role, repo string, number int
 
 // runAsFactory writes the token where the factory user can read it, runs the factory half, and removes the token.
 func runAsFactory(ctx context.Context, d Deps, role Role, repo string, number int) (code int, err error) {
-	token, err := d.mintToken(ctx, repo)
+	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		return 0, err
 	}
-	if err := writeTokenFile(d.Settings.TokenFile, token); err != nil {
+	path := d.Settings.TokenPath(role)
+	if err := writeTokenFile(path, token); err != nil {
 		return 0, err
 	}
 	defer func() {
 		// The token also dies within the hour; don't leave it lying around.
-		if rmErr := os.Remove(d.Settings.TokenFile); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			err = errors.Join(err, rmErr)
 		}
 	}()

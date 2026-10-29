@@ -16,12 +16,12 @@ func (h *harness) sudoExit(code int, tokenSeen *string, mode *os.FileMode) {
 		if c.Argv[0] != "sudo" {
 			return base(c)
 		}
-		raw, err := os.ReadFile(h.deps.Settings.TokenFile)
+		raw, err := os.ReadFile(h.deps.Settings.TokenPath(Role(c.Argv[6])))
 		if err != nil {
 			h.t.Errorf("token file not in place: %v", err)
 		}
 		*tokenSeen = string(raw)
-		if st, err := os.Stat(h.deps.Settings.TokenFile); err == nil {
+		if st, err := os.Stat(h.deps.Settings.TokenPath(Role(c.Argv[6]))); err == nil {
 			*mode = st.Mode().Perm()
 		}
 		if code != 0 {
@@ -53,10 +53,10 @@ func TestStartImplementerSuccessQueuesReview(t *testing.T) {
 	}) {
 		t.Errorf("sudo %v", sudo)
 	}
-	if seen != "minted-token" || mode != 0o640 {
+	if seen != "minted-token-implementer" || mode != 0o640 {
 		t.Errorf("token file %q mode %v", seen, mode)
 	}
-	if _, err := os.Stat(h.deps.Settings.TokenFile); !os.IsNotExist(err) {
+	if _, err := os.Stat(h.deps.Settings.TokenPath(Implementer)); !os.IsNotExist(err) {
 		t.Errorf("token file left behind: %v", err)
 	}
 	labels, comments := h.outcome()
@@ -88,7 +88,7 @@ func TestStartImplementerFailureMarksFailed(t *testing.T) {
 	if !strings.Contains(labels[0], LabelFailed) || !strings.Contains(comments[0], "The agent failed. Check the dagu run log, then re-apply `ready-for-agent` to retry.") {
 		t.Errorf("%v %v", labels, comments)
 	}
-	if _, err := os.Stat(h.deps.Settings.TokenFile); !os.IsNotExist(err) {
+	if _, err := os.Stat(h.deps.Settings.TokenPath(Implementer)); !os.IsNotExist(err) {
 		t.Errorf("token file left behind: %v", err)
 	}
 }

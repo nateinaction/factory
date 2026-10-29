@@ -41,7 +41,7 @@ func TestValidateRepo(t *testing.T) {
 	if err := ValidateRepo("nateinaction/factory.x_y-z"); err != nil {
 		t.Error(err)
 	}
-	for _, bad := range []string{"", "a", "a/b/c", "a/b c", "a/../b?x", "/b", "a/b\n"} {
+	for _, bad := range []string{"", "a", "a/b/c", "a/b c", "a/../b?x", "/b", "a/b\n", "../etc", "a/.."} {
 		if err := ValidateRepo(bad); err == nil {
 			t.Errorf("ValidateRepo(%q) accepted", bad)
 		}

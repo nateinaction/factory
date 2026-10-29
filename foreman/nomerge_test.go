@@ -83,7 +83,7 @@ func TestNoRunMakesAMergeCall(t *testing.T) {
 // writeToken leaves a token for the factory half.
 func writeToken(t *testing.T, h *harness) {
 	t.Helper()
-	if err := os.WriteFile(h.deps.Settings.TokenFile, []byte("t"), 0o640); err != nil {
+	if err := os.WriteFile(h.deps.Settings.TokenPath(Implementer), []byte("t"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 }

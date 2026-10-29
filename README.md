@@ -31,23 +31,34 @@ Every task is idempotent: a second run reports no changes.
 
 To add a host, add it under `factory.hosts` in `inventory/hosts.yml`.
 
-## GitHub App credential
+## GitHub App credentials
 
-The private key never lives in this repo.
+One GitHub App per agent role, named `<owner>-factory-<agent role>` (at most 34
+characters), for example `nateinaction-factory-reviewer`. The private keys never
+live in this repo.
 
-1. Create a GitHub App (no webhook) with the permissions your workflows need
-   and install it on the repos they touch.
-2. Save its private key somewhere outside the repo.
-3. `cp secrets/github_app.example.yml secrets/github_app.yml` and fill it in.
-   `secrets/*` is gitignored.
+1. Create each App (no webhook) with the permission ceiling the spec gives its
+   agent role (see "Identity and tokens" in
+   [#33](https://github.com/nateinaction/factory/issues/33)). The Implementer and
+   Reviewer need Contents, Issues and Pull requests set to write.
+2. Save each private key somewhere outside the repo.
+3. `cp secrets/github_app.example.yml secrets/github_app.yml` and list the Apps you
+   created, by agent role. `secrets/*` is gitignored.
+4. Install an App on a repository (selected repositories only) to assign it to
+   the factory. Installing any App assigns it; uninstalling all of them unassigns
+   it. The factory works only the agent roles whose Apps are installed there,
+   and other agent roles' issues wait in their queue.
 
 Skip the role with `-e factory_github_app=false`. If the role runs and the
 secrets file is missing, the play fails rather than skipping.
 
-On a host, `github-app-token token` prints a token (cached until 5 minutes
-before expiry). git picks it up through the credential helper in
-`/var/lib/dagu/.gitconfig`, so DAG steps can `git clone https://github.com/...`
-with no further setup. For the API: `GH_TOKEN=$(github-app-token token)`.
+Each App's files go in `/etc/github-app/<agent role>/` (`app-id`,
+`private-key.pem`), owned by dagu, directories 0700 and files 0600. On a host,
+`github-app-token token --app <agent role> --repo <owner/name>` prints a fresh
+one-hour token of that App scoped to the repository, and
+`github-app-token repositories --app <agent role>` lists where it is installed.
+No App ever uses another App's token. A token that can't be minted makes the
+repository unassigned for that agent role.
 
 ## Dagu UI and coordinator
 
@@ -74,7 +85,8 @@ reviews that PR.
    `agent-working`, and queues the `factory-<role>` DAG with `REPO` and `ISSUE`.
 2. `finances-agent-work` runs on a worker labelled `runner=agent`, one at a
    time. It mints a one-hour token scoped to the repo
-   (`github-app-token token --repo`), writes it to `/run/factory/gh-token`, and
+   (`github-app-token token --app <agent role> --repo`), writes it to
+   `/run/factory/gh-token-<agent role>`, and
    runs `finances-agent run N` (or `review-run N`) as `factory` through a
    single-purpose sudoers rule.
 3. Implement (`run`): clones the repo onto `agent/issue-N`, runs `opencode run`
@@ -94,8 +106,7 @@ reviews that PR.
    `ready-for-agent` (or `ready-for-agent-review`) to retry.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
-OpenRouter key. The GitHub App needs Contents, Issues and Pull requests set to
-write, and the installation must accept them. Pick the model with
+OpenRouter key. The Apps need the permissions above, and installations must accept them. Pick the model with
 `factory_agent_model` (a `provider/model` id for opencode).
 
 Things to know:

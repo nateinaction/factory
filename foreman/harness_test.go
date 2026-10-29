@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,8 @@ type harness struct {
 	out    *bytes.Buffer
 	errb   *bytes.Buffer
 	dir    string
+	// installed maps an agent role to the repositories its App is installed on.
+	installed map[Role][]string
 }
 
 // newHarness builds a harness whose runner answers the helpers every flow needs.
@@ -69,11 +72,12 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(key, []byte("or-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, errb: &bytes.Buffer{}, dir: dir}
+	h := &harness{t: t, gh: gh, runner: &fakeRunner{}, out: &bytes.Buffer{}, errb: &bytes.Buffer{}, dir: dir,
+		installed: map[Role][]string{Implementer: {"o/r"}, Reviewer: {"o/r"}}}
 	h.runner.fn = h.defaultRun
 	h.deps = Deps{
 		Settings: Settings{
-			API: gh.srv.URL, TokenFile: filepath.Join(dir, "gh-token"), KeyFile: key,
+			API: gh.srv.URL, TokenDir: dir, KeyFile: key,
 			WorkRoot: filepath.Join(dir, "work"), Self: "/usr/local/bin/foreman",
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
@@ -86,8 +90,12 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) defaultRun(c Cmd) (string, error) {
 	line := joined(c)
 	switch {
+	case strings.Contains(line, "github-app-token") && strings.Contains(line, " repositories "):
+		return strings.Join(h.installed[Role(appOf(c))], "\n") + "\n", nil
+	case strings.Contains(line, "github-app-token") && !slices.Contains(h.installed[Role(appOf(c))], repoOf(c)):
+		return "", &ExitError{Program: "github-app-token", Code: 1} // an App mints only where it is installed
 	case strings.Contains(line, "github-app-token"):
-		return "minted-token\n", nil
+		return "minted-token-" + appOf(c) + "\n", nil
 	case strings.Contains(line, "rev-parse HEAD"):
 		return "sha-head\n", nil
 	case strings.Contains(line, "rev-list --count"):
@@ -106,4 +114,24 @@ func (h *harness) leakFree(secrets ...string) {
 			}
 		}
 	}
+}
+
+// repoOf is the value of --repo in a github-app-token command line.
+func repoOf(c Cmd) string {
+	for i, a := range c.Argv {
+		if a == "--repo" && i+1 < len(c.Argv) {
+			return c.Argv[i+1]
+		}
+	}
+	return ""
+}
+
+// appOf is the value of --app in a github-app-token command line.
+func appOf(c Cmd) string {
+	for i, a := range c.Argv {
+		if a == "--app" && i+1 < len(c.Argv) {
+			return c.Argv[i+1]
+		}
+	}
+	return ""
 }

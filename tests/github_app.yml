@@ -1,0 +1,23 @@
+---
+# Runs the github_app role's credential tasks against a temp directory as the
+# current user (dagu_user, github_app_group and github_app_dir come in as -e, since
+# group_vars would otherwise win), so tests/github-app-credentials.test can assert on owners and modes.
+- name: Install the GitHub App credentials locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  vars:
+    github_apps:
+      implementer:
+        app_id: "111"
+        private_key_file: "{{ lookup('env', 'TEST_KEY_DIR') }}/implementer.pem"
+      reviewer:
+        app_id: "222"
+        private_key_file: "{{ lookup('env', 'TEST_KEY_DIR') }}/reviewer.pem"
+  tasks:
+    - name: Install each App's credentials
+      ansible.builtin.include_role:
+        name: github_app
+        tasks_from: credentials

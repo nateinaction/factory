@@ -22,6 +22,9 @@ const (
 	MintTimeout = 30 * time.Second
 )
 
+// MaxAssignedRepos bounds how many assigned repositories one poll looks at.
+const MaxAssignedRepos = 200
+
 // Exit codes of `run reviewer`, read by `start reviewer`.
 const (
 	// ReviewClean means no high or medium findings.
@@ -36,8 +39,8 @@ const (
 type Settings struct {
 	// API is GitHub's REST API root.
 	API string
-	// TokenFile is where `start` leaves the repo-scoped token for the factory user.
-	TokenFile string
+	// TokenDir is where `start` leaves the repo-scoped token for the factory user, one file per agent role.
+	TokenDir string
 	// KeyFile holds the OpenRouter key.
 	KeyFile string
 	// WorkRoot holds clones and scratch files.
@@ -62,7 +65,7 @@ func DefaultSettings(home, configOverride string) Settings {
 	}
 	return Settings{
 		API:         "https://api.github.com",
-		TokenFile:   "/run/factory/gh-token",
+		TokenDir:    "/run/factory",
 		KeyFile:     filepath.Join(home, ".config/factory-agent/openrouter-key"),
 		WorkRoot:    filepath.Join(home, "work"),
 		Self:        "/usr/local/bin/foreman",
@@ -73,9 +76,15 @@ func DefaultSettings(home, configOverride string) Settings {
 	}
 }
 
+// TokenPath is the token file of one agent role's run.
+func (s Settings) TokenPath(role Role) string {
+	return filepath.Join(s.TokenDir, "gh-token-"+string(role))
+}
+
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
 type Config struct {
-	Repo  string `json:"repo"`
+	// Roles are the agent roles whose Apps the host holds credentials for.
+	Roles []Role `json:"roles"`
 	Model string `json:"model"`
 }
 
@@ -89,8 +98,13 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	if err := ValidateRepo(c.Repo); err != nil {
-		return Config{}, fmt.Errorf("config: %w", err)
+	if len(c.Roles) == 0 {
+		return Config{}, fmt.Errorf("config %s: roles is required", path)
+	}
+	for _, r := range c.Roles {
+		if _, err := ParseRole(string(r)); err != nil {
+			return Config{}, fmt.Errorf("config %s: %w", path, err)
+		}
 	}
 	if c.Model == "" {
 		return Config{}, fmt.Errorf("config %s: model is required", path)
