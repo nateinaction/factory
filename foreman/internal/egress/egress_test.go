@@ -19,6 +19,9 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 )
 
+// testToken is the per-run token every spec sends the proxy.
+const testToken = "run-token"
+
 // logBuffer is a test log sink safe for the proxy's goroutines.
 type logBuffer struct {
 	mu   sync.Mutex
@@ -60,7 +63,7 @@ func policy(allowed ...string) sandbox.Network {
 func start(n sandbox.Network, apiURL string) *Proxy {
 	GinkgoHelper()
 
-	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, "127.0.0.1:0", nil)
+	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	return p
@@ -112,6 +115,23 @@ func apiServer() *httptest.Server {
 	DeferCleanup(server.Close)
 
 	return server
+}
+
+// apiGet asks the proxy's API for rawURL with the run's token.
+func apiGet(rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(GinkgoT().Context(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build API request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+testToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call API: %w", err)
+	}
+
+	return resp, nil
 }
 
 // connect asks proxy for a tunnel to target and returns the response.
@@ -308,7 +328,7 @@ var _ = Describe("Proxy", func() {
 		p := start(policy(), api.URL+"/api/v1")
 		DeferCleanup(p.Close)
 
-		resp, err := http.Get(p.URL() + "/chat/completions?x=1")
+		resp, err := apiGet(p.URL() + "/chat/completions?x=1")
 		Expect(err).NotTo(HaveOccurred())
 
 		// test cleanup: a close error changes no assertion
@@ -320,13 +340,52 @@ var _ = Describe("Proxy", func() {
 		Expect(p.Domains()).To(ContainElement("openrouter.ai"))
 	})
 
+	It("refuses an API call without the run's token before forwarding it", func() {
+		calls := make(chan struct{}, 1)
+
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls <- struct{}{}
+
+			// writing to a test ResponseWriter cannot change the assertion
+			_, _ = io.WriteString(w, "api")
+		}))
+		DeferCleanup(api.Close)
+
+		p := start(policy(), api.URL+"/api/v1")
+		DeferCleanup(p.Close)
+
+		for _, authorization := range []string{"", "Bearer another-run-token"} {
+			req, err := http.NewRequestWithContext(
+				GinkgoT().Context(), http.MethodGet, p.URL()+"/chat/completions", nil,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			if authorization != "" {
+				req.Header.Set("Authorization", authorization)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.Body.Close()).To(Succeed())
+
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized), authorization)
+		}
+
+		Consistently(calls, "100ms").ShouldNot(Receive(), "an unauthenticated call reached the key proxy")
+	})
+
+	It("refuses to start without a run token", func() {
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "", "127.0.0.1:0", nil)
+		Expect(err).To(MatchError(ContainSubstring("token")))
+	})
+
 	It("refuses an API call the allowlist does not name", func() {
 		api := apiServer()
 
 		p := start(policy("api.example.com"), api.URL+"/api/v1")
 		DeferCleanup(p.Close)
 
-		resp, err := http.Get(p.URL() + "/chat/completions")
+		resp, err := apiGet(p.URL() + "/chat/completions")
 		Expect(err).NotTo(HaveOccurred())
 
 		// test cleanup: a close error changes no assertion
@@ -339,7 +398,7 @@ var _ = Describe("Proxy", func() {
 		p := start(policy(), "")
 		DeferCleanup(p.Close)
 
-		resp, err := http.Get(p.URL() + "/elsewhere")
+		resp, err := apiGet(p.URL() + "/elsewhere")
 		Expect(err).NotTo(HaveOccurred())
 
 		// test cleanup: a close error changes no assertion
@@ -371,7 +430,7 @@ var _ = Describe("Proxy", func() {
 
 		logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", "127.0.0.1:0", logger)
+		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0", logger)
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(p.Close)
@@ -392,7 +451,7 @@ var _ = Describe("Proxy", func() {
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
-		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "0.0.0.0:0", nil)
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "0.0.0.0:0", nil)
 		Expect(err).To(MatchError(ContainSubstring("loopback")))
 	})
 
@@ -408,7 +467,7 @@ var _ = Describe("Proxy", func() {
 		p := start(policy(), api.URL+"/api/v1")
 		DeferCleanup(p.Close)
 
-		resp, err := http.Get(strings.TrimSuffix(p.URL(), "/api/v1") + "/api/v1/models")
+		resp, err := apiGet(strings.TrimSuffix(p.URL(), "/api/v1") + "/api/v1/models")
 		Expect(err).NotTo(HaveOccurred())
 
 		// test cleanup: a close error changes no assertion

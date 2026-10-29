@@ -190,6 +190,26 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.out.String()).NotTo(ContainSubstring("or-key"))
 	})
 
+	It("never puts the run's proxy token in what it logs", func() {
+		h.answerOpencode(`{"type":"error","error":{"name":"APIError",` +
+			`"data":{"statusCode":401,"message":"bad token ` + testToken + `"}}}` + "\n")
+		_, err := h.runImpl(testAgent())
+		Expect(err).To(HaveOccurred())
+		Expect(h.logs.String()).NotTo(ContainSubstring(testToken))
+		Expect(h.out.String()).NotTo(ContainSubstring(testToken))
+	})
+
+	It("mints a fresh random proxy token for each run", func() {
+		first, err := (Deps{}).token()
+		Expect(err).NotTo(HaveOccurred())
+		second, err := (Deps{}).token()
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(first).To(MatchRegexp(`^[0-9a-f]{64}$`))
+		Expect(second).To(MatchRegexp(`^[0-9a-f]{64}$`))
+		Expect(first).NotTo(Equal(second))
+	})
+
 	Describe("the usage line", func() {
 		It("takes the tokens and cost the run's proxy read", func() {
 			input, output, cached, cost := 70, 7, 3, 0.125
@@ -199,13 +219,13 @@ var _ = Describe("the opencode adapter", func() {
 					Input: &input, Output: &output, Cached: &cached, Cost: &cost,
 				},
 			}
-			h.deps.Proxy = func(key, _ string) (Forwarder, error) {
+			h.deps.Proxy = func(key, _, _ string) (Forwarder, error) {
 				proxy.key = key
 
 				return proxy, nil
 			}
 			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
-			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _ string) (EgressProxy, error) { return egress, nil }
+			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
 			lines := h.usageLines()

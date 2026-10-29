@@ -5,6 +5,7 @@ package openrouter
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
@@ -42,6 +43,7 @@ const (
 // Proxy is a running forwarding proxy.
 type Proxy struct {
 	key       string
+	token     string
 	url       string
 	upstream  *url.URL
 	server    *http.Server
@@ -51,15 +53,21 @@ type Proxy struct {
 	usage     Usage
 }
 
-// Start binds a proxy holding key on addr, forwarding only to OpenRouter's API. addr must be a
-// loopback address. A bind or parse failure is an error: the run has no other way to reach a model.
-func Start(key, addr string) (*Proxy, error) {
-	return start(key, addr, Upstream)
+// Start binds a proxy holding key on addr, forwarding only to OpenRouter's API. The proxy answers
+// only a request carrying token, the random value minted for this run, so no other local caller can
+// spend the key. addr must be a loopback address. A bind or parse failure is an error: the run has no
+// other way to reach a model.
+func Start(key, token, addr string) (*Proxy, error) {
+	return start(key, token, addr, Upstream)
 }
 
 // start is Start with the destination named. Only Start's OpenRouter destination is trusted; tests
 // name a stand-in so no spec reaches the network.
-func start(key, addr, upstream string) (*Proxy, error) {
+func start(key, token, addr, upstream string) (*Proxy, error) {
+	if token == "" {
+		return nil, fmt.Errorf("openrouter proxy: a per-run token is required")
+	}
+
 	if err := loopback(addr); err != nil {
 		return nil, err
 	}
@@ -74,7 +82,7 @@ func start(key, addr, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("bind openrouter proxy: %w", err)
 	}
 
-	p := &Proxy{key: key, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest}
+	p := &Proxy{key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest}
 	p.transport = transport()
 	p.reverse = p.reverseProxy()
 	p.server = &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: headerTimeout}
@@ -163,8 +171,15 @@ func (p *Proxy) Close() error {
 	return nil
 }
 
-// serve forwards one request, or refuses it when it names anything but OpenRouter's API.
+// serve forwards one authenticated request, or refuses it when it names anything but OpenRouter's
+// API.
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
+	if !p.authorized(r) {
+		http.Error(w, "openrouter proxy: run token required", http.StatusUnauthorized)
+
+		return
+	}
+
 	if !p.permits(r) {
 		http.Error(w, "openrouter proxy: refused destination", http.StatusForbidden)
 
@@ -172,6 +187,17 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.reverse.ServeHTTP(w, r)
+}
+
+// authorized reports whether r carries the run's token in its Authorization header. The comparison
+// is constant time, and the token never reaches a log.
+func (p *Proxy) authorized(r *http.Request) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(got), []byte(p.token)) == 1
 }
 
 // permits reports whether r names OpenRouter's API. The proxy has one fixed upstream, so no request

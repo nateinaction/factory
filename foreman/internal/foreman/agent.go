@@ -105,13 +105,17 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	return opencode.ParseStream(out), err
 }
 
-// redact removes the OpenRouter key from text bound for a log.
+// redact removes the run's key and proxy token from text bound for a log.
 func (s session) redact(text string) string {
-	if s.key == "" {
-		return text
+	for _, secret := range []string{s.key, s.token} {
+		if secret == "" {
+			continue
+		}
+
+		text = strings.ReplaceAll(text, secret, "[redacted]")
 	}
 
-	return strings.ReplaceAll(text, s.key, "[redacted]")
+	return text
 }
 
 // logUsage writes the run's single usage line to stdout, which dagu captures in the run log.
