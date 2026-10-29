@@ -28,6 +28,8 @@ func Run(
 	number int,
 ) (int, error) {
 	switch role {
+	case workflow.Planner:
+		return exitCode(runPlanner(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Implementer:
 		return exitCode(runImplementer(ctx, d, repo, agent, retro, number), 0)
 	case workflow.Researcher:
@@ -36,7 +38,7 @@ func Run(
 		code, err := runReviewer(ctx, d, repo, agent, retro, number)
 
 		return exitCode(err, code)
-	case workflow.Planner, workflow.Curator:
+	case workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
 

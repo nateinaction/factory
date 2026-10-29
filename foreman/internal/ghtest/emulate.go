@@ -66,6 +66,8 @@ type Issue struct {
 	State string `json:"state"`
 	// Title is the issue title.
 	Title string `json:"title"`
+	// Body is the issue body.
+	Body string `json:"body"`
 	// Labels are the label names the issue carries.
 	Labels []struct {
 		Name string `json:"name"`
@@ -350,6 +352,15 @@ func (e *Emulate) Issue(ctx context.Context, repo string, number int) (Issue, er
 	err := e.Do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, number), AdminToken, nil, &issue)
 
 	return issue, err
+}
+
+// Issues lists the repository's open issues, oldest first.
+func (e *Emulate) Issues(ctx context.Context, repo string) ([]Issue, error) {
+	var out []Issue
+
+	err := e.Do(ctx, http.MethodGet, "/repos/"+repo+"/issues?state=open", AdminToken, nil, &out)
+
+	return out, err
 }
 
 // Labels lists the repository's label names.

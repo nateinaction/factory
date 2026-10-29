@@ -283,7 +283,9 @@ func failDeadRun(
 		"It is not retried automatically; comment to send it back to the %s.",
 		role, agent.Deadline(), margin, role)
 
-	return true, d.client(token).Finish(ctx, repo, issue.Number, t, text)
+	_, err = d.client(token).Finish(ctx, repo, issue.Number, t, text)
+
+	return true, err
 }
 
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
@@ -346,6 +348,12 @@ func wakeIssue(
 	thread, ok, err := wakeThread(ctx, c, repo, issue, comments, latest)
 	if err != nil || !ok {
 		return false, err
+	}
+
+	// A writer's approval of the latest final round applies the stored proposal with no model run.
+	approved, err := approvePending(ctx, d, perms, c, repo, issue, thread, latest)
+	if err != nil || approved {
+		return approved, err
 	}
 
 	state, ok := workflow.WakeState(latest.Transition, true, written(ctx, d, perms, c, repo, thread, latest))
@@ -633,7 +641,9 @@ func claimAndEnqueue(
 
 		t.From, t.To = q.dst, workflow.Failed
 
-		return 1, c.Finish(ctx, repo, issue.Number, t, "Could not queue the agent run; see the dagu log.")
+		_, err = c.Finish(ctx, repo, issue.Number, t, "Could not queue the agent run; see the dagu log.")
+
+		return 1, err
 	}
 
 	return 0, nil
@@ -645,17 +655,31 @@ var errNoBehaviour = errors.New("agent role has no behaviour yet")
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
 func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) (int, error) {
 	switch role {
+	case workflow.Planner:
+		return startPlanner(ctx, d, cfg, repo, number)
 	case workflow.Implementer:
 		return startImplementer(ctx, d, cfg, repo, number)
 	case workflow.Researcher:
 		return startResearcher(ctx, d, cfg, repo, number)
 	case workflow.Reviewer:
 		return startReviewer(ctx, d, cfg, repo, number)
-	case workflow.Planner, workflow.Curator:
+	case workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
 
 	return 1, fmt.Errorf("unknown agent role %q", role)
+}
+
+// startPlanner posts the Planner's round, which the factory half records and moves to waiting. A
+// failed run moves planning to failed, with one comment saying why.
+func startPlanner(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Planner, repo, number)
+	if code == 0 {
+		return 0, writeLine(d.Out, "The Planner posted a round; see the issue.")
+	}
+
+	return 1, finishAs(ctx, d, workflow.Planner, repo, number, workflow.Planning, workflow.Failed,
+		failureText(workflow.Planner, code))
 }
 
 // startImplementer implements the issue, then queues it for review or fails it.
@@ -752,7 +776,9 @@ func finishRun(
 				"repo", repo, "issue", number, "error", shaErr)
 		}
 
-		return c.Finish(ctx, repo, number, t, text)
+		_, err := c.Finish(ctx, repo, number, t, text)
+
+		return err
 	}
 
 	d.log().Error("cannot mint the owning App's token; reporting the failure as another App",
@@ -772,7 +798,9 @@ func finishRun(
 			continue // that App isn't installed here or has no credential: try the next
 		}
 
-		return d.client(otherToken).Finish(ctx, repo, number, t, notice)
+		_, err := d.client(otherToken).Finish(ctx, repo, number, t, notice)
+
+		return err
 	}
 
 	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", repo, number, err)

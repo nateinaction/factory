@@ -97,6 +97,33 @@ const implementerRolePrompt = "Use the `implement` skill on the issue given unde
 	"a first run, \"pr_title\" and \"pr_body\". On a review round add \"replies\": a list of " +
 	"{\"finding\": \"...\", \"status\": \"fixed\" or \"contested\", \"reason\": \"...\"}."
 
+// plannerRolePrompt is the Planner's fixed instruction. The model never chooses a label, never
+// commits, and writes only its output file; foreman makes every tracker write.
+const plannerRolePrompt = "Use the `grilling`, `wayfinder`, `to-spec` and `to-tickets` skills on the " +
+	"issue given under \"Issue material\". Do not change the repository, do not commit, do not comment " +
+	"and do not ask questions in the session: foreman posts the round and moves the issue. Write one " +
+	"JSON object to the output file with \"version\": 1, \"kind\" and \"comment\". " +
+	"A \"kind\": \"questions\" round is numbered questions, each with a recommended answer worded so " +
+	"that \"yes\" accepts it; it carries no proposal. A \"kind\": \"final_round\" carries a " +
+	"\"proposal\" and its comment ends with exactly \"Is this ready to build?\". " +
+	"A proposal is {\"shape\": \"single\"} or {\"shape\": \"slices\"}, with \"spec\" and, for slices, " +
+	"\"issues\": [{\"key\": \"slug\", \"title\": \"...\", \"body\": \"...\", \"blocked_by\": [\"slug\" or \"#N\"]}]. " +
+	"The spec must carry a \"Domain changes\" section listing proposed glossary terms and ADRs. " +
+	"Do not set labels or write factory markers: foreman derives every label."
+
+// Planner is the Planner's prompt: the issue, its whole thread oldest first, and where the JSON
+// goes. The Planner reads the thread rather than a clone.
+func Planner(docs []Doc, repo string, issue workflow.Issue, thread []workflow.Item, outPath string) string {
+	return Build(plannerRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s"+
+		"\n\nWrite the JSON to %s.", repo, issue.Number, issue.Title,
+		workflow.Truncate(issue.Body, workflow.BodyLimitChars), PlannerThread(thread), outPath))
+}
+
+// PlannerThread renders the issue's whole thread, oldest first, under its own heading.
+func PlannerThread(comments []workflow.Item) string {
+	return thread("\n\n# Issue thread", comments)
+}
+
 // reviewerRolePrompt is the Reviewer's fixed instruction.
 const reviewerRolePrompt = "Use the `code-review` skill on the current directory. Do not change the " +
 	"repository, do not post anything, and do not ask questions. Classify every finding as high " +
@@ -137,13 +164,18 @@ func Implementer(
 // Thread renders every comment a woken run reads, oldest first, each with its author and cut to fit
 // a single body limit across the whole section.
 func Thread(comments []workflow.Item) string {
+	return thread(ThreadHeading, comments)
+}
+
+// thread renders comments oldest first under heading, cut to one body limit across the section.
+func thread(heading string, comments []workflow.Item) string {
 	if len(comments) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 
-	b.WriteString(ThreadHeading)
+	b.WriteString(heading)
 
 	budget := workflow.BodyLimitChars
 
