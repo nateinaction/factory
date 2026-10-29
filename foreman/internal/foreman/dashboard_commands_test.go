@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -407,6 +408,31 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(theDashboardOf("o/r").Body).To(ContainSubstring("## Promoted (0)"))
 		Expect(graphql.minimizedComments()).To(HaveLen(1), "did not minimize the non-writer's command")
 		Expect(h.logs.String()).To(ContainSubstring("a non-writer's dashboard command"))
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "dashboard_command_refused"),
+			HaveKeyWithValue("outcome", "unauthorized_author"),
+			HaveKeyWithValue("repository", "o/r"),
+			HaveKeyWithValue("issue", strconv.Itoa(dashboard.Number)),
+		)))
+	})
+
+	It("fails closed on a command whose author's permission it cannot read, and records it", func() {
+		h.graphql(true)
+
+		dashboard := ready(skillGroup, pollConfig(workflow.Implementer, workflow.Reviewer))
+
+		h.gh.Status("GET /repos/o/r/collaborators/o/permission", http.StatusInternalServerError)
+
+		h.comment(dashboard.Number, "o", "promote "+skillGroup.String())
+		Expect(poll(pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+
+		Expect(promotedIn("o/r", skillGroup)).To(BeEmpty(), "acted on an unreadable permission")
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "dashboard_command_refused"),
+			HaveKeyWithValue("outcome", "permission_unreadable"),
+			HaveKeyWithValue("repository", "o/r"),
+			HaveKeyWithValue("issue", strconv.Itoa(dashboard.Number)),
+		)))
 	})
 
 	It("deletes a command when the App cannot minimize it", func() {
@@ -552,7 +578,7 @@ var _ = Describe("the dashboard's writer commands", func() {
 		}
 		state := workflow.DashboardState{Handled: []int64{comment.ID}}
 
-		next, done := r.onComment(ctx, state, nil, comment)
+		next, done := r.onComment(ctx, state, nil, 1, comment)
 		Expect(done).To(BeFalse(), "settled a command it could not record")
 		Expect(next.Handled).To(ConsistOf(comment.ID))
 	})
