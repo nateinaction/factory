@@ -136,6 +136,17 @@ linters:
               desc: the pure core makes no network calls
             - pkg: net/http
               desc: the pure core makes no network calls; use internal/github
+        # cobra and viper are edge packages: the CLI in cmd/foreman and internal/config.
+        cli-edge:
+          files:
+            - "**/internal/**/*.go"
+            - "!**/internal/config/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: cobra belongs to the command edge, in cmd/foreman
+            - pkg: github.com/spf13/viper
+              desc: viper belongs to the configuration edge, in internal/config and cmd/foreman
     revive:
       rules:
         # Ginkgo and Gomega are written with dot imports by convention.

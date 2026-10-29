@@ -13,6 +13,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // moduleSources lists every non-test Go file in the module, whose root is two levels up.
@@ -86,21 +89,27 @@ var _ = Describe("the merge path", func() {
 		Entry("poll", func(h *harness) {
 			h.queue(map[string][]map[string]any{"ready-for-agent-review": {{"number": 5}}})
 			h.acceptWrites("5")
-			Main(context.Background(), []string{"poll"}, h.deps)
+			cfg, err := config.Load(h.deps.Settings.ConfigFile)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = Poll(context.Background(), h.deps, cfg.Roles)
+			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("start", func(h *harness) {
 			h.acceptWrites("5")
-			Main(context.Background(), []string{"start", "reviewer", "o/r", "5"}, h.deps)
+			_, err := Start(context.Background(), h.deps, workflow.Reviewer, "o/r", 5)
+			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run implementer", func(h *harness) {
 			h.implementerGH(nil, nil)
 			h.writeToken("implementer", "t")
-			Main(context.Background(), []string{"run", "implementer", "o/r", "5"}, h.deps)
+			_, err := Run(context.Background(), h.deps, workflow.Implementer, "o/r", testAgent(), 5)
+			Expect(err).NotTo(HaveOccurred())
 		}),
 		Entry("run reviewer", func(h *harness) {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-			Main(context.Background(), []string{"run", "reviewer", "o/r", "5"}, h.deps)
+			_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), 5)
+			Expect(err).NotTo(HaveOccurred())
 		}),
 	)
 })

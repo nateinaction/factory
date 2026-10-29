@@ -12,18 +12,50 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-var _ = Describe("DefaultSettings", func() {
-	It("keeps the host's config locations", func() {
-		s := config.DefaultSettings("/home/factory", "")
+var _ = Describe("SettingsViper", func() {
+	// settings decodes the settings source for home.
+	settings := func(home string) (config.Settings, error) {
+		return config.SettingsFrom(config.SettingsViper(home))
+	}
+
+	It("keeps the host's config locations as defaults", func() {
+		GinkgoT().Setenv("FACTORY_AGENT_CONFIG", "")
+		GinkgoT().Setenv("FACTORY_KEY_FILE", "")
+		GinkgoT().Setenv("FACTORY_WORK_ROOT", "")
+		GinkgoT().Setenv("FACTORY_TOKEN_DIR", "")
+		GinkgoT().Setenv("FACTORY_API", "")
+
+		s, err := settings("/home/factory")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(s.ConfigFile).To(Equal("/etc/factory-agent/config.json"))
 		Expect(s.KeyFile).To(Equal("/home/factory/.config/factory-agent/openrouter-key"))
 		Expect(s.WorkRoot).To(Equal("/home/factory/work"))
 		Expect(s.TokenPath(workflow.Reviewer)).To(Equal("/run/factory/gh-token-reviewer"))
 		Expect(s.API).To(Equal("https://api.github.com"))
+		Expect(s.Self).To(Equal("/usr/local/bin/foreman"))
+		Expect(s.TokenHelper).To(Equal("/usr/local/bin/github-app-token"))
+		Expect(s.Dagu).To(Equal("/usr/local/bin/dagu"))
+		Expect(s.DAGPrefix).To(Equal("factory-"))
 	})
 
-	It("takes a config file override", func() {
-		Expect(config.DefaultSettings("/h", "/x.json").ConfigFile).To(Equal("/x.json"))
+	It("lets FACTORY_* environment variables override the defaults", func() {
+		GinkgoT().Setenv("FACTORY_WORK_ROOT", "/srv/work")
+		GinkgoT().Setenv("FACTORY_TOKEN_DIR", "/srv/tokens")
+		GinkgoT().Setenv("FACTORY_DAG_PREFIX", "other-")
+
+		s, err := settings("/home/factory")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.WorkRoot).To(Equal("/srv/work"))
+		Expect(s.TokenDir).To(Equal("/srv/tokens"))
+		Expect(s.DAGPrefix).To(Equal("other-"))
+	})
+
+	It("still honors FACTORY_AGENT_CONFIG", func() {
+		GinkgoT().Setenv("FACTORY_AGENT_CONFIG", "/x.json")
+
+		s, err := settings("/h")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.ConfigFile).To(Equal("/x.json"))
 	})
 })
 
@@ -48,14 +80,21 @@ var _ = Describe("Load", func() {
 		return m
 	}
 
+	// writeConfig writes raw JSON as a config file and returns its path.
+	writeConfig := func(raw []byte) string {
+		GinkgoHelper()
+
+		path := filepath.Join(GinkgoT().TempDir(), "c.json")
+		Expect(os.WriteFile(path, raw, 0o600)).To(Succeed())
+
+		return path
+	}
+
 	// load writes a config with the given agents and loads it.
 	load := func(agents map[string]config.AgentConfig) error {
 		raw, err := json.Marshal(map[string]any{"roles": []workflow.Role{workflow.Implementer}, "agents": agents})
 		Expect(err).NotTo(HaveOccurred())
-
-		path := filepath.Join(GinkgoT().TempDir(), "c.json")
-		Expect(os.WriteFile(path, raw, 0o600)).To(Succeed())
-		_, err = config.Load(path)
+		_, err = config.Load(writeConfig(raw))
 
 		return err
 	}
@@ -74,4 +113,33 @@ var _ = Describe("Load", func() {
 		Entry("no model", func(m map[string]config.AgentConfig) { m["planner"] = config.AgentConfig{ContextCap: 1} }),
 		Entry("no cap", func(m map[string]config.AgentConfig) { m["planner"] = config.AgentConfig{Model: "m"} }),
 	)
+
+	DescribeTable("rejects a malformed config",
+		func(raw string) {
+			_, err := config.Load(writeConfig([]byte(raw)))
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("empty", ``),
+		Entry("not JSON", `[`),
+		Entry("no fields", `{}`),
+	)
+
+	It("rejects an unknown top-level key", func() {
+		_, err := config.Load(writeConfig([]byte(`{"roles":["implementer"],"agents":{},"extra":true}`)))
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("rejects an unknown agent key", func() {
+		_, err := config.Load(writeConfig([]byte(
+			`{"roles":["implementer"],"agents":{"janitor":{"model":"m","context_cap":1}}}`,
+		)))
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("rejects an agent setting it does not know", func() {
+		_, err := config.Load(writeConfig([]byte(
+			`{"roles":["implementer"],"agents":{"implementer":{"model":"m","context_cap":1,"extra":true}}}`,
+		)))
+		Expect(err).To(HaveOccurred())
+	})
 })

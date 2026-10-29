@@ -3,55 +3,72 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
+	"maps"
 	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/spf13/viper"
 
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
-// Settings are the paths and endpoints at the edge. DefaultSettings fills them from the host layout.
+// Settings are the paths and endpoints at the edge. SettingsViper fills them from the host layout.
 type Settings struct {
 	// API is GitHub's REST API root.
-	API string
+	API string `mapstructure:"api"`
 	// TokenDir is where `start` leaves the repo-scoped token for the factory user, one file per agent role.
-	TokenDir string
+	TokenDir string `mapstructure:"token-dir"`
 	// KeyFile holds the OpenRouter key.
-	KeyFile string
+	KeyFile string `mapstructure:"key-file"`
 	// WorkRoot holds clones and scratch files.
-	WorkRoot string
+	WorkRoot string `mapstructure:"work-root"`
 	// Self is foreman's installed path, re-run as the factory user.
-	Self string
+	Self string `mapstructure:"self"`
 	// ConfigFile is the role-written JSON config.
-	ConfigFile string
+	ConfigFile string `mapstructure:"config"`
 	// TokenHelper mints GitHub App tokens.
-	TokenHelper string
+	TokenHelper string `mapstructure:"token-helper"`
 	// Dagu is the dagu binary.
-	Dagu string
+	Dagu string `mapstructure:"dagu"`
 	// DAGPrefix is prepended to an agent role to name the dagu DAG a poll enqueues.
-	DAGPrefix string
+	DAGPrefix string `mapstructure:"dag-prefix"`
 }
 
-// DefaultSettings is the host layout. Config stays under /etc/factory-agent and ~/.config/factory-agent.
-func DefaultSettings(home, configOverride string) Settings {
-	config := "/etc/factory-agent/config.json"
-	if configOverride != "" {
-		config = configOverride
+// SettingsViper returns the settings source: the host layout as defaults, overridden by FACTORY_*
+// environment variables (dashes become underscores) and by flags the caller binds by their names.
+// Decode it with SettingsFrom. Flags win over the environment, which wins over the defaults.
+func SettingsViper(home string) *viper.Viper {
+	v := viper.New()
+	v.SetEnvPrefix("FACTORY")
+	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
+	v.AutomaticEnv()
+	// The role config's environment name predates the FACTORY_* settings and keeps working.
+	v.MustBindEnv("config", "FACTORY_AGENT_CONFIG")
+
+	// The host layout. Config stays under /etc/factory-agent and ~/.config/factory-agent.
+	v.SetDefault("api", "https://api.github.com")
+	v.SetDefault("token-dir", "/run/factory")
+	v.SetDefault("key-file", filepath.Join(home, ".config/factory-agent/openrouter-key"))
+	v.SetDefault("work-root", filepath.Join(home, "work"))
+	v.SetDefault("self", "/usr/local/bin/foreman")
+	v.SetDefault("config", "/etc/factory-agent/config.json")
+	v.SetDefault("token-helper", "/usr/local/bin/github-app-token")
+	v.SetDefault("dagu", "/usr/local/bin/dagu")
+	v.SetDefault("dag-prefix", "factory-")
+
+	return v
+}
+
+// SettingsFrom decodes v into Settings. A value of the wrong type is an error, never a fallback.
+func SettingsFrom(v *viper.Viper) (Settings, error) {
+	var s Settings
+	if err := v.Unmarshal(&s); err != nil {
+		return Settings{}, fmt.Errorf("settings: %w", err)
 	}
 
-	// gosec reads the Token* and Key* field names as credentials; every value here is a path or URL.
-	return Settings{ //nolint:gosec // see above
-		API:         "https://api.github.com",
-		TokenDir:    "/run/factory",
-		KeyFile:     filepath.Join(home, ".config/factory-agent/openrouter-key"),
-		WorkRoot:    filepath.Join(home, "work"),
-		Self:        "/usr/local/bin/foreman",
-		ConfigFile:  config,
-		TokenHelper: "/usr/local/bin/github-app-token",
-		Dagu:        "/usr/local/bin/dagu",
-		DAGPrefix:   "factory-",
-	}
+	return s, nil
 }
 
 // TokenPath is the token file of one agent role's run.
@@ -62,49 +79,86 @@ func (s Settings) TokenPath(role workflow.Role) string {
 // AgentConfig is one agent role's model settings, rendered from `factory_models` by Ansible.
 type AgentConfig struct {
 	// Model is the OpenRouter model id, for the usage report.
-	Model string `json:"model"`
+	Model string `json:"model" mapstructure:"model"`
 	// ContextCap is the input-token cap the model alias carries.
-	ContextCap int `json:"context_cap"`
+	ContextCap int `json:"context_cap" mapstructure:"context_cap"`
 	// Compaction is whether opencode compacts instead of overflowing.
-	Compaction bool `json:"compaction"`
+	Compaction bool `json:"compaction" mapstructure:"compaction"`
 }
 
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
 type Config struct {
 	// Roles are the agent roles whose Apps the host holds credentials for.
-	Roles []workflow.Role `json:"roles"`
+	Roles []workflow.Role `json:"roles" mapstructure:"roles"`
 	// Agents holds each agent role's model settings, keyed by the role's name.
-	Agents map[string]AgentConfig `json:"agents"`
+	Agents map[string]AgentConfig `json:"agents" mapstructure:"agents"`
 }
 
-// Load reads and validates the config file: every agent role needs a model and a context cap.
+// Load reads and validates the role config through viper. An unknown key is an error, never ignored:
+// a typo must not silently fall back to a default. Every agent role needs a model and a context cap.
 func Load(path string) (Config, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // the path is the operator's own setting, read at the edge
-	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("json")
+
+	if err := v.ReadInConfig(); err != nil {
+		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	}
 
 	var c Config
-	if err := json.Unmarshal(raw, &c); err != nil {
+	if err := v.UnmarshalExact(&c); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	if len(c.Roles) == 0 {
-		return Config{}, fmt.Errorf("config %s: roles is required", path)
+	if err := validate(path, c); err != nil {
+		return Config{}, err
 	}
 
-	for _, r := range c.Roles {
-		if _, err := workflow.ParseRole(string(r)); err != nil {
-			return Config{}, fmt.Errorf("config %s: %w", path, err)
-		}
+	return c, nil
+}
+
+// validate checks the roles and agent settings of a loaded config.
+func validate(path string, c Config) error {
+	if len(c.Roles) == 0 {
+		return fmt.Errorf("config %s: roles is required", path)
+	}
+
+	if err := validateRoles(path, c.Roles); err != nil {
+		return err
+	}
+
+	if err := validateAgents(path, c.Agents); err != nil {
+		return err
 	}
 
 	for _, r := range workflow.KnownRoles() {
 		a, ok := c.Agents[string(r)]
 		if !ok || a.Model == "" || a.ContextCap <= 0 {
-			return Config{}, fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
+			return fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
 		}
 	}
 
-	return c, nil
+	return nil
+}
+
+// validateRoles rejects a role the workflow does not know.
+func validateRoles(path string, roles []workflow.Role) error {
+	for _, r := range roles {
+		if _, err := workflow.ParseRole(string(r)); err != nil {
+			return fmt.Errorf("config %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+// validateAgents rejects an agent role the workflow does not know.
+func validateAgents(path string, agents map[string]AgentConfig) error {
+	for _, name := range slices.Sorted(maps.Keys(agents)) {
+		if _, err := workflow.ParseRole(name); err != nil {
+			return fmt.Errorf("config %s: agents: %w", path, err)
+		}
+	}
+
+	return nil
 }

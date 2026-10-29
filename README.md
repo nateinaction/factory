@@ -127,6 +127,10 @@ Things to know:
   key/value attributes). `FACTORY_LOG_LEVEL` sets the level (`debug`, `info`,
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
   output, never diagnostics.
+- `foreman --help` lists the verbs (`poll`, `start`, `run`). Settings default to
+  the host layout and can be overridden by `FACTORY_*` environment variables or
+  by the matching flag (`--work-root`, `--config`, ...); a flag wins over the
+  environment, which wins over the default.
 - A run past an hour loses its token, and the agent has a one-hour cap.
 - GitHub does not let a PR's author approve it, and the App opens the PRs, so the
   review agent's approval is rejected. It then posts a comment review saying so;
