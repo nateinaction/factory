@@ -104,8 +104,8 @@ factory_agent_skills:
 
 # The opencode permissions every agent role shares: deny by default, never `ask`. A role may read,
 # glob, grep and list inside the clone, fetch and search the web, and write only inside the run's
-# scratch tree (outside the clone); external_directory denies every other path. The sandbox is the
-# first layer and narrows this to the run's own directory; these rules are the second.
+# scratch tree (outside the clone). external_directory denies every external path in the rendered
+# config; foreman's per-run inline config re-allows this run's own directories and nothing else.
 factory_agent_permissions_common:
   "*": deny
   read: allow
@@ -117,9 +117,6 @@ factory_agent_permissions_common:
   question: deny
   task: deny
   doom_loop: deny
-  external_directory:
-    "*": deny
-    "~/work/**": allow # foreman's work-root default; it holds each run's clones and scratch files
 
 # A Planner, Researcher or Curator inspects the repository and the tracker, and changes neither.
 factory_agent_shell_readonly_git: &agent_shell_readonly_git
@@ -142,21 +139,34 @@ factory_agent_shell_readonly_gh: &agent_shell_readonly_gh
   "gh api --method GET *": allow
 
 # The Implementer and the Reviewer run the repository's toolchain, so bash is open apart from the
-# writes foreman owns: a push, and opening, editing or commenting through gh.
+# writes foreman owns: a push, and any write through gh. gh is read-only for every agent role: every
+# gh command is denied, then the inspection subcommands are allowed. The rendered rules are sorted,
+# and opencode applies the last matching rule, so `gh *` is written before (sorts before) each
+# `gh pr view*`-style allow and the allow wins for a read. `gh api` is the same: every call is
+# denied, and only a GET is allowed, which is what denies the `-f`/`-F`/`--input` forms that POST.
 factory_agent_shell_readwrite: &agent_shell_readwrite
   "*": allow
   "git push*": deny
-  "gh pr create*": deny
-  "gh pr merge*": deny
-  "gh pr edit*": deny
-  "gh issue create*": deny
-  "gh issue edit*": deny
-  "gh issue comment*": deny
-  "gh issue close*": deny
-  "gh api --method POST *": deny
-  "gh api --method PATCH *": deny
-  "gh api --method PUT *": deny
-  "gh api --method DELETE *": deny
+  "gh *": deny
+  "gh api --method GET *": allow
+  "gh api -X GET *": allow
+  "gh auth status*": allow
+  "gh issue list*": allow
+  "gh issue view*": allow
+  "gh label list*": allow
+  "gh pr checks*": allow
+  "gh pr diff*": allow
+  "gh pr list*": allow
+  "gh pr status*": allow
+  "gh pr view*": allow
+  "gh release list*": allow
+  "gh release view*": allow
+  "gh repo list*": allow
+  "gh repo view*": allow
+  "gh run list*": allow
+  "gh run view*": allow
+  "gh workflow list*": allow
+  "gh workflow view*": allow
 
 # Per agent role: what it may edit, and its bash. Every other permission comes from the shared set
 # above, and its skill allowlist from factory_agent_skills. Only its output file may be written

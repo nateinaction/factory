@@ -21,6 +21,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // acceptanceToken is the per-run proxy token the acceptance test's model sends.
@@ -98,7 +99,7 @@ var _ = Describe("acceptance: srt filesystem", func() {
 			Skip("srt is not installed on this host; the sandbox acceptance test needs the pinned backend")
 		}
 
-		root := GinkgoT().TempDir()
+		root := realTempDir()
 		runDir := filepath.Join(root, "run")
 		secretDir := filepath.Join(root, "real-home")
 
@@ -129,6 +130,18 @@ var _ = Describe("acceptance: srt filesystem", func() {
 	})
 })
 
+// realTempDir is a temp directory with every symlink resolved. srt binds an allowed path where it
+// really is, and macOS's /tmp is a symlink to /private/tmp, so a raw temp path is not the path the
+// sandbox can write.
+func realTempDir() string {
+	dir := GinkgoT().TempDir()
+
+	resolved, err := filepath.EvalSymlinks(dir)
+	Expect(err).NotTo(HaveOccurred())
+
+	return resolved
+}
+
 // freePort is a port number no process holds, for the settings file the no-network specs write.
 func freePort() string {
 	ln, err := (&net.ListenConfig{}).Listen(GinkgoT().Context(), "tcp", "127.0.0.1:0")
@@ -147,34 +160,48 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 			Skip("srt is not installed on this host; the run-cap acceptance test needs the pinned backend")
 		}
 
-		root := GinkgoT().TempDir()
-		dirs := []string{filepath.Join(root, "run-a"), filepath.Join(root, "run-b")}
+		root := realTempDir()
+		work := filepath.Join(root, "work")
+		Expect(os.MkdirAll(work, 0o700)).To(Succeed())
 
-		for i, dir := range dirs {
-			Expect(os.MkdirAll(dir, 0o700)).To(Succeed())
-			Expect(os.WriteFile(filepath.Join(dir, "secret"), []byte(fmt.Sprintf("secret-%d", i)), 0o600)).
+		type run struct{ runDir, scratch string }
+
+		runs := []run{
+			{filepath.Join(work, "run-implementer-1"), filepath.Join(work, "implementer-1")},
+			{filepath.Join(work, "run-implementer-2"), filepath.Join(work, "implementer-2")},
+		}
+
+		for i, r := range runs {
+			Expect(os.MkdirAll(r.runDir, 0o700)).To(Succeed())
+			Expect(os.MkdirAll(r.scratch, 0o700)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(r.scratch, "secret"), []byte(fmt.Sprintf("secret-%d", i)), 0o600)).
 				To(Succeed())
 		}
 
-		// Each run gets the spec foreman builds for one run: its own directory writable, the other
-		// run's directory hidden. Two of them at once is what a run cap above 1 means.
-		settings := func(dir, other string) string {
-			path := filepath.Join(root, filepath.Base(dir)+".srt.json")
+		// Each run gets the spec foreman builds for one run: its own directory and scratch writable,
+		// the work root that holds every run hidden. Two of them at once is what a run cap above 1
+		// means.
+		settings := func(r run) string {
+			spec := sandbox.Plan(workflow.Implementer, sandbox.Layout{
+				RunDir: r.runDir, Scratch: r.scratch, Hidden: []string{work},
+			})
+			path := filepath.Join(work, filepath.Base(r.runDir)+".srt.json")
 
-			raw, err := sandbox.Settings(sandbox.Spec{
-				ReadWrite: []string{dir}, Hidden: []string{other}, Network: openNetwork(),
-			}, loopbackPort(freePort()))
+			raw, err := sandbox.Settings(spec, loopbackPort(freePort()))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(os.WriteFile(path, raw, 0o600)).To(Succeed())
 
 			return path
 		}
 
-		// Each run reads the other's secret (it must fail), writes its own marker, and reads it back.
-		script := func(own, other string) string {
-			return fmt.Sprintf("cat %s 2>/dev/null || echo hidden; echo %s > %s; cat %s",
-				filepath.Join(other, "secret"), filepath.Base(own), filepath.Join(own, "out"),
-				filepath.Join(own, "out"))
+		// Each run reads the other's scratch secret (it must fail), writes its own marker into its
+		// own scratch directory, and reads it back.
+		script := func(i int) string {
+			other := runs[(i+1)%len(runs)]
+
+			return fmt.Sprintf("cat %s 2>/dev/null || echo hidden; echo own-%d > %s; cat %s",
+				filepath.Join(other.scratch, "secret"), i, filepath.Join(runs[i].scratch, "out"),
+				filepath.Join(runs[i].scratch, "out"))
 		}
 
 		type result struct {
@@ -187,18 +214,17 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 			script   string
 		}
 
-		jobs := make([]job, 0, len(dirs))
+		jobs := make([]job, 0, len(runs))
 
-		for i, dir := range dirs {
-			other := dirs[(i+1)%len(dirs)]
-			jobs = append(jobs, job{settings: settings(dir, other), script: script(dir, other)})
+		for i, r := range runs {
+			jobs = append(jobs, job{settings: settings(r), script: script(i)})
 		}
 
-		results := make([]result, len(dirs))
+		results := make([]result, len(runs))
 
 		var wg sync.WaitGroup
 
-		wg.Add(len(dirs))
+		wg.Add(len(runs))
 
 		for i, j := range jobs {
 			go func(i int, j job) {
@@ -217,12 +243,13 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 		wg.Wait()
 
 		for i, got := range results {
-			other := (i + 1) % len(dirs)
+			other := (i + 1) % len(runs)
 
 			Expect(got.err).NotTo(HaveOccurred(), string(got.out))
-			Expect(string(got.out)).To(ContainSubstring("hidden"), "a run saw the other run")
+			Expect(string(got.out)).To(ContainSubstring("hidden"), "a run saw the other run's scratch directory")
 			Expect(string(got.out)).NotTo(ContainSubstring(fmt.Sprintf("secret-%d", other)))
-			Expect(string(got.out)).To(ContainSubstring(filepath.Base(dirs[i])), "a run could not write its own directory")
+			Expect(string(got.out)).To(ContainSubstring(fmt.Sprintf("own-%d", i)),
+				"a run could not write its own scratch directory")
 		}
 	})
 })
@@ -256,7 +283,7 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(proxy.Close)
 
-		root := GinkgoT().TempDir()
+		root := realTempDir()
 		runDir := filepath.Join(root, "run")
 		home := filepath.Join(runDir, "home")
 		Expect(os.MkdirAll(home, 0o700)).To(Succeed())

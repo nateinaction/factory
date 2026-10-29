@@ -83,6 +83,9 @@ var _ = Describe("the sandbox", func() {
 
 		work := filepath.Join(h.deps.Settings.WorkRoot, "issue-5")
 		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-5")
+		scratch := filepath.Join(h.deps.Settings.WorkRoot, "implementer-5")
+		otherRun := filepath.Join(h.deps.Settings.WorkRoot, "run-implementer-6")
+		otherScratch := filepath.Join(h.deps.Settings.WorkRoot, "implementer-6")
 
 		for _, c := range calls {
 			Expect(c.Argv[0]).To(Equal("srt"))
@@ -100,6 +103,21 @@ var _ = Describe("the sandbox", func() {
 			Expect(c.Env).NotTo(HaveKey("FACTORY_KEY_FILE"))
 			Expect(c.Env["OPENCODE_CONFIG_CONTENT"]).To(ContainSubstring(`"apiKey":"`+testToken+`"`),
 				"the model sends the run's token and never the OpenRouter key")
+
+			var config struct {
+				Permission struct {
+					ExternalDirectory map[string]string `json:"external_directory"`
+				} `json:"permission"`
+			}
+			Expect(json.Unmarshal([]byte(c.Env["OPENCODE_CONFIG_CONTENT"]), &config)).To(Succeed())
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue("*", "deny"),
+				"every external path outside this run is denied")
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(runDir, "allow"))
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch, "allow"))
+			Expect(config.Permission.ExternalDirectory).To(
+				HaveKeyWithValue(retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer), "allow"))
+			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherRun))
+			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherScratch))
 		}
 
 		port := proxyPortOf(h.opencodeCalls()[0])
@@ -107,16 +125,18 @@ var _ = Describe("the sandbox", func() {
 		for _, s := range settings {
 			Expect(s.Network.HTTPProxyPort).To(Equal(port), "egress must cross foreman's proxy")
 			Expect(s.Network.AllowedDomains).To(BeEmpty(), "the egress proxy enforces the allowlist")
-			Expect(s.Filesystem.DenyRead).To(ConsistOf(
+			Expect(s.Filesystem.DenyRead).To(ConsistOf(append([]string{"/"},
 				h.deps.Settings.Home, h.deps.Settings.WorkRoot, h.deps.Settings.DaguHome,
-				h.deps.Settings.TokenDir, h.deps.Settings.KeyFile, "/nix/var/nix/daemon-socket",
-			))
+				h.deps.Settings.TokenDir, h.deps.Settings.KeyFile, "/nix/var/nix/daemon-socket")),
+				"the host is hidden, and the named sensitive paths stay denied")
+			Expect(s.Filesystem.AllowRead).To(ContainElements(work, runDir, scratch, h.deps.Settings.Skills))
+			Expect(s.Filesystem.AllowRead).NotTo(ContainElement(otherRun))
+			Expect(s.Filesystem.AllowRead).NotTo(ContainElement(otherScratch))
 			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
-				work, runDir, h.implOut(), retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer),
+				work, runDir, scratch, retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer),
 			))
 			Expect(s.Filesystem.DenyWrite).To(ConsistOf(filepath.Join(work, ".git")),
 				"the model may edit the working tree but never commit")
-			Expect(s.Filesystem.AllowRead).To(ContainElements(work, runDir, h.deps.Settings.Skills))
 		}
 	})
 
@@ -253,11 +273,11 @@ var _ = Describe("the sandbox", func() {
 
 		runDir := filepath.Join(h.deps.Settings.WorkRoot, "run-planner-5")
 		clone := filepath.Join(h.deps.Settings.WorkRoot, "plan-5")
-		out := filepath.Join(h.deps.Settings.WorkRoot, "planner-5", workflow.PlannerOutputFile)
+		scratch := filepath.Join(h.deps.Settings.WorkRoot, "planner-5")
 
 		for _, s := range settings {
 			Expect(s.Filesystem.AllowWrite).To(ConsistOf(
-				out, runDir, retroPath(h.deps.Settings.WorkRoot, 5, workflow.Planner),
+				scratch, runDir, retroPath(h.deps.Settings.WorkRoot, 5, workflow.Planner),
 			))
 			Expect(s.Filesystem.AllowWrite).NotTo(ContainElement(clone), "the Planner may not change its clone")
 			Expect(s.Filesystem.AllowRead).To(ContainElement(clone))

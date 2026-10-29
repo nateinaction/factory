@@ -261,9 +261,9 @@ type job struct {
 // one GitHub credential is a read-only token of its own App's, scoped to the repository.
 func loadJob(
 	ctx context.Context, d Deps, sec secrets, baseURL, token string, repo workflow.Repo, role workflow.Role,
-	agent config.AgentConfig, number int, db string,
+	agent config.AgentConfig, number int, db string, external []string,
 ) (job, error) {
-	env, err := opencode.Env(baseURL, token, db, agent)
+	env, err := opencode.Env(baseURL, token, db, external, agent)
 	if err != nil {
 		return job{}, err
 	}

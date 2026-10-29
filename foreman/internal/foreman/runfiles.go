@@ -121,9 +121,18 @@ func (f sandboxFiles) layout(d Deps, clone, output string, toolchain []string) s
 	}
 
 	return sandbox.Layout{
-		RunDir: f.dir, Clone: clone, Output: output, Skills: d.Settings.Skills,
+		RunDir: f.dir, Clone: clone, Scratch: scratchOf(output), Output: output, Skills: d.Settings.Skills,
 		Toolchain: toolchain, Hidden: dedupe(hidden),
 	}
+}
+
+// scratchOf is the run's scratch directory: the directory its output file sits in.
+func scratchOf(output string) string {
+	if output == "" {
+		return ""
+	}
+
+	return filepath.Dir(output)
 }
 
 // sandboxedSession compiles the agent role's spec and puts s inside it. extra names any further
