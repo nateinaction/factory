@@ -44,6 +44,11 @@ var _ = Describe("a dashboard command", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(cmd.Kind).To(Equal(workflow.CommandPublish))
+
+		cmd, ok, err = workflow.ParseCommand("curate")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(cmd.Kind).To(Equal(workflow.CommandCurate))
 	})
 
 	It("reads a command on the first non-blank line, and leaves prose alone", func() {
@@ -64,7 +69,7 @@ var _ = Describe("a dashboard command", func() {
 	It("reports a command word with no usable argument, and guesses at nothing", func() {
 		for _, text := range []string{
 			"promote", "promote nope", "merge " + group.String(),
-			"reject", "reject not an id", "publish now", "promote " + group.String() + " please",
+			"reject", "reject not an id", "publish now", "curate now", "promote " + group.String() + " please",
 		} {
 			_, ok, err := workflow.ParseCommand(text)
 			Expect(err).To(HaveOccurred(), text)

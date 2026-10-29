@@ -680,16 +680,6 @@ var _ = Describe("Run", func() {
 		})
 	})
 
-	DescribeTable("refuses an agent role without behaviour, doing nothing",
-		func(role workflow.Role) {
-			code, err := run(role)
-			Expect(err).To(HaveOccurred())
-			Expect(code).NotTo(BeZero())
-			h.expectNoWork()
-		},
-		Entry(nil, workflow.Planner), Entry(nil, workflow.Curator),
-	)
-
 	It("fails without a token file, never calling GitHub", func() {
 		code, err := run(workflow.Implementer)
 		Expect(err).To(HaveOccurred())

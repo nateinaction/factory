@@ -143,6 +143,22 @@ const reviewerRolePrompt = "Use the `code-review` skill on the current directory
 	`"findings": [{"severity": "high|medium|low", "path": "file", "line": 3, "claim": "..."}]. ` +
 	"A high or medium finding requires REQUEST_CHANGES, and REQUEST_CHANGES needs at least one finding."
 
+// curatorRolePrompt is the Curator's fixed instruction.
+const curatorRolePrompt = "Use the `curate` skill on the retro dashboard given under \"Issue material\". " +
+	"The repository is a read-only clone of the default branch: do not change it, do not commit, push " +
+	"or comment, and do not ask questions, because foreman makes every write from your output file. " +
+	"Write the result as JSON with \"version\": 1, \"merges\", \"links\" and \"issues\". " +
+	"A merge is {\"id\": \"<stable key>\", \"groups\": [\"<target>/<key>\", \"<target>/<key>\"], " +
+	"\"reason\": \"<one line>\"}; its two groups share one target and the first is the one kept. " +
+	"A link has the same shape and must cross targets. " +
+	"An issue is one draft per ready group: {\"group\": \"<target>/<key>\", \"title\": \"...\", " +
+	"\"body\": \"...\"}, or, in a private repository, {\"group\": ..., \"title\": ..., " +
+	"\"lesson\": \"...\", \"private_evidence\": \"...\"}. " +
+	"Keep a private draft's lesson general and its evidence apart from it. " +
+	"Never split, rename or reopen a group, never touch a group a writer merged, and never propose a " +
+	"pair the dashboard state lists as rejected. Give every proposal a stable key so applying the same " +
+	"file twice changes nothing."
+
 // researcherRolePrompt is the Researcher's fixed instruction.
 const researcherRolePrompt = "Use the `research` skill on the ticket given under \"Issue material\". " +
 	"Write the findings as Markdown files under `docs/research/` in the current directory; that " +
@@ -228,6 +244,16 @@ func Researcher(
 	return Build(researcherRolePrompt, docs, fmt.Sprintf("Repository: %s\nIssue: #%d\nTitle: %s\n\n%s%s"+
 		"\n\nWrite the JSON to %s.", repo, issue.Number, issue.Title,
 		workflow.Truncate(issue.Body, workflow.BodyLimitChars), Thread(thread), outPath))
+}
+
+// Curator is the Curator's prompt: the retro log with evidence and the dashboard state under the
+// repository docs, and the output file's path.
+func Curator(
+	docs []Doc, repo string, number int, private bool, reports []workflow.DashboardReport,
+	view workflow.DashboardView, outPath string,
+) string {
+	return Build(curatorRolePrompt, docs, fmt.Sprintf("%s\n\nWrite the JSON to %s.",
+		workflow.CuratorBrief(repo, number, private, reports, view), outPath))
 }
 
 // retroJSONShape tells the model the exact file foreman validates.

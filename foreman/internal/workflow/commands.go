@@ -21,6 +21,8 @@ const (
 	CommandReject CommandKind = "reject"
 	// CommandPublish copies a private repository's lesson to the factory repo.
 	CommandPublish CommandKind = "publish"
+	// CommandCurate starts a Curator run.
+	CommandCurate CommandKind = "curate"
 )
 
 // mergeGroups is how many groups a merge names.
@@ -28,7 +30,7 @@ const mergeGroups = 2
 
 // CommandKinds is the closed set of commands.
 func CommandKinds() []CommandKind {
-	return []CommandKind{CommandPromote, CommandMerge, CommandIgnore, CommandReject, CommandPublish}
+	return []CommandKind{CommandPromote, CommandMerge, CommandIgnore, CommandReject, CommandPublish, CommandCurate}
 }
 
 // Command is one command parsed from a comment.
@@ -67,6 +69,12 @@ func ParseCommand(body string) (Command, bool, error) {
 	case CommandPublish:
 		if len(args) != 0 {
 			return Command{}, true, fmt.Errorf("publish takes no argument, got %q", strings.Join(args, " "))
+		}
+
+		return Command{Kind: kind}, true, nil
+	case CommandCurate:
+		if len(args) != 0 {
+			return Command{}, true, fmt.Errorf("curate takes no argument, got %q", strings.Join(args, " "))
 		}
 
 		return Command{Kind: kind}, true, nil

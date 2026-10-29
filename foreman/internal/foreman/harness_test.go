@@ -423,13 +423,6 @@ func (h *harness) expectLeakFree(secrets ...string) {
 	}
 }
 
-// expectNoWork fails the spec when anything ran or reached GitHub.
-func (h *harness) expectNoWork() {
-	GinkgoHelper()
-	Expect(h.runner.cmds).To(BeEmpty())
-	Expect(h.gh.Calls()).To(BeEmpty())
-}
-
 // expectAuthorizedAs fails the spec when any GitHub call used a token other than role's.
 func (h *harness) expectAuthorizedAs(role workflow.Role) {
 	GinkgoHelper()
@@ -616,6 +609,26 @@ func (h *harness) reviewPath() string {
 // retroOut is where a run's retro.json is written for o/r#5.
 func (h *harness) retroOut(role workflow.Role) string {
 	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("issue-5-%s.retro.json", role))
+}
+
+// curatorOut is where a Curator run on number writes its output file.
+func (h *harness) curatorOut(number int) string {
+	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("curator-out-%d", number),
+		workflow.CuratorOutputFile)
+}
+
+// curatorWrites makes the Curator's run on number write text as its output file.
+func (h *harness) curatorWrites(number int, text string) {
+	out := h.curatorOut(number)
+
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if isModel(c) && strings.Contains(joined(c), "--agent curator ") {
+			Expect(os.MkdirAll(filepath.Dir(out), 0o700)).To(Succeed())
+			Expect(os.WriteFile(out, []byte(text), 0o600)).To(Succeed())
+		}
+
+		return base(c)
+	})
 }
 
 // retroComments are the retro marker comments posted on o/r#5, oldest first.

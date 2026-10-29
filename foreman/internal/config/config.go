@@ -43,6 +43,9 @@ type Settings struct {
 	Dagu string `mapstructure:"dagu"`
 	// DAGPrefix is prepended to an agent role to name the dagu DAG a poll enqueues.
 	DAGPrefix string `mapstructure:"dag-prefix"`
+	// FactoryRepo is the role config's factory repository, where a public repository's ready skill or
+	// factory group is filed. The edge copies it here so a run can file a promoted issue.
+	FactoryRepo string `mapstructure:"-"`
 }
 
 // SettingsViper returns the settings source: the host layout as defaults, overridden by FACTORY_*

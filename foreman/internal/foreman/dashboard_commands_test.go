@@ -372,6 +372,52 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(filed[0].Body).To(ContainSubstring("the guide never mentions tests either"))
 	})
 
+	It("refuses a merge across targets, which is a link", func() {
+		h.graphql(true)
+
+		seeded(skillGroup, workflow.SeverityHigh, "the guide never mentions tests")
+		seeded(docsGroup, workflow.SeverityHigh, "the docs never mention tests")
+
+		cfg := pollConfig(workflow.Implementer, workflow.Reviewer)
+		Expect(poll(cfg)).Error().NotTo(HaveOccurred())
+
+		dashboard := theDashboardOf("o/r")
+		h.comment(dashboard.Number, "o", "merge "+skillGroup.String()+" "+docsGroup.String())
+		Expect(poll(cfg)).Error().NotTo(HaveOccurred())
+
+		body := theDashboardOf("o/r").Body
+		Expect(body).NotTo(ContainSubstring("merged by o"))
+
+		state, err := workflow.ParseDashboard(body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state.Actions).To(BeEmpty(), "recorded a merge across targets")
+	})
+
+	It("takes a Curator proposal with a writer's merge", func() {
+		h.graphql(true)
+
+		proposal := workflow.DashboardProposal{
+			ID:     "p1",
+			Groups: []workflow.GroupID{skillGroup, {Target: skillGroup.Target, Key: "guide-skips-review"}},
+			Reason: "one guide problem, split in two",
+		}
+
+		body, err := workflow.RenderDashboard(workflow.BuildDashboard(nil,
+			workflow.DashboardState{Proposals: []workflow.DashboardProposal{proposal}}, time.Now()))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = emulator.CreateIssue(ctx, "o/r", nil, workflow.DashboardTitle, body)
+		Expect(err).NotTo(HaveOccurred())
+
+		dashboard := theDashboardOf("o/r")
+		h.comment(dashboard.Number, "o", "merge "+skillGroup.String()+" "+proposal.Groups[1].String())
+		Expect(poll(pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+
+		drawn := theDashboardOf("o/r").Body
+		Expect(drawn).To(ContainSubstring("## Proposed merges (0)"), "kept a proposal a writer merged")
+		Expect(drawn).To(ContainSubstring("merged by o"))
+	})
+
 	It("refuses a Curator proposal for good", func() {
 		h.graphql(true)
 

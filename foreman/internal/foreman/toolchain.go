@@ -32,7 +32,7 @@ func (d Deps) toolchain(
 
 	if _, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
-			gitProgram, "clone", "--depth", "1", "--branch", branch,
+			gitProgram, gitClone, "--depth", "1", "--branch", branch,
 			"https://github.com/" + repo + ".git", f.toolchain,
 		},
 		Env: GitAuthEnv(token), Timeout: ToolchainTimeout,
