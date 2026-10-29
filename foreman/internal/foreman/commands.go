@@ -163,12 +163,17 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 }
 
 // pollingRole is the App that places new issues in their first queue: the first installed agent role
-// in scheduling order. Polling is read-only otherwise, so any installed App may do it.
+// in scheduling order. Polling is read-only otherwise, so any installed App may do it; a repository
+// with only the Curator installed still gets its dashboard polled.
 func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 	for _, q := range workflow.Queues() {
 		if slices.Contains(roles, q.Role) {
 			return q.Role, true
 		}
+	}
+
+	if slices.Contains(roles, workflow.Curator) {
+		return workflow.Curator, true
 	}
 
 	return "", false
@@ -200,7 +205,7 @@ func prepareRepo(
 
 	// The dashboard is best effort: an issue cannot be handed off without the work below it, but a
 	// retro dashboard that cannot be drawn is retried on the next poll.
-	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, role); err != nil {
+	if err := redrawDashboard(ctx, d, cfg, c, perms, repo, roles, role); err != nil {
 		d.log().Warn("cannot redraw the retro dashboard", "repo", repo, "error", err)
 	}
 
@@ -862,9 +867,6 @@ func claimAndEnqueue(
 	return 0, nil
 }
 
-// errNoBehaviour is returned for a known agent role this slice does not implement yet.
-var errNoBehaviour = errors.New("agent role has no behaviour yet")
-
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
 func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) (int, error) {
 	switch role {
@@ -877,10 +879,21 @@ func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, r
 	case workflow.Reviewer:
 		return startReviewer(ctx, d, cfg, repo, number)
 	case workflow.Curator:
-		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
+		return startCurator(ctx, d, cfg, repo, number)
 	}
 
 	return 1, fmt.Errorf("unknown agent role %q", role)
+}
+
+// startCurator runs the Curator on a repository's dashboard. The dashboard carries no factory label,
+// so a finished run records nothing on GitHub: its output was already applied to the dashboard body.
+func startCurator(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Curator, repo, number)
+	if code != 0 {
+		return 1, fmt.Errorf("the Curator failed on %s#%d (exit %d); see the dagu run log", repo, number, code)
+	}
+
+	return 0, writeLine(d.Out, "The Curator finished; see the retro dashboard.")
 }
 
 // startPlanner posts the Planner's round, which the factory half records and moves to waiting. A

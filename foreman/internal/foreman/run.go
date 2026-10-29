@@ -49,7 +49,7 @@ func Run(
 
 		return exitCode(err, code)
 	case workflow.Curator:
-		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
+		return exitCode(runCurator(ctx, d, repo, agent, number), 0)
 	}
 
 	return 1, fmt.Errorf("unknown agent role %q", role)
@@ -142,7 +142,7 @@ func (s session) head(ctx context.Context) (string, error) {
 // clone clones the repository into the session's workdir.
 func (s session) clone(ctx context.Context, repo string) error {
 	_, err := s.d.run(ctx, proc.Cmd{
-		Argv: []string{"git", "clone", "https://github.com/" + repo + ".git", s.workdir}, Env: s.gitEnv,
+		Argv: []string{gitProgram, gitClone, "https://github.com/" + repo + ".git", s.workdir}, Env: s.gitEnv,
 	})
 
 	return err

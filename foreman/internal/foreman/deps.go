@@ -110,6 +110,9 @@ func (d Deps) client(token string) github.Client {
 // gitProgram is the git binary foreman runs on the host, outside every sandbox.
 const gitProgram = "git"
 
+// gitClone is git's clone subcommand.
+const gitClone = "clone"
+
 // run starts a process under a ceiling.
 func (d Deps) run(ctx context.Context, c proc.Cmd) (string, error) {
 	out, err := d.Runner.Run(ctx, c)

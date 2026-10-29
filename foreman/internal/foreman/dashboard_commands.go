@@ -136,6 +136,8 @@ func (r *commandRun) apply(
 		return r.reject(state, comment, cmd.Proposal)
 	case workflow.CommandPublish:
 		return r.publishOne(ctx, state, promoted, comment)
+	case workflow.CommandCurate:
+		return r.curate(state, comment, promoted)
 	}
 
 	return state, false
@@ -151,12 +153,20 @@ func (r *commandRun) action(
 }
 
 // merge records a merge, dropping the proposals it makes stale. Merging a group with itself changes
-// nothing, so it is treated as a command foreman could not carry out.
+// nothing, so it is treated as a command foreman could not carry out; so is a merge across targets,
+// because reports of different targets are never one group.
 func (r *commandRun) merge(
 	state workflow.DashboardState, comment workflow.Item, groups []workflow.GroupID,
 ) (workflow.DashboardState, bool) {
 	if groups[0] == groups[1] {
 		r.d.log().Warn("a merge names one group twice", "repo", r.repo, "group", groups[0])
+
+		return state, false
+	}
+
+	if groups[0].Target != groups[1].Target {
+		r.d.log().Warn("a merge names groups of different targets; only a link may cross targets",
+			"repo", r.repo, "groups", groups)
 
 		return state, false
 	}
@@ -182,6 +192,22 @@ func (r *commandRun) reject(
 	return state.WithRejection(workflow.DashboardRejection{
 		ID: proposal.ID, Groups: proposal.Groups, By: comment.Author, At: r.d.now(), URL: comment.HTMLURL,
 	}), true
+}
+
+// curate records a writer's request for a Curator run. The poll starts the run; a request on a
+// promoted issue is not a dashboard command, so it is settled with no action.
+func (r *commandRun) curate(
+	state workflow.DashboardState, comment workflow.Item, promoted *workflow.GroupID,
+) (workflow.DashboardState, bool) {
+	if promoted != nil {
+		r.d.log().Info("curate belongs on the dashboard, not a promoted issue", "repo", r.repo)
+
+		return state, true
+	}
+
+	r.d.log().Info("a writer asked for a Curator run", "repo", r.repo, "by", comment.Author)
+
+	return state.WithAction(r.action(workflow.ActionCurate, comment, nil)), true
 }
 
 // promote files a ready group's issue where the group belongs, once per group key.

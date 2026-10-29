@@ -173,15 +173,38 @@ var _ = Describe("Start", func() {
 		})
 	})
 
-	DescribeTable("refuses an agent role without behaviour, doing nothing",
-		func(role workflow.Role) {
-			code, err := start(role)
-			Expect(err).To(HaveOccurred())
+	Describe("the Curator", func() {
+		BeforeEach(func() {
+			h.installed[workflow.Curator] = []string{"o/r"}
+		})
+
+		It("runs the factory half without touching an issue's labels", func() {
+			seen := h.sudoExit(0)
+			h.out.Reset()
+
+			Expect(start(workflow.Curator)).To(BeZero())
+
+			sudo := h.runner.find("sudo")
+			Expect(sudo).To(HaveLen(1))
+			Expect(sudo[0].Argv).To(Equal([]string{
+				"sudo", "-n", "-u", "factory", "/usr/local/bin/foreman", "run", "curator", "o/r", "5",
+			}))
+			Expect(*seen).To(Equal(factoryHalf{token: "minted-token-curator", mode: 0o640}))
+			Expect(h.out.String()).To(ContainSubstring("The Curator finished; see the retro dashboard."))
+			expectTokenRemoved(workflow.Curator)
+			h.expectAuthorizedAs(workflow.Curator)
+		})
+
+		It("reports a failed run without failing the dashboard", func() {
+			h.sudoExit(1)
+
+			code, err := start(workflow.Curator)
 			Expect(code).NotTo(BeZero())
-			h.expectNoWork()
-		},
-		Entry(nil, workflow.Curator),
-	)
+			Expect(err).To(MatchError(ContainSubstring("Curator failed")))
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/labels")).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(BeEmpty())
+		})
+	})
 
 	Describe("the Planner", func() {
 		BeforeEach(func() {

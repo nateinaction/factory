@@ -372,6 +372,27 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(filed[0].Body).To(ContainSubstring("the guide never mentions tests either"))
 	})
 
+	It("refuses a merge across targets, which is a link", func() {
+		h.graphql(true)
+
+		seeded(skillGroup, workflow.SeverityHigh, "the guide never mentions tests")
+		seeded(docsGroup, workflow.SeverityHigh, "the docs never mention tests")
+
+		cfg := pollConfig(workflow.Implementer, workflow.Reviewer)
+		Expect(poll(cfg)).Error().NotTo(HaveOccurred())
+
+		dashboard := theDashboardOf("o/r")
+		h.comment(dashboard.Number, "o", "merge "+skillGroup.String()+" "+docsGroup.String())
+		Expect(poll(cfg)).Error().NotTo(HaveOccurred())
+
+		body := theDashboardOf("o/r").Body
+		Expect(body).NotTo(ContainSubstring("merged by o"))
+
+		state, err := workflow.ParseDashboard(body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state.Actions).To(BeEmpty(), "recorded a merge across targets")
+	})
+
 	It("refuses a Curator proposal for good", func() {
 		h.graphql(true)
 

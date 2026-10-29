@@ -3,19 +3,24 @@ package foreman
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strconv"
+	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
+	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // redrawDashboard gives a repository its retro dashboard, applies the writer commands on it and on its
 // promoted issues, and rewrites the body from the retro log only when the rendered body differs. It
 // never comments on the dashboard, and the poll never routes it: an issue titled DashboardTitle is never
-// routed.
+// routed. When a retro added findings, a group became ready or a writer asked with `curate`, it queues
+// one Curator run for the repository, at most one at a time and once a day.
 func redrawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
-	repo string, role workflow.Role,
+	repo string, roles []workflow.Role, role workflow.Role,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -43,15 +48,51 @@ func redrawDashboard(
 	}
 	state, settle := run.run(ctx, state, number, found)
 
-	text, err := workflow.RenderDashboard(workflow.BuildDashboard(reports, state, d.now()))
+	number, due, err := drawDashboard(ctx, d, cfg, c, repo, reports, state, roles, number, body, found)
 	if err != nil {
-		return fmt.Errorf("draw the dashboard: %w", err)
-	}
-
-	if err := writeDashboard(ctx, d, c, repo, number, body, text, found); err != nil {
 		return err
 	}
 
+	settleCommands(ctx, d, c, repo, settle)
+
+	if !due {
+		return nil
+	}
+
+	// The claim is already in the body, so a failed enqueue is retried once the claim ages out.
+	if err := enqueueCurator(ctx, d, repo, number); err != nil {
+		d.log().Warn("cannot queue the Curator run", "repo", repo, "issue", number, "error", err)
+	}
+
+	return nil
+}
+
+// drawDashboard renders the dashboard, claims a due Curator run before drawing, and writes the body
+// only when it changed. due is true when the caller should queue the run.
+func drawDashboard(
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo string,
+	reports []workflow.DashboardReport, state workflow.DashboardState, roles []workflow.Role,
+	number int, body string, found bool,
+) (int, bool, error) {
+	now := d.now()
+	due := curatorWanted(roles, cfg, reports, state, now)
+
+	if due {
+		state = state.WithCuratorClaim(now)
+	}
+
+	text, err := workflow.RenderDashboard(workflow.BuildDashboard(reports, state, now))
+	if err != nil {
+		return number, false, fmt.Errorf("draw the dashboard: %w", err)
+	}
+
+	number, err = writeDashboard(ctx, d, c, repo, number, body, text, found)
+
+	return number, due, err
+}
+
+// settleCommands minimizes or deletes the commands foreman dealt with, logging one that stays visible.
+func settleCommands(ctx context.Context, d Deps, c github.Client, repo string, settle []workflow.Item) {
 	for _, comment := range settle {
 		if err := settleCommand(ctx, d, c, repo, comment); err != nil {
 			// The action is recorded and the comment is marked dealt with, so a command gone quiet is
@@ -60,8 +101,34 @@ func redrawDashboard(
 				"comment", comment.ID, "error", err)
 		}
 	}
+}
 
-	return nil
+// curatorWanted reports whether a repository's dashboard should start a Curator run now. A repository
+// whose Curator App is not installed, or whose curator has no configured deadline, starts none.
+func curatorWanted(
+	roles []workflow.Role, cfg config.Config, reports []workflow.DashboardReport,
+	state workflow.DashboardState, now time.Time,
+) bool {
+	if !slices.Contains(roles, workflow.Curator) {
+		return false
+	}
+
+	agent, ok := cfg.Agents[string(workflow.Curator)]
+	if !ok || agent.Deadline() <= 0 {
+		return false
+	}
+
+	return workflow.CuratorDue(reports, state, now, agent.Deadline()+cfg.DeadRunMargin())
+}
+
+// enqueueCurator queues one Curator run for a repository's dashboard.
+func enqueueCurator(ctx context.Context, d Deps, repo string, number int) error {
+	_, err := d.run(ctx, proc.Cmd{Argv: []string{
+		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(workflow.Curator), "--",
+		"REPO=" + repo, "ISSUE=" + strconv.Itoa(number),
+	}})
+
+	return err
 }
 
 // dashboardState reads the state an existing body holds. A body foreman cannot read whole is never
@@ -80,27 +147,29 @@ func dashboardState(body string, found bool) (workflow.DashboardState, error) {
 }
 
 // writeDashboard creates the dashboard when it is missing, and otherwise writes only a changed body.
+// It returns the dashboard's number, including the one it just created.
 func writeDashboard(
 	ctx context.Context, d Deps, c github.Client, repo string, number int, body, text string, found bool,
-) error {
+) (int, error) {
 	switch {
 	case !found:
-		if _, err := c.CreateIssue(ctx, repo, workflow.DashboardTitle, text, nil); err != nil {
-			return fmt.Errorf("create the dashboard: %w", err)
+		issue, err := c.CreateIssue(ctx, repo, workflow.DashboardTitle, text, nil)
+		if err != nil {
+			return 0, fmt.Errorf("create the dashboard: %w", err)
 		}
 
-		return nil
+		return issue.Number, nil
 	case text == body:
-		return nil
+		return number, nil
 	}
 
 	if err := c.UpdateIssueBody(ctx, repo, number, text); err != nil {
-		return fmt.Errorf("update the dashboard: %w", err)
+		return number, fmt.Errorf("update the dashboard: %w", err)
 	}
 
 	d.log().Info("redrew the retro dashboard", "repo", repo, "issue", number)
 
-	return nil
+	return number, nil
 }
 
 // findDashboardIssue finds the repository's dashboard, scanning from the oldest end when the newest scan
