@@ -916,7 +916,8 @@ func (s session) rebaseOntoBranch(ctx context.Context, branch, message string) e
 }
 
 // resolveResearch posts the resolution, keyed to the branch, and appends the decision line to the
-// ticket's map. Both are keyed, so applying the same output twice changes nothing.
+// ticket's map the way an applied resolution does. Both are keyed, so applying the same output twice
+// changes nothing.
 func (s session) resolveResearch(
 	ctx context.Context, j job, repo workflow.Repo, branch string, parent workflow.Issue, out workflow.ResearcherOutput,
 ) error {
@@ -927,18 +928,7 @@ func (s session) resolveResearch(
 		return err
 	}
 
-	entry := workflow.DecisionEntry(j.issue.Title, workflow.IssueURL(ref), out.DecisionLine)
-
-	body, err := workflow.AppendDecision(parent.Body, entry)
-	if err != nil {
-		return fmt.Errorf("append the decision to #%d: %w", parent.Number, err)
-	}
-
-	if body == parent.Body {
-		return nil
-	}
-
-	return j.c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: parent.Number}, body)
+	return appendDecision(ctx, j.c, repo, parent, j.issue, out.DecisionLine)
 }
 
 // reviewTarget is the open pull request for branch and the branch it merges into.
