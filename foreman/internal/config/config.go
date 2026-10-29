@@ -106,7 +106,7 @@ func (b Budget) Deadline() time.Duration {
 }
 
 // AgentConfig is one agent role's model settings and limits, rendered from `factory_models` and
-// `factory_agent_limits` by Ansible.
+// `factory_agent_limits` by Ansible; the latter carries the run's budget and the retro's.
 type AgentConfig struct {
 	// Model is the OpenRouter model id, for the usage report.
 	Model string `json:"model" mapstructure:"model"`
@@ -118,6 +118,8 @@ type AgentConfig struct {
 	Egress EgressConfig `json:"egress" mapstructure:"egress"`
 	// Budget is the agent role's step cap and wall-clock deadline.
 	Budget `mapstructure:",squash"`
+	// Retro is the budget of the agent role's retro, separate from the run's.
+	Retro Budget `json:"retro" mapstructure:"retro"`
 }
 
 // EgressConfig is one agent role's egress allowlist, rendered from `factory_egress` by Ansible. A
@@ -133,11 +135,6 @@ type Config struct {
 	Roles []workflow.Role `json:"roles" mapstructure:"roles"`
 	// Agents holds each agent role's model settings, keyed by the role's name.
 	Agents map[string]AgentConfig `json:"agents" mapstructure:"agents"`
-	// Retro is the shared retro budget, separate from the run's.
-	Retro Budget `json:"retro" mapstructure:"retro"`
-	// RetroByRole overrides the shared retro budget for one agent role. A role it does not name
-	// uses Retro.
-	RetroByRole map[string]Budget `json:"retro_by_role" mapstructure:"retro_by_role"`
 	// DeadRunMarginMinutes is how far past an agent role's deadline its running label may age before
 	// a poll calls the run dead.
 	DeadRunMarginMinutes int `json:"dead_run_margin_minutes" mapstructure:"dead_run_margin_minutes"`
@@ -158,13 +155,9 @@ func (c Config) Unhosted(role workflow.Role) bool {
 	return slices.Contains(c.UnhostedRoles, role)
 }
 
-// RetroBudget is the retro budget for role: its override when it has one, the shared default otherwise.
+// RetroBudget is the retro budget of role's config entry. Load has checked every known role has one.
 func (c Config) RetroBudget(role workflow.Role) Budget {
-	if budget, ok := c.RetroByRole[string(role)]; ok {
-		return budget
-	}
-
-	return c.Retro
+	return c.Agents[string(role)].Retro
 }
 
 // CIPendingDeadline is how long pending CI may keep an issue queued before it fails.
@@ -230,16 +223,8 @@ func validate(path string, c Config) error {
 	return validateFactoryRepo(path, c.FactoryRepo)
 }
 
-// validateLimits checks the retro budget, the dead-run margin, the review rounds and the CI deadline.
+// validateLimits checks the dead-run margin, the review rounds and the CI deadline.
 func validateLimits(path string, c Config) error {
-	if err := validateRetro(path, c.Retro); err != nil {
-		return err
-	}
-
-	if err := validateRetroByRole(path, c.RetroByRole); err != nil {
-		return err
-	}
-
 	if err := validateDeadRun(path, c.DeadRunMarginMinutes); err != nil {
 		return err
 	}
@@ -275,7 +260,8 @@ func validateFactoryRepo(path, repo string) error {
 	return nil
 }
 
-// validateRequired checks every known agent role has a model, a context cap, a step cap and a deadline.
+// validateRequired checks every known agent role has a model, a context cap, and a step cap and
+// deadline for both its run and its retro.
 func validateRequired(path string, agents map[string]AgentConfig) error {
 	for _, r := range workflow.KnownRoles() {
 		a, ok := agents[string(r)]
@@ -286,30 +272,9 @@ func validateRequired(path string, agents map[string]AgentConfig) error {
 		if a.Steps <= 0 || a.DeadlineMinutes <= 0 {
 			return fmt.Errorf("config %s: agent role %s needs a step cap and a deadline", path, r)
 		}
-	}
 
-	return nil
-}
-
-// validateRetro checks the retro has a step cap and a deadline.
-func validateRetro(path string, r Budget) error {
-	if r.Steps <= 0 || r.DeadlineMinutes <= 0 {
-		return fmt.Errorf("config %s: retro needs a step cap and a deadline", path)
-	}
-
-	return nil
-}
-
-// validateRetroByRole checks every override names a known agent role and bounds a retro.
-func validateRetroByRole(path string, budgets map[string]Budget) error {
-	for _, name := range slices.Sorted(maps.Keys(budgets)) {
-		if _, err := workflow.ParseRole(name); err != nil {
-			return fmt.Errorf("config %s: retro_by_role: %w", path, err)
-		}
-
-		b := budgets[name]
-		if b.Steps <= 0 || b.DeadlineMinutes <= 0 {
-			return fmt.Errorf("config %s: retro_by_role %s needs a step cap and a deadline", path, name)
+		if a.Retro.Steps <= 0 || a.Retro.DeadlineMinutes <= 0 {
+			return fmt.Errorf("config %s: agent role %s needs a retro step cap and deadline", path, r)
 		}
 	}
 

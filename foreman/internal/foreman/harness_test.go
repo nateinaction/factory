@@ -166,6 +166,7 @@ type harness struct {
 func testAgent() config.AgentConfig {
 	return config.AgentConfig{
 		Model: "prov/model", ContextCap: 200_000, Compaction: true, Steps: 200, DeadlineMinutes: 90,
+		Retro: testRetro(),
 	}
 }
 
@@ -180,7 +181,7 @@ func testConfig() config.Config {
 	}
 
 	return config.Config{
-		Roles: workflow.KnownRoles(), Agents: agents, Retro: testRetro(), DeadRunMarginMinutes: 10,
+		Roles: workflow.KnownRoles(), Agents: agents, DeadRunMarginMinutes: 10,
 		ReviewRoundLimit: 3, CIPendingDeadlineMinutes: 60,
 	}
 }
@@ -481,12 +482,17 @@ func (h *harness) withConfigText(text string) {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
-	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
-	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
-	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
-	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
-	`"retro":{"steps":20,"deadline_minutes":15},"dead_run_margin_minutes":10,` +
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30,` +
+	`"retro":{"steps":20,"deadline_minutes":15}},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30,` +
+	`"retro":{"steps":20,"deadline_minutes":15}}},` +
+	`"dead_run_margin_minutes":10,` +
 	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
 // writeToken leaves a token for the factory half of role.
