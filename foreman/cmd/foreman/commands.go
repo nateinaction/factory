@@ -35,7 +35,8 @@ func (e *exitError) Unwrap() error {
 	return e.err
 }
 
-// roleArgCount is how many positional arguments `start` and `run` take: role, repository, issue.
+// roleArgCount is how many positional arguments `start` and `run` take: agent role, repository,
+// issue.
 const roleArgCount = 3
 
 // logsArgCount is how many positional arguments `logs` takes: repository, issue.

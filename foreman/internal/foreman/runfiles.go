@@ -40,7 +40,7 @@ type sandboxFiles struct {
 	toolchain string
 }
 
-// newRunFiles clears and creates one run's directories. A re-run starts from nothing.
+// newSandboxFiles clears and creates one run's directories. A re-run starts from nothing.
 func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles, error) {
 	dir, err := freshPath(root, fmt.Sprintf("run-%s-%d", role, number))
 	if err != nil {
@@ -126,8 +126,8 @@ func (f sandboxFiles) layout(d Deps, clone, output string, toolchain []string) s
 	}
 }
 
-// sandboxedSession compiles the role's spec and puts s inside it. extra names any further output
-// files the role writes outside the clone, such as its output file and its retro.
+// sandboxedSession compiles the agent role's spec and puts s inside it. extra names any further
+// output files the agent role writes outside the clone, such as its output file and its retro.
 func (d Deps) sandboxedSession(
 	s session, files sandboxFiles, role workflow.Role, clone, output string, extra []string,
 	network sandbox.Network, toolchain, proxyAddr string,

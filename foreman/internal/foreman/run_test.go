@@ -24,7 +24,7 @@ var _ = Describe("Run", func() {
 		h = newHarness()
 	})
 
-	// run runs role on issue 5 of o/r.
+	// run runs the agent role on issue 5 of o/r.
 	run := func(role workflow.Role) (int, error) {
 		return Run(context.Background(), h.deps, role, testRef(5), testAgent(), testRetro(), 3)
 	}

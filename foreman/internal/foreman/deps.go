@@ -1,4 +1,4 @@
-// Package foreman is the factory's orchestrator for agent roles: the imperative shell that reads the
+// Package foreman is the factory's program for agent roles: the imperative shell that reads the
 // world through Deps, calls the pure packages, and writes the outcome back to GitHub.
 package foreman
 

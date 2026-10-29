@@ -26,8 +26,8 @@ func (s session) headKey(ctx context.Context) string {
 	return sha
 }
 
-// retroPath is where a run's retro.json is written, outside the clone and inside the sandbox's one
-// writable scratch area.
+// retroPath is where a run's retro.json is written, in the work root outside the clone and the
+// run directory.
 func retroPath(root string, number int, role workflow.Role) string {
 	return filepath.Join(root, fmt.Sprintf("issue-%d-%s.retro.json", number, role))
 }

@@ -19,7 +19,7 @@ type runResult struct {
 	code  int
 }
 
-// runCtx is what a role's prepare step reads: the run and the clone it works.
+// runCtx is what an agent role's prepare step reads: the run and the clone it works.
 type runCtx struct {
 	d     Deps
 	spec  runSpec
@@ -29,22 +29,23 @@ type runCtx struct {
 	paths runPaths
 }
 
-// prepared is what a role's prepare step hands the pipeline: how to start the agent, and what to do
-// when it returns.
+// prepared is what an agent role's prepare step hands the pipeline: how to start the agent, and
+// what to do when it returns.
 type prepared struct {
 	// prompt is the agent's prompt.
 	prompt string
 	// toolchainBranch is the branch whose dev environment the sandbox uses; empty is the default.
 	toolchainBranch string
-	// extraWrite names output files the role writes outside the clone, besides its retro.
+	// extraWrite names output files the agent role writes outside the clone, besides its retro.
 	extraWrite []string
-	// failKey is the retro key of a run whose agent failed. Nil means the role runs no retro then.
+	// failKey is the retro key of a run whose agent failed. Nil means the agent role runs no retro
+	// then.
 	failKey func(ctx context.Context, s session) string
-	// after is the role's post-agent step: it reads the agent's output and applies it.
+	// after is the agent role's post-agent step: it reads the agent's output and applies it.
 	after func(ctx context.Context, s session, res opencode.Result) outcome
 }
 
-// outcome is how a role's post-agent step ended.
+// outcome is how an agent role's post-agent step ended.
 type outcome struct {
 	// code is the verdict code a successful run returns.
 	code int
@@ -58,11 +59,12 @@ type outcome struct {
 
 // roleRun is what an agent role supplies to the run pipeline.
 type roleRun struct {
-	// identity is the git committer the role's commits carry; nil for a role that commits nothing.
+	// identity is the git committer the agent role's commits carry; nil for an agent role that
+	// commits nothing.
 	identity []string
-	// retro is whether the role's run ends with a retro, which makes its retro file writable.
+	// retro is whether the agent role's run ends with a retro, which makes its retro file writable.
 	retro bool
-	// prepare clones, reads the role's inputs and builds its prompt.
+	// prepare clones, reads the agent role's inputs and builds its prompt.
 	prepare func(ctx context.Context, rc runCtx) (prepared, error)
 }
 
@@ -72,15 +74,16 @@ type roleRun struct {
 type agentRole struct {
 	// run is the pipeline `foreman run` executes.
 	run roleRun
-	// route is what `start` records for the exit code of the role's run.
+	// route is what `start` records for the exit code of the agent role's run.
 	route func(cfg config.Config, ref workflow.IssueRef, code int) route
-	// names are the names the role's run directories and output file carry.
+	// names are the names the agent role's run directories and output file carry.
 	names roleNames
 }
 
 // route is what `start` does with a run's exit code.
 type route struct {
-	// dst is the state the issue moves to from the role's running label; empty records no transition.
+	// dst is the state the issue moves to from the agent role's running label; empty records no
+	// transition.
 	dst workflow.State
 	// text is the transition's comment, or the line printed when dst is empty.
 	text string
@@ -128,7 +131,8 @@ func agentRoles() map[workflow.Role]agentRole {
 	}
 }
 
-// failed is the route of a run that failed: the issue moves to failed with the role's message.
+// failed is the route of a run that failed: the issue moves to failed with the agent role's
+// message.
 func failed(role workflow.Role, code int) route {
 	return route{dst: workflow.Failed, text: failureText(role, code), exit: 1}
 }
@@ -209,8 +213,8 @@ func runRole(ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr r
 	})
 }
 
-// pipeline is every role's run, with its proxies already up: job, clone and inputs, sandbox, agent,
-// then the role's post-agent step and the retro epilogue.
+// pipeline is every agent role's run, with its proxies already up: job, clone and inputs, sandbox,
+// agent, then the agent role's post-agent step and the retro epilogue.
 func pipeline(
 	ctx context.Context, d Deps, spec runSpec, role workflow.Role, rr roleRun, sec secrets,
 	baseURL, proxyAddr string, network sandbox.Network, files sandboxFiles,
@@ -264,7 +268,7 @@ func pipeline(
 	return runResult{usage: usage, code: oc.code}, oc.err
 }
 
-// failedRetro runs the retro of a run whose agent failed, for a role that keeps one then.
+// failedRetro runs the retro of a run whose agent failed, for an agent role that keeps one then.
 func failedRetro(
 	ctx context.Context, rc runCtx, s session, prep prepared, res opencode.Result, err error,
 ) opencode.Usage {
@@ -286,7 +290,7 @@ func rejected(ctx context.Context, rc runCtx, err error) outcome {
 	return outcome{err: rejectOutput(ctx, rc.j.c, rc.spec.ref.Repo, rc.spec.ref.Number, rc.role, err)}
 }
 
-// readOutput reads a role's output file and parses it strictly. A file foreman cannot read is an
+// readOutput reads an agent role's output file and parses it strictly. A file foreman cannot read is an
 // output error too, so a model that wrote none fails the same way as one that wrote a bad file.
 func readOutput[T any](path, file string, parse func(text string) (T, error)) (T, error) {
 	raw, err := readScratch(path)
@@ -305,7 +309,7 @@ type runPaths struct {
 	workdir, scratch, out string
 }
 
-// newRunPaths clears and returns the paths of the role's run for an issue.
+// newRunPaths clears and returns the paths of the agent role's run for an issue.
 func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) {
 	ar, ok := agentRoleFor(role)
 	if !ok {
@@ -327,7 +331,7 @@ func newRunPaths(root string, role workflow.Role, number int) (runPaths, error) 
 	return runPaths{workdir: workdir, scratch: scratch, out: filepath.Join(scratch, names.file)}, nil
 }
 
-// roleNames are the names a role's run directories and output file carry.
+// roleNames are the names an agent role's run directories and output file carry.
 type roleNames struct {
 	workdir, scratch, file string
 }

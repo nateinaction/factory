@@ -424,7 +424,8 @@ func (h *harness) expectLeakFree(secrets ...string) {
 	}
 }
 
-// expectAuthorizedAs fails the spec when any GitHub call used a token other than role's.
+// expectAuthorizedAs fails the spec when any GitHub call used a token other than the agent
+// role's.
 func (h *harness) expectAuthorizedAs(role workflow.Role) {
 	GinkgoHelper()
 
@@ -455,7 +456,8 @@ func appOf(c proc.Cmd) string {
 	return ""
 }
 
-// failMint makes minting fail for the App of role, passing every other command on. With onlyToken,
+// failMint makes minting fail for the App of the agent role, passing every other command on. With
+// onlyToken,
 // listing the App's installations still works.
 func (h *harness) failMint(role workflow.Role, onlyToken bool) {
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
@@ -495,7 +497,7 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 	`"dead_run_margin_minutes":10,` +
 	`"review_round_limit":3,"ci_pending_deadline_minutes":60}`
 
-// writeToken leaves a token for the factory half of role.
+// writeToken leaves a token for the factory half of the agent role.
 func (h *harness) writeToken(role workflow.Role, token string) {
 	Expect(os.WriteFile(h.deps.Settings.TokenPath(role), []byte(token), 0o640)).To(Succeed())
 }

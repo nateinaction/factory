@@ -64,7 +64,8 @@ type runSpec struct {
 }
 
 // withSandboxRun gives one run its private sandbox directories, runs work, and logs the run's one
-// usage line even when the work failed. The directories are removed afterwards, retro included.
+// usage line even when the work failed. The sandbox directories are removed afterwards; the retro
+// file lives in the work root and stays.
 func withSandboxRun(
 	d Deps, spec runSpec, role workflow.Role,
 	work func(files sandboxFiles) (runResult, []string, error),
@@ -215,7 +216,7 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 }
 
 // sandboxed puts the model process inside the run's sandbox: its own HOME and XDG directories, the
-// default branch's toolchain, and the srt settings compiled from the role's spec.
+// default branch's toolchain, and the srt settings compiled from the agent role's spec.
 func (s session) sandboxed(f sandboxFiles, spec sandbox.Spec, toolchainPath string, proxyPort int) (session, error) {
 	if err := f.writeSettings(spec, proxyPort); err != nil {
 		return session{}, err
@@ -309,7 +310,8 @@ func (d Deps) withProxy(
 	return result, domains, err
 }
 
-// egress starts the run's egress proxy with the role's policy, forwarding its API calls to apiURL.
+// egress starts the run's egress proxy with the agent role's policy, forwarding its API calls to
+// apiURL.
 func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL string) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {

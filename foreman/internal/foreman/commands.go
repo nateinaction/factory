@@ -175,8 +175,8 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	repos := assigned.Repos()
 	perms := newPermissions()
 
-	// Reading dagu first means a role whose DAG already has a run waiting or running is not queued for
-	// again, the Curator included.
+	// Reading dagu first means an agent role whose DAG already has a run waiting or running is not
+	// queued for again, the Curator included.
 	busy, err := busyRoles(ctx, d, d.Settings.DAGPrefix)
 	if err != nil {
 		return 1, err
@@ -189,7 +189,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	}
 
 	// An agent role no worker host takes leaves its issues queued. One warning per poll, and nothing
-	// fails: the queue stays visible and pausable until a host takes the role.
+	// fails: the queue stays visible and pausable until a host takes the agent role.
 	warnUnhosted(d, cfg)
 
 	for _, q := range pollQueues() {
@@ -197,8 +197,8 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 			continue
 		}
 
-		// A role whose DAG has a run waiting or running is not claimed for, so a running label always
-		// means a run is happening.
+		// An agent role whose DAG has a run waiting or running is not claimed for, so a running label
+		// always means a run is happening.
 		if busy[q.role] {
 			d.log().Info("leaving an agent role's queue while its DAG is busy", "role", q.role)
 
@@ -215,7 +215,7 @@ func Poll(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 }
 
 // warnUnhosted logs one warning for every agent role no worker host takes. It fails nothing: the
-// role's issues stay in their queued label until a host takes the role.
+// agent role's issues stay in their queued label until a host takes the agent role.
 func warnUnhosted(d Deps, cfg config.Config) {
 	for _, role := range workflow.KnownRoles() {
 		if cfg.Unhosted(role) {
@@ -628,8 +628,8 @@ func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue wor
 
 // claimFromQueue gathers every eligible issue in one agent role's queue across the repositories where
 // its App is installed, then claims the oldest one. A repository whose token cannot be minted is
-// unassigned for this role. done is true when the poll is over: an issue was claimed or lost, or the
-// CI gate moved one.
+// unassigned for this agent role. done is true when the poll is over: an issue was claimed or lost,
+// or the CI gate moved one.
 func claimFromQueue(
 	ctx context.Context, d Deps, cfg config.Config, perms *permissions, assigned Assignment,
 	repos []workflow.Repo, q queueStep,
@@ -1073,7 +1073,8 @@ func finishRun(
 	return fmt.Errorf("no installed App can report the failure on %s#%d: %w", ref.Repo, ref.Number, err)
 }
 
-// factoryExit is the exit code of `foreman run <role> <repo> <n>` as the factory user, with the token file
+// factoryExit is the exit code of `foreman run <agent role> <repo> <n>` as the factory user, with the
+// token file
 // in place. It is -1 when the run could not be started: that is logged, and the issue must not stay claimed.
 func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef) int {
 	code, err := runAsFactory(ctx, d, cfg, role, ref)
@@ -1132,8 +1133,9 @@ func runAsFactory(
 
 // writeTokenFile leaves the token readable by the factory group, set by the directory's setgid bit.
 func writeTokenFile(path, token string) error {
-	// The path is the edge-configured token directory joined with a parsed role, never input. The
-	// mode is group-readable on purpose: the factory half runs as another user in the factory group.
+	// The path is the edge-configured token directory joined with a parsed agent role, never input.
+	// The mode is group-readable on purpose: the factory half runs as another user in the factory
+	// group.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, tokenFileMode) //nolint:gosec // see above
 	if err != nil {
 		return fmt.Errorf("write token file: %w", err)

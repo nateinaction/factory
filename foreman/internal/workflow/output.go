@@ -160,8 +160,8 @@ func implementerProblems(out ImplementerOutput, rework bool, review string) []st
 	return append(problems, replyProblems(out.Replies, ParseReviewFindings(review))...)
 }
 
-// ReviewFindings reads the findings RenderReview wrote, in the order it grouped them. A body that is
-// not foreman's rendered review has none.
+// ParseReviewFindings reads the findings RenderReview wrote, in the order it grouped them. A body
+// that is not foreman's rendered review has none.
 func ParseReviewFindings(body string) []ReviewFinding {
 	var (
 		findings []ReviewFinding
@@ -270,7 +270,8 @@ func coverageProblems(replies []Reply, findings []ReviewFinding) []string {
 	return problems
 }
 
-// answers reports whether reply names finding, by its location or its claim, ignoring case and space.
+// answers reports whether reply names finding, by its location or its claim, ignoring case and
+// surrounding space.
 func answers(reply string, finding ReviewFinding) bool {
 	named := strings.TrimSpace(strings.ToLower(reply))
 
