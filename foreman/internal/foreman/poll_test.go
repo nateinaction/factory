@@ -501,7 +501,7 @@ var _ = Describe("Poll", func() {
 		// capped polls with the agent role's run capacity, which testConfig leaves at one.
 		capped := func(role workflow.Role, capacity int) (int, error) {
 			cfg := pollConfig(workflow.Implementer)
-			cfg.RoleCapacity[string(role)] = capacity
+			cfg.RoleCapacity[role] = capacity
 
 			return Poll(context.Background(), h.deps, cfg)
 		}

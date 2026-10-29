@@ -263,8 +263,8 @@ var _ = Describe("the spec a final round stores", func() {
 })
 
 var _ = Describe("the human gate", func() {
-	DescribeTable("accepts a writer's explicit approval",
-		func(text string) { Expect(workflow.Approves(text)).To(BeTrue()) },
+	DescribeTable("accepts a writer's explicit yes to the gate",
+		func(text string) { Expect(workflow.OpensGate(text)).To(BeTrue()) },
 		Entry(nil, "yes"),
 		Entry(nil, "Yes!"),
 		Entry(nil, "  yes.  "),
@@ -288,7 +288,7 @@ var _ = Describe("the human gate", func() {
 	)
 
 	DescribeTable("does not accept anything else",
-		func(text string) { Expect(workflow.Approves(text)).To(BeFalse()) },
+		func(text string) { Expect(workflow.OpensGate(text)).To(BeFalse()) },
 		Entry(nil, "no"),
 		Entry(nil, "not yet"),
 		Entry(nil, "yes, but change the title"),

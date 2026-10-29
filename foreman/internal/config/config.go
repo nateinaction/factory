@@ -147,8 +147,9 @@ type Config struct {
 	UnhostedRoles []workflow.Role `json:"unhosted_roles" mapstructure:"unhosted_roles"`
 	// RoleCapacity is how many runs of each agent role the fleet may run at once, rendered by Ansible
 	// as the worker hosts' run cap times the hosts that take the agent role. An agent role it does not
-	// name has no capacity, so the poll never claims for it.
-	RoleCapacity map[string]int `json:"role_capacity" mapstructure:"role_capacity"`
+	// name has no capacity, so the poll never claims for it. Its keys are agent roles, like
+	// UnhostedRoles; Ansible writes their names, and Load rejects a name it does not know.
+	RoleCapacity map[workflow.Role]int `json:"role_capacity" mapstructure:"role_capacity"`
 	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
 	// Empty means no repository is configured, so such a promotion fails closed.
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
@@ -162,7 +163,7 @@ func (c Config) Unhosted(role workflow.Role) bool {
 // Capacity is how many runs of the agent role the fleet may run at once. An agent role the config
 // does not name has no capacity, so the poll never claims for it.
 func (c Config) Capacity(role workflow.Role) int {
-	return c.RoleCapacity[string(role)]
+	return c.RoleCapacity[role]
 }
 
 // RetroBudget is the retro budget of the agent role's config entry. Load has checked every known
@@ -240,14 +241,15 @@ func validate(path string, c Config) error {
 
 // validateRoleCapacity rejects a capacity for an agent role the workflow does not know, and a
 // negative one. A missing agent role is allowed: it has no capacity, and its issues stay queued.
-func validateRoleCapacity(path string, capacity map[string]int) error {
-	for _, name := range slices.Sorted(maps.Keys(capacity)) {
-		if _, err := workflow.ParseRole(name); err != nil {
+// Decoding a JSON key into a Role accepts any string, so the key is checked here, not by the decoder.
+func validateRoleCapacity(path string, capacity map[workflow.Role]int) error {
+	for _, role := range slices.Sorted(maps.Keys(capacity)) {
+		if _, err := workflow.ParseRole(string(role)); err != nil {
 			return fmt.Errorf("config %s: role capacity: %w", path, err)
 		}
 
-		if capacity[name] < 0 {
-			return fmt.Errorf("config %s: role capacity for %s must not be negative", path, name)
+		if capacity[role] < 0 {
+			return fmt.Errorf("config %s: role capacity for %s must not be negative", path, role)
 		}
 	}
 

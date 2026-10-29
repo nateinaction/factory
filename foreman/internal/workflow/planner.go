@@ -20,11 +20,11 @@ type PlannerKind string
 const (
 	// PlannerQuestions is a round of numbered questions awaiting a writer.
 	PlannerQuestions PlannerKind = "questions"
-	// PlannerFinalRound is the round holding a proposal, which only a writer may approve.
+	// PlannerFinalRound is the round holding a proposal, which only a writer's reply opens the gate on.
 	PlannerFinalRound PlannerKind = "final_round"
 )
 
-// ProposalShape is the kind of thing an approved proposal creates.
+// ProposalShape is the kind of thing an applied proposal creates.
 type ProposalShape string
 
 // The proposal shapes.
@@ -115,7 +115,7 @@ type PlannerResolution struct {
 	DecisionLine string `json:"decision_line"`
 }
 
-// RenderMap lays out an approved map's body in the wayfinder layout, keeping the writer's original
+// RenderMap lays out an applied map's body in the wayfinder layout, keeping the writer's original
 // request under its own heading. Decisions so far starts empty: resolutions append to it.
 func RenderMap(original string, m PlannerMap) string {
 	var b strings.Builder
@@ -139,10 +139,10 @@ func writeMapSection(b *strings.Builder, heading, text string) {
 	}
 }
 
-// PlannerProposal is what a final round asks a writer to approve. A shape fills the fields it uses:
+// PlannerProposal is what a final round puts to the gate. A shape fills the fields it uses:
 // spec (single, slices, map), issues (slices, map, resolution), map, and resolution.
 type PlannerProposal struct {
-	// Shape is what approving the proposal does.
+	// Shape is what applying the proposal does.
 	Shape ProposalShape `json:"shape"`
 	// Spec is the spec the Implementer reads from the final-round comment.
 	Spec string `json:"spec,omitempty"`
@@ -438,7 +438,7 @@ func StoredProposal(body string) (PlannerProposal, bool, error) {
 	return p, true, nil
 }
 
-// Approval words that recur in more than one rule.
+// Words that recur in more than one gate rule.
 const (
 	wordThis  = "this"
 	wordBuild = "build"
@@ -471,21 +471,21 @@ func StoredSpec(comments []Item, owner string) (string, bool, error) {
 	return spec, final, nil
 }
 
-// Approves reports whether text is a writer's explicit approval of a pending gate: a plain yes or a
-// request to build. A negated, questioning or conditional reply is not approval.
-func Approves(text string) bool {
-	return approval(text, true)
+// OpensGate reports whether text opens a pending gate: a plain yes or a request to build. A
+// negated, questioning or conditional reply does not.
+func OpensGate(text string) bool {
+	return opensGate(text, true)
 }
 
 // RequestsBuild reports whether text explicitly asks to build. It opens the gate even when the
 // Planner asked no final-round question; a plain yes is not a request to build.
 func RequestsBuild(text string) bool {
-	return approval(text, false)
+	return opensGate(text, false)
 }
 
-// approvalWords lower-cases text and splits it into words, dropping markdown emphasis and
-// punctuation. A question mark is kept as a word so a question can never pass as approval.
-func approvalWords(text string) []string {
+// replyWords lower-cases text and splits it into words, dropping markdown emphasis and
+// punctuation. A question mark is kept as a word so a question can never open the gate.
+func replyWords(text string) []string {
 	reply := strings.ToLower(text)
 	reply = strings.ReplaceAll(reply, "’", "'")
 	reply = strings.ReplaceAll(reply, "n't", " not")
@@ -530,8 +530,8 @@ func plainYesWord(word string) bool {
 	}
 }
 
-// approvalFiller reports whether word is a trailing word that does not change an approval.
-func approvalFiller(word string) bool {
+// fillerWord reports whether word is a trailing word that does not change an answer.
+func fillerWord(word string) bool {
 	switch word {
 	case "please", "now", "thanks", "thank", "you":
 		return true
@@ -540,9 +540,9 @@ func approvalFiller(word string) bool {
 	}
 }
 
-// approvalPrefixWord reports whether word may precede a build request. Anything else is a condition,
-// a negation or an unrelated sentence, and is not approval.
-func approvalPrefixWord(word string) bool {
+// leadWord reports whether word may precede a build request. Anything else is a condition, a
+// negation or an unrelated sentence, and does not open the gate.
+func leadWord(word string) bool {
 	switch word {
 	case "i", "am", "we", wordThis, "it", "is", "are", "looks", "look", "good", "great",
 		"all", "fine", "yes", "yep", "yeah", "ok", "okay", "definitely", "absolutely",
@@ -578,9 +578,9 @@ func buildPhraseSuffix(words []string) (int, bool) {
 	return 0, false
 }
 
-// approval reports whether text approves, counting a plain yes only when yesCounts.
-func approval(text string, yesCounts bool) bool {
-	words := trimApprovalFillers(approvalWords(text))
+// opensGate reports whether text opens the gate, counting a plain yes only when yesCounts.
+func opensGate(text string, yesCounts bool) bool {
+	words := trimFillers(replyWords(text))
 	if len(words) == 0 || slices.Contains(words, "?") || questionOpener(words[0]) {
 		return false
 	}
@@ -595,13 +595,13 @@ func approval(text string, yesCounts bool) bool {
 	}
 
 	return !slices.ContainsFunc(words[:len(words)-length], func(word string) bool {
-		return !approvalPrefixWord(word)
+		return !leadWord(word)
 	})
 }
 
-// trimApprovalFillers drops trailing words that do not change an approval.
-func trimApprovalFillers(words []string) []string {
-	for len(words) > 0 && approvalFiller(words[len(words)-1]) {
+// trimFillers drops trailing words that do not change an answer.
+func trimFillers(words []string) []string {
+	for len(words) > 0 && fillerWord(words[len(words)-1]) {
 		words = words[:len(words)-1]
 	}
 
@@ -631,7 +631,7 @@ func PlannedFrom(body string) (from int, key string, found bool) {
 	return number, match[2], true
 }
 
-// slicesMarkerPrefix starts the comment listing an approved slices proposal.
+// slicesMarkerPrefix starts the comment listing an applied slices proposal.
 const slicesMarkerPrefix = MarkerPrefix + "slices from=#"
 
 // SlicesMarker keys the slice list to the issue the slices were planned from.
