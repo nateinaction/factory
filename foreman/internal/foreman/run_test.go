@@ -386,7 +386,7 @@ var _ = Describe("Run", func() {
 			pr, _ := h.pullRequest()
 
 			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
-				"o/r", pr, "sha-head", workflow.ReviewerOutput{
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
 					Version: 1, Verdict: workflow.Approve, Summary: "fine",
 				}, workflow.Issue{Number: 5, Author: "factory[bot]"}, 3)
 			Expect(err).NotTo(HaveOccurred())
@@ -400,7 +400,7 @@ var _ = Describe("Run", func() {
 			pr, _ := h.pullRequest()
 
 			code, err := postVerdict(context.Background(), h.deps, h.deps.client("minted-token-reviewer"),
-				"o/r", pr, "sha-head", workflow.ReviewerOutput{
+				testRepo("o/r"), pr, "sha-head", workflow.ReviewerOutput{
 					Version: 1, Verdict: workflow.Approve, Summary: "fine",
 				}, workflow.Issue{Number: 5, Author: "factory[bot]"}, 3)
 			Expect(err).NotTo(HaveOccurred())

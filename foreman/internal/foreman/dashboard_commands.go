@@ -14,9 +14,9 @@ import (
 type commandRun struct {
 	d     Deps
 	cfg   config.Config
-	c     ghClient
+	c     github.Client
 	perms *permissions
-	repo  string
+	repo  workflow.Repo
 	// role is the App that polls here: it files a promoted issue in another repository too.
 	role workflow.Role
 	// issues is every issue in the repository, newest first.
@@ -38,7 +38,7 @@ func (r *commandRun) run(
 		return state, nil
 	}
 
-	comments, err := r.c.ListComments(ctx, r.repo, dashboard)
+	comments, err := r.c.ListComments(ctx, workflow.IssueRef{Repo: r.repo, Number: dashboard})
 	if err != nil {
 		r.d.log().Warn("cannot read the dashboard's comments", "repo", r.repo, "issue", dashboard, "error", err)
 
@@ -262,7 +262,7 @@ func (r *commandRun) promote(
 
 // fileGroup files a group's issue in dest, reusing the one an earlier promotion filed.
 func (r *commandRun) fileGroup(
-	ctx context.Context, dest string, group workflow.DashboardGroup, private bool,
+	ctx context.Context, dest workflow.Repo, group workflow.DashboardGroup, private bool,
 ) (workflow.Issue, error) {
 	c, err := r.clientFor(ctx, dest)
 	if err != nil {
@@ -366,12 +366,17 @@ func (r *commandRun) fileLesson(
 		return workflow.Issue{}, fmt.Errorf("no factory repository is configured")
 	}
 
-	c, err := r.clientFor(ctx, r.cfg.FactoryRepo)
+	factory, err := workflow.ParseRepo(r.cfg.FactoryRepo)
 	if err != nil {
 		return workflow.Issue{}, err
 	}
 
-	if existing, ok, err := listedPublished(ctx, c, r.cfg.FactoryRepo, group); err != nil || ok {
+	c, err := r.clientFor(ctx, factory)
+	if err != nil {
+		return workflow.Issue{}, err
+	}
+
+	if existing, ok, err := listedPublished(ctx, c, factory, group); err != nil || ok {
 		return existing, err
 	}
 
@@ -380,19 +385,19 @@ func (r *commandRun) fileLesson(
 		return workflow.Issue{}, err
 	}
 
-	return c.CreateIssue(ctx, r.cfg.FactoryRepo, title, body, nil)
+	return c.CreateIssue(ctx, factory, title, body, nil)
 }
 
 // clientFor returns a client for repo: this poll's client where the command stays in the repository, and
 // one minted for the polling App where the promotion leaves it.
-func (r *commandRun) clientFor(ctx context.Context, repo string) (ghClient, error) {
+func (r *commandRun) clientFor(ctx context.Context, repo workflow.Repo) (github.Client, error) {
 	if repo == r.repo {
 		return r.c, nil
 	}
 
 	token, err := r.d.mintToken(ctx, r.role, repo)
 	if err != nil {
-		return ghClient{}, fmt.Errorf("mint a token for %s: %w", repo, err)
+		return github.Client{}, fmt.Errorf("mint a token for %s: %w", repo, err)
 	}
 
 	return r.d.client(token), nil
@@ -416,7 +421,7 @@ func (r *commandRun) isPrivate(ctx context.Context) (bool, error) {
 
 // listedPromoted finds the issue a group was promoted as, in another repository.
 func listedPromoted(
-	ctx context.Context, c ghClient, repo string, group workflow.GroupID,
+	ctx context.Context, c github.Client, repo workflow.Repo, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -430,7 +435,7 @@ func listedPromoted(
 
 // listedPublished finds the issue a group's lesson was published as, in another repository.
 func listedPublished(
-	ctx context.Context, c ghClient, repo string, group workflow.GroupID,
+	ctx context.Context, c github.Client, repo workflow.Repo, group workflow.GroupID,
 ) (workflow.Issue, bool, error) {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -463,7 +468,7 @@ func findMarked(
 
 // settleCommand minimizes a dealt-with command as resolved, and deletes it when the App may not minimize
 // it. Whether the App may is read live; a check that cannot be read falls back to deleting too.
-func settleCommand(ctx context.Context, d Deps, c ghClient, repo string, comment workflow.Item) error {
+func settleCommand(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, comment workflow.Item) error {
 	if comment.NodeID != "" && minimizeComment(ctx, d, c, comment) {
 		return nil
 	}
@@ -472,7 +477,7 @@ func settleCommand(ctx context.Context, d Deps, c ghClient, repo string, comment
 }
 
 // minimizeComment minimizes one comment when the App may, reporting whether it managed to.
-func minimizeComment(ctx context.Context, d Deps, c ghClient, comment workflow.Item) bool {
+func minimizeComment(ctx context.Context, d Deps, c github.Client, comment workflow.Item) bool {
 	can, err := c.CanMinimizeComment(ctx, comment.NodeID)
 	if err != nil {
 		d.log().Warn("cannot read whether a command comment can be minimized; deleting it instead",

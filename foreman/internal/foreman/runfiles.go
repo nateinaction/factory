@@ -142,7 +142,7 @@ func (d Deps) sandboxedSession(
 // sandboxedWithToolchain resolves the default branch's dev environment and puts s inside the sandbox
 // that uses it.
 func (d Deps) sandboxedWithToolchain(
-	ctx context.Context, s session, j job, sec secrets, repo, branch string, files sandboxFiles,
+	ctx context.Context, s session, j job, sec secrets, repo workflow.Repo, branch string, files sandboxFiles,
 	role workflow.Role, clone, output string, extra []string, network sandbox.Network, proxyAddr string,
 ) (session, error) {
 	toolchain, err := d.toolchain(ctx, j.c, repo, sec.githubToken, branch, files)

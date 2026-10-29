@@ -1,8 +1,11 @@
 package workflow
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// Repo is a repository name that has passed ValidateRepo. Its field is unexported, so the only way to
+// Repo is a checked owner/name repository name. Its field is unexported, so the only way to
 // build a non-zero one is ParseRepo.
 type Repo struct {
 	name string
@@ -10,8 +13,9 @@ type Repo struct {
 
 // ParseRepo parses an owner/name string. On failure it returns the zero Repo and an error.
 func ParseRepo(s string) (Repo, error) {
-	if err := ValidateRepo(s); err != nil {
-		return Repo{}, err
+	// The name ends up in paths and URLs, so anything but a plain owner/name is refused.
+	if !repoRE.MatchString(s) || strings.HasPrefix(s, "..") || strings.Contains(s, "/..") {
+		return Repo{}, fmt.Errorf("repo must be owner/name, got %q", s)
 	}
 
 	return Repo{name: s}, nil

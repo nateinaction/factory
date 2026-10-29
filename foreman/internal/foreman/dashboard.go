@@ -19,8 +19,8 @@ import (
 // routed. When a retro added findings, a group became ready or a writer asked with `curate`, it queues
 // one Curator run for the repository, at most one at a time and once a day.
 func redrawDashboard(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, perms *permissions,
-	repo string, roles []workflow.Role, busy map[workflow.Role]bool, role workflow.Role,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	repo workflow.Repo, roles []workflow.Role, busy map[workflow.Role]bool, role workflow.Role,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll)
 	if err != nil {
@@ -70,7 +70,7 @@ func redrawDashboard(
 // drawDashboard renders the dashboard, claims a due Curator run before drawing, and writes the body
 // only when it changed. due is true when the caller should queue the run.
 func drawDashboard(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo,
 	reports []workflow.DashboardReport, state workflow.DashboardState, roles []workflow.Role,
 	busy map[workflow.Role]bool, number int, body string, found bool,
 ) (int, bool, error) {
@@ -92,7 +92,7 @@ func drawDashboard(
 }
 
 // settleCommands minimizes or deletes the commands foreman dealt with, logging one that stays visible.
-func settleCommands(ctx context.Context, d Deps, c ghClient, repo string, settle []workflow.Item) {
+func settleCommands(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, settle []workflow.Item) {
 	for _, comment := range settle {
 		if err := settleCommand(ctx, d, c, repo, comment); err != nil {
 			// The action is recorded and the comment is marked dealt with, so a command gone quiet is
@@ -123,10 +123,10 @@ func curatorWanted(
 }
 
 // enqueueCurator queues one Curator run for a repository's dashboard.
-func enqueueCurator(ctx context.Context, d Deps, repo string, number int) error {
+func enqueueCurator(ctx context.Context, d Deps, repo workflow.Repo, number int) error {
 	_, err := d.run(ctx, proc.Cmd{Argv: []string{
 		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(workflow.Curator), "--",
-		"REPO=" + repo, "ISSUE=" + strconv.Itoa(number),
+		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(number),
 	}})
 
 	return err
@@ -150,7 +150,7 @@ func dashboardState(body string, found bool) (workflow.DashboardState, error) {
 // writeDashboard creates the dashboard when it is missing, and otherwise writes only a changed body.
 // It returns the dashboard's number, including the one it just created.
 func writeDashboard(
-	ctx context.Context, d Deps, c ghClient, repo string, number int, body, text string, found bool,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, number int, body, text string, found bool,
 ) (int, error) {
 	switch {
 	case !found:
@@ -164,7 +164,7 @@ func writeDashboard(
 		return number, nil
 	}
 
-	if err := c.UpdateIssueBody(ctx, repo, number, text); err != nil {
+	if err := c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: number}, text); err != nil {
 		return number, fmt.Errorf("update the dashboard: %w", err)
 	}
 
@@ -177,7 +177,7 @@ func writeDashboard(
 // did not hold it. One scan holds at most MaxPages pages of issues, so a busy repository never grows a
 // second dashboard.
 func findDashboardIssue(
-	ctx context.Context, c ghClient, repo string, issues []workflow.Issue,
+	ctx context.Context, c github.Client, repo workflow.Repo, issues []workflow.Issue,
 ) (number int, body string, found bool, err error) {
 	number, body, found = findDashboard(issues)
 	if found {
@@ -207,7 +207,7 @@ type promotedThread struct {
 // partial log. A comment that does not parse is logged and skipped: the log is append-only, and one bad
 // comment must not freeze the dashboard.
 func retroLog(
-	ctx context.Context, d Deps, c ghClient, repo string, issues []workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issues []workflow.Issue,
 ) ([]workflow.DashboardReport, map[int]promotedThread, error) {
 	var reports []workflow.DashboardReport
 
@@ -218,7 +218,7 @@ func retroLog(
 			continue
 		}
 
-		comments, err := c.ListComments(ctx, repo, issue.Number)
+		comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
 		}

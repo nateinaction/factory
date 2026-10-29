@@ -268,7 +268,7 @@ func validateFactoryRepo(path, repo string) error {
 		return nil
 	}
 
-	if err := workflow.ValidateRepo(repo); err != nil {
+	if _, err := workflow.ParseRepo(repo); err != nil {
 		return fmt.Errorf("config %s: factory repo: %w", path, err)
 	}
 

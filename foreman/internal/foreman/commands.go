@@ -12,6 +12,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/dagu"
+	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -24,8 +25,8 @@ const supervisorGitRuns = 2
 
 // tokenArgs is the helper command line that mints one agent role's token for one repository. A
 // read-only token is restricted to reading the issue, its pull request and its contents.
-func tokenArgs(role workflow.Role, repo string, readOnly bool) []string {
-	args := []string{"token", "--app", string(role), "--repo", repo}
+func tokenArgs(role workflow.Role, repo workflow.Repo, readOnly bool) []string {
+	args := []string{"token", "--app", string(role), "--repo", repo.String()}
 	if readOnly {
 		args = append(args, "--read-only")
 	}
@@ -35,18 +36,18 @@ func tokenArgs(role workflow.Role, repo string, readOnly bool) []string {
 
 // mintToken asks the helper for a token of the agent role's own App, scoped to the repository.
 // There is no fallback: if this App can't mint, no other App's token stands in for it.
-func (d Deps) mintToken(ctx context.Context, role workflow.Role, repo string) (string, error) {
+func (d Deps) mintToken(ctx context.Context, role workflow.Role, repo workflow.Repo) (string, error) {
 	return d.mint(ctx, role, repo, false)
 }
 
 // mintReadOnlyToken asks the helper for the token the model gets: the same App and repository, with
 // only read permissions, so the model can read GitHub but never write to it.
-func (d Deps) mintReadOnlyToken(ctx context.Context, role workflow.Role, repo string) (string, error) {
+func (d Deps) mintReadOnlyToken(ctx context.Context, role workflow.Role, repo workflow.Repo) (string, error) {
 	return d.mint(ctx, role, repo, true)
 }
 
 // mint runs the helper for one token.
-func (d Deps) mint(ctx context.Context, role workflow.Role, repo string, readOnly bool) (string, error) {
+func (d Deps) mint(ctx context.Context, role workflow.Role, repo workflow.Repo, readOnly bool) (string, error) {
 	// stderr is inherited so the helper's error reaches the dagu log; it never prints the token there.
 	out, err := d.run(ctx, proc.Cmd{
 		Argv:    append([]string{d.Settings.TokenHelper}, tokenArgs(role, repo, readOnly)...),
@@ -61,7 +62,7 @@ func (d Deps) mint(ctx context.Context, role workflow.Role, repo string, readOnl
 
 // installedRepos lists the repositories the agent role's App is installed on. An App that can't
 // list its installations is installed nowhere: the failure is logged and the repositories stay unassigned.
-func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []string {
+func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []workflow.Repo {
 	out, err := d.run(ctx, proc.Cmd{
 		Argv:    []string{d.Settings.TokenHelper, "repositories", "--app", string(role)},
 		Capture: true, Timeout: MintTimeout,
@@ -71,11 +72,11 @@ func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []string {
 		return nil
 	}
 
-	var repos []string
+	var repos []workflow.Repo
 
 	for line := range strings.SplitSeq(out, "\n") {
-		repo := strings.TrimSpace(line)
-		if workflow.ValidateRepo(repo) == nil {
+		// A line that is not owner/name is skipped: the helper may print blank or unrelated lines.
+		if repo, err := workflow.ParseRepo(strings.TrimSpace(line)); err == nil {
 			repos = append(repos, repo)
 		}
 	}
@@ -84,7 +85,7 @@ func (d Deps) installedRepos(ctx context.Context, role workflow.Role) []string {
 }
 
 // Assignment says which agent roles' Apps are installed on each assigned repository.
-type Assignment map[string][]workflow.Role
+type Assignment map[workflow.Repo][]workflow.Role
 
 // Assigned asks each App where it is installed. A repository with any App installed is assigned.
 func Assigned(ctx context.Context, d Deps, roles []workflow.Role) Assignment {
@@ -102,8 +103,10 @@ func Assigned(ctx context.Context, d Deps, roles []workflow.Role) Assignment {
 }
 
 // Repos lists the assigned repositories in a stable order, at most MaxAssignedRepos of them.
-func (a Assignment) Repos() []string {
-	repos := slices.Sorted(maps.Keys(a))
+func (a Assignment) Repos() []workflow.Repo {
+	repos := slices.SortedFunc(maps.Keys(a), func(x, y workflow.Repo) int {
+		return strings.Compare(x.String(), y.String())
+	})
 	if len(repos) > MaxAssignedRepos {
 		repos = repos[:MaxAssignedRepos]
 	}
@@ -134,9 +137,9 @@ const PollRunLimit = 1000
 
 // queuedIssue is one claimable issue, with the repository and client that found it.
 type queuedIssue struct {
-	repo   string
+	repo   workflow.Repo
 	issue  workflow.Issue
-	client ghClient
+	client github.Client
 }
 
 // firstIssue reports whether a comes before b: the oldest creation first, an undated issue after
@@ -154,8 +157,8 @@ func firstIssue(a, b queuedIssue) bool {
 		return a.issue.CreatedAt.Before(b.issue.CreatedAt)
 	}
 
-	if a.repo != b.repo {
-		return a.repo < b.repo
+	if a.repo != b.repo { // Repo is comparable but unordered: order by name
+		return a.repo.String() < b.repo.String()
 	}
 
 	return a.issue.Number < b.issue.Number
@@ -276,7 +279,7 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 // latest marker, wakes an issue a writer has commented on, and routes new issues to their first
 // queue. Reads use the polling App's token; a write uses the token of the agent role that owns it.
 func prepareRepo(
-	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo string, roles []workflow.Role,
+	ctx context.Context, d Deps, cfg config.Config, perms *permissions, repo workflow.Repo, roles []workflow.Role,
 	busy map[workflow.Role]bool,
 ) error {
 	role, ok := pollingRole(roles)
@@ -324,8 +327,8 @@ func prepareRepo(
 
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
 func settleIssue(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, perms *permissions,
-	repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms *permissions,
+	repo workflow.Repo, issue workflow.Issue,
 ) error {
 	dead, err := failDeadRun(ctx, d, cfg, c, repo, issue)
 	if err != nil || dead {
@@ -339,7 +342,7 @@ func settleIssue(
 // margin to factory:failed, once, with a marker. A missing deadline or timeline event leaves the
 // issue alone: an age it cannot read is never an age that fails a run.
 func failDeadRun(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo, issue workflow.Issue,
 ) (bool, error) {
 	role, state, ok := workflow.RunningState(issue)
 	if !ok {
@@ -354,7 +357,7 @@ func failDeadRun(
 		return false, nil
 	}
 
-	events, err := c.Timeline(ctx, repo, issue.Number)
+	events, err := c.Timeline(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return false, fmt.Errorf("read the timeline of #%d: %w", issue.Number, err)
 	}
@@ -388,14 +391,14 @@ func failDeadRun(
 		"It is not retried automatically; comment to send it back to the %s.",
 		role, agent.Deadline(), margin, role)
 
-	_, err = d.client(token).Finish(ctx, repo, issue.Number, t, text)
+	_, err = d.client(token).Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 
 	return true, err
 }
 
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
 func prepareIssue(
-	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo, issue workflow.Issue,
 ) error {
 	comments, err := issueComments(ctx, c, repo, issue)
 	if err != nil {
@@ -410,7 +413,7 @@ func prepareIssue(
 	if state, repair := workflow.Repair(issue, latest.Transition, found); repair {
 		d.log().Info("repairing a stranded issue", "repo", repo, "issue", issue.Number, "state", state)
 
-		if err := c.AddLabel(ctx, repo, issue.Number, string(state)); err != nil {
+		if err := c.AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state)); err != nil {
 			return err
 		}
 
@@ -431,7 +434,7 @@ func prepareIssue(
 		return nil
 	}
 
-	if err := c.AddLabel(ctx, repo, issue.Number, string(state)); err != nil {
+	if err := c.AddLabel(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, string(state)); err != nil {
 		return err
 	}
 
@@ -443,7 +446,7 @@ func prepareIssue(
 // to the agent role that failed. A done issue is woken by a comment on its pull request; the others
 // by a comment on the issue. The wake is made with the token of the agent role it queues for.
 func wakeIssue(
-	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker, found bool,
 ) (bool, error) {
 	if !found {
@@ -481,7 +484,7 @@ func wakeIssue(
 
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: latest.To, To: state}
 
-	won, err := d.client(token).Claim(ctx, repo, issue.Number, t)
+	won, err := d.client(token).Claim(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t)
 	if err != nil {
 		return false, err
 	}
@@ -495,7 +498,7 @@ func wakeIssue(
 // wakeThread is the thread a wake is judged on: the pull request's comments for a done issue, the
 // issue's own otherwise. ok is false when a done issue has no open pull request to comment on.
 func wakeThread(
-	ctx context.Context, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker,
 ) ([]workflow.Item, bool, error) {
 	if latest.To != workflow.Done {
@@ -511,14 +514,14 @@ func wakeThread(
 		return nil, false, nil
 	}
 
-	thread, err := c.ListComments(ctx, repo, pr.Number)
+	thread, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
 
 	return thread, err == nil, err
 }
 
 // written reports whether a writer commented after the latest marker.
 func written(
-	ctx context.Context, d Deps, perms *permissions, c ghClient, repo string,
+	ctx context.Context, d Deps, perms *permissions, c github.Client, repo workflow.Repo,
 	thread []workflow.Item, latest workflow.Marker,
 ) bool {
 	for _, comment := range workflow.AfterMarker(thread, latest) {
@@ -531,12 +534,14 @@ func written(
 }
 
 // issueComments lists an issue's comments, skipping the call when it has none.
-func issueComments(ctx context.Context, c ghClient, repo string, issue workflow.Issue) ([]workflow.Item, error) {
+func issueComments(
+	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue,
+) ([]workflow.Item, error) {
 	if issue.Comments == 0 {
 		return nil, nil
 	}
 
-	return c.ListComments(ctx, repo, issue.Number)
+	return c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 }
 
 // permissions caches, for one poll, whether each login may write to the repository. A permission it
@@ -551,12 +556,12 @@ func newPermissions() *permissions {
 }
 
 // isWriter reports whether login has write access. An unreadable permission is not write access.
-func (p *permissions) isWriter(ctx context.Context, d Deps, c ghClient, repo, login string) bool {
+func (p *permissions) isWriter(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, login string) bool {
 	if login == "" {
 		return false
 	}
 
-	key := repo + "\x00" + login
+	key := repo.String() + "\x00" + login
 	if writer, ok := p.write[key]; ok {
 		return writer
 	}
@@ -578,7 +583,7 @@ func (p *permissions) isWriter(ctx context.Context, d Deps, c ghClient, repo, lo
 
 // counted reports whether an issue counts: its author is a writer, or a writer has commented on it.
 func counted(
-	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string,
+	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo,
 	issue workflow.Issue, comments []workflow.Item,
 ) bool {
 	if perms.isWriter(ctx, d, c, repo, issue.Author) {
@@ -597,8 +602,8 @@ func counted(
 // blocked reports whether an issue has an open blocker. Native dependencies come first; a repository
 // without them falls back to the issue's "Blocked by:" line. A read failure is an error, so the
 // caller never claims an issue whose blockers it cannot read.
-func blocked(ctx context.Context, c ghClient, repo string, issue workflow.Issue) (bool, error) {
-	open, supported, err := c.OpenBlockers(ctx, repo, issue.Number)
+func blocked(ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue) (bool, error) {
+	open, supported, err := c.OpenBlockers(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return false, err
 	}
@@ -608,7 +613,7 @@ func blocked(ctx context.Context, c ghClient, repo string, issue workflow.Issue)
 	}
 
 	for _, number := range workflow.BlockedBy(issue.Body) {
-		blocker, err := c.GetIssue(ctx, repo, number)
+		blocker, err := c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
 		if err != nil {
 			return false, fmt.Errorf("read blocker #%d: %w", number, err)
 		}
@@ -627,7 +632,7 @@ func blocked(ctx context.Context, c ghClient, repo string, issue workflow.Issue)
 // CI gate moved one.
 func claimFromQueue(
 	ctx context.Context, d Deps, cfg config.Config, perms *permissions, assigned Assignment,
-	repos []string, q queueStep,
+	repos []workflow.Repo, q queueStep,
 ) (code int, done bool, err error) {
 	candidates := make([]queuedIssue, 0)
 
@@ -714,7 +719,7 @@ func compareIssues(a, b queuedIssue) int {
 // eligible reports whether the poll may work an issue at all: not a pull request, not paused, not
 // already claimed, counted, and unblocked. A read it cannot make leaves the issue alone, never claims it.
 func eligible(
-	ctx context.Context, d Deps, c ghClient, perms *permissions, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, perms *permissions, repo workflow.Repo, issue workflow.Issue,
 ) bool {
 	if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) || claimed(issue) {
 		return false
@@ -746,7 +751,7 @@ func eligible(
 // readCI reads what GitHub reports about sha: its check runs, its commit statuses, and the tail of
 // each failed Actions job's log. A log that cannot be read is logged and left out; the failure
 // itself still reaches the Implementer.
-func readCI(ctx context.Context, d Deps, c ghClient, repo, sha string) (workflow.CIReport, error) {
+func readCI(ctx context.Context, d Deps, c github.Client, repo workflow.Repo, sha string) (workflow.CIReport, error) {
 	report := workflow.CIReport{SHA: sha}
 
 	checks, err := c.CheckRuns(ctx, repo, sha)
@@ -787,7 +792,7 @@ func readCI(ctx context.Context, d Deps, c ghClient, repo, sha string) (workflow
 // deadline. Neither of the latter starts a model run. The reads and writes use the Reviewer's client,
 // so every transition is made by the agent role that owns the review queue.
 func ciGate(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo, issue workflow.Issue,
 ) (claim, moved bool, err error) {
 	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
 	if err != nil {
@@ -836,9 +841,9 @@ func ciGate(
 // ciPendingExpired reports whether the issue has waited in factory:review past the CI pending
 // deadline. An age it cannot date leaves the issue queued, like a run it cannot date is not dead.
 func ciPendingExpired(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo, issue workflow.Issue,
 ) (bool, error) {
-	events, err := c.Timeline(ctx, repo, issue.Number)
+	events, err := c.Timeline(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return false, err
 	}
@@ -856,7 +861,7 @@ func ciPendingExpired(
 
 // ciPendingFailure fails an issue whose CI stayed pending past its deadline.
 func ciPendingFailure(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo,
 	issue workflow.Issue, report workflow.CIReport,
 ) error {
 	t := workflow.Transition{
@@ -866,7 +871,7 @@ func ciPendingFailure(
 		"A person needs to look at the pull request; comment to send it back to the Reviewer.",
 		cfg.CIPendingDeadline())
 
-	_, err := c.Finish(ctx, repo, issue.Number, t, text)
+	_, err := c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 
 	return err
 }
@@ -875,15 +880,15 @@ func ciPendingFailure(
 // model run. At the review round limit it fails the issue instead. The report comes before the
 // transition, so the Implementer's run reads it as the reason it was sent back.
 func ciFailureBack(
-	ctx context.Context, d Deps, cfg config.Config, c ghClient, repo string,
+	ctx context.Context, d Deps, cfg config.Config, c github.Client, repo workflow.Repo,
 	issue workflow.Issue, pr int, report workflow.CIReport,
 ) error {
-	reviews, err := c.Reviews(ctx, repo, pr)
+	reviews, err := c.Reviews(ctx, workflow.IssueRef{Repo: repo, Number: pr})
 	if err != nil {
 		return err
 	}
 
-	comments, err := c.ListComments(ctx, repo, issue.Number)
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return err
 	}
@@ -902,7 +907,9 @@ func ciFailureBack(
 
 	// The report is keyed by the commit, so a retried poll never posts it twice.
 	if !workflow.HasCIFailure(comments, report.SHA) {
-		if err := c.Comment(ctx, repo, issue.Number, workflow.RenderCIFailure(report)); err != nil {
+		ref := workflow.IssueRef{Repo: repo, Number: issue.Number}
+
+		if err := c.Comment(ctx, ref, workflow.RenderCIFailure(report)); err != nil {
 			return err
 		}
 	}
@@ -911,7 +918,7 @@ func ciFailureBack(
 		Role: workflow.Reviewer, RunID: d.runID(), From: workflow.Review, To: dst, SHA: report.SHA,
 	}
 
-	_, err = c.Finish(ctx, repo, issue.Number, t, text)
+	_, err = c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 
 	return err
 }
@@ -928,7 +935,7 @@ func claimed(issue workflow.Issue) bool {
 }
 
 // headSHA is the commit the issue's open pull request is at, or empty before one exists.
-func headSHA(ctx context.Context, c ghClient, repo string, number int) (string, error) {
+func headSHA(ctx context.Context, c github.Client, repo workflow.Repo, number int) (string, error) {
 	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(number))
 	if err != nil {
 		return "", err
@@ -944,7 +951,7 @@ func headSHA(ctx context.Context, c ghClient, repo string, number int) (string, 
 // claimAndEnqueue claims the issue, then queues its run. A queue failure fails the issue rather than
 // leaving it claimed.
 func claimAndEnqueue(
-	ctx context.Context, d Deps, c ghClient, repo string, issue workflow.Issue, q queueStep,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue, q queueStep,
 ) (int, error) {
 	sha, err := headSHA(ctx, c, repo, issue.Number)
 	if err != nil {
@@ -953,7 +960,7 @@ func claimAndEnqueue(
 
 	t := workflow.Transition{Role: q.role, RunID: d.runID(), From: q.src, To: q.dst, SHA: sha}
 
-	won, err := c.Claim(ctx, repo, issue.Number, t)
+	won, err := c.Claim(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t)
 	if err != nil {
 		return 1, err
 	}
@@ -964,14 +971,16 @@ func claimAndEnqueue(
 
 	_, err = d.run(ctx, proc.Cmd{Argv: []string{
 		d.Settings.Dagu, "enqueue", d.Settings.DAGPrefix + string(q.role), "--",
-		"REPO=" + repo, "ISSUE=" + strconv.Itoa(issue.Number),
+		"REPO=" + repo.String(), "ISSUE=" + strconv.Itoa(issue.Number),
 	}})
 	if err != nil {
 		d.log().Error("enqueue failed", "role", q.role, "repo", repo, "issue", issue.Number, "error", err)
 
 		t.From, t.To = q.dst, workflow.Failed
 
-		_, err = c.Finish(ctx, repo, issue.Number, t, "Could not queue the agent run; see the dagu log.")
+		ref := workflow.IssueRef{Repo: repo, Number: issue.Number}
+
+		_, err = c.Finish(ctx, ref, t, "Could not queue the agent run; see the dagu log.")
 
 		return 1, err
 	}
@@ -1097,14 +1106,14 @@ func finishAs(
 func finishRun(
 	ctx context.Context, d Deps, role workflow.Role, ref workflow.IssueRef, src, dst workflow.State, text string,
 ) error {
-	repo, number := ref.Repo.String(), ref.Number
+	repo, number := ref.Repo, ref.Number
 	t := workflow.Transition{Role: role, RunID: d.runID(), From: src, To: dst}
 
 	token, err := d.mintToken(ctx, role, repo)
 	if err == nil {
 		c := d.client(token)
 		if dst == workflow.Closed {
-			return c.CloseResolved(ctx, repo, number, t)
+			return c.CloseResolved(ctx, workflow.IssueRef{Repo: repo, Number: number}, t)
 		}
 
 		// The commit is recorded when it can be read; the transition itself is what matters.
@@ -1115,7 +1124,7 @@ func finishRun(
 				"repo", repo, "issue", number, "error", shaErr)
 		}
 
-		_, err := c.Finish(ctx, repo, number, t, text)
+		_, err := c.Finish(ctx, workflow.IssueRef{Repo: repo, Number: number}, t, text)
 
 		return err
 	}
@@ -1137,7 +1146,7 @@ func finishRun(
 			continue // that App isn't installed here or has no credential: try the next
 		}
 
-		_, err := d.client(otherToken).Finish(ctx, repo, number, t, notice)
+		_, err := d.client(otherToken).Finish(ctx, workflow.IssueRef{Repo: repo, Number: number}, t, notice)
 
 		return err
 	}
@@ -1163,7 +1172,7 @@ func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.R
 func runAsFactory(
 	ctx context.Context, d Deps, cfg config.Config, role workflow.Role, ref workflow.IssueRef,
 ) (code int, err error) {
-	repo, number := ref.Repo.String(), ref.Number
+	repo, number := ref.Repo, ref.Number
 
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
@@ -1185,7 +1194,9 @@ func runAsFactory(
 	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
 	_, runErr := d.Runner.Run(ctx, proc.Cmd{
-		Argv:    []string{"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo, strconv.Itoa(number)},
+		Argv: []string{
+			"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo.String(), strconv.Itoa(number),
+		},
 		Timeout: ceiling,
 	})
 

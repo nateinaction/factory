@@ -37,7 +37,7 @@ func Run(
 		return 1, err
 	}
 
-	spec := runSpec{repo: ref.Repo.String(), number: ref.Number, agent: agent, retro: retro, limit: limit}
+	spec := runSpec{repo: ref.Repo, number: ref.Number, agent: agent, retro: retro, limit: limit}
 
 	switch role {
 	case workflow.Planner:
@@ -62,7 +62,7 @@ func Run(
 // signature that carries it.
 type runSpec struct {
 	// repo is owner/name.
-	repo string
+	repo workflow.Repo
 	// number is the issue the run works.
 	number int
 	// agent holds the agent role's model, egress and run budget.
@@ -87,7 +87,7 @@ func withSandboxRun(
 	defer func() { err = errors.Join(err, files.remove()) }()
 
 	usage, domains, err := work(files)
-	d.logUsage(opencode.NewUsageReport(role, spec.repo, spec.number, d.Host, spec.agent, usage).
+	d.logUsage(opencode.NewUsageReport(role, spec.repo.String(), spec.number, d.Host, spec.agent, usage).
 		WithDomains(domains))
 
 	return err
@@ -200,9 +200,9 @@ func (s session) head(ctx context.Context) (string, error) {
 }
 
 // clone clones the repository into the session's workdir.
-func (s session) clone(ctx context.Context, repo string) error {
+func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 	_, err := s.d.run(ctx, proc.Cmd{
-		Argv: []string{gitProgram, gitClone, "https://github.com/" + repo + ".git", s.workdir}, Env: s.gitEnv,
+		Argv: []string{gitProgram, gitClone, "https://github.com/" + repo.String() + ".git", s.workdir}, Env: s.gitEnv,
 	})
 
 	return err
@@ -255,7 +255,7 @@ const gitPush = "push"
 type job struct {
 	sec   secrets
 	env   map[string]string
-	c     ghClient
+	c     github.Client
 	issue workflow.Issue
 }
 
@@ -263,7 +263,7 @@ type job struct {
 // proxy. The secrets are already read: the key belongs to the proxy, never to the model. The model's
 // one GitHub credential is a read-only token of its own App's, scoped to the repository.
 func loadJob(
-	ctx context.Context, d Deps, sec secrets, baseURL, repo string, role workflow.Role,
+	ctx context.Context, d Deps, sec secrets, baseURL string, repo workflow.Repo, role workflow.Role,
 	agent config.AgentConfig, number int, db string,
 ) (job, error) {
 	env, err := opencode.Env(baseURL, db, agent)
@@ -280,7 +280,7 @@ func loadJob(
 
 	c := d.client(sec.githubToken)
 
-	issue, err := c.GetIssue(ctx, repo, number)
+	issue, err := c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
 	if err != nil {
 		return job{}, err
 	}
@@ -488,7 +488,7 @@ func implementRun(
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
 // and the comments that woke the issue.
 func buildImplementerPrompt(
-	ctx context.Context, c ghClient, repo string, issue workflow.Issue, workdir, feedback, out string,
+	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue, workdir, feedback, out string,
 ) (string, error) {
 	docs, err := prompt.ReadRepoDocs(workdir)
 	if err != nil {
@@ -500,12 +500,12 @@ func buildImplementerPrompt(
 		return "", err
 	}
 
-	return prompt.Implementer(docs, repo, issue, feedback, thread, ci, out), nil
+	return prompt.Implementer(docs, repo.String(), issue, feedback, thread, ci, out), nil
 }
 
 // rework reads what a run that was sent back must answer: every comment since the marker that woke
 // the issue, and the CI failure report when that is why it came back.
-func rework(ctx context.Context, c ghClient, repo string, number int) ([]workflow.Item, string, error) {
+func rework(ctx context.Context, c github.Client, repo workflow.Repo, number int) ([]workflow.Item, string, error) {
 	thread, err := guidance(ctx, c, repo, number)
 	if err != nil {
 		return nil, "", err
@@ -518,8 +518,8 @@ func rework(ctx context.Context, c ghClient, repo string, number int) ([]workflo
 
 // guidance reads every comment since the marker that woke the issue, from the issue and its pull
 // request, oldest first. An issue that was not woken reads nothing.
-func guidance(ctx context.Context, c ghClient, repo string, number int) ([]workflow.Item, error) {
-	comments, err := c.ListComments(ctx, repo, number)
+func guidance(ctx context.Context, c github.Client, repo workflow.Repo, number int) ([]workflow.Item, error) {
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
 	if err != nil {
 		return nil, err
 	}
@@ -530,7 +530,7 @@ func guidance(ctx context.Context, c ghClient, repo string, number int) ([]workf
 	}
 
 	if pr != nil {
-		onPR, err := c.ListComments(ctx, repo, pr.Number)
+		onPR, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
 		if err != nil {
 			return nil, err
 		}
@@ -547,8 +547,8 @@ func guidance(ctx context.Context, c ghClient, repo string, number int) ([]workf
 
 // ciFeedback is the CI failure report that sent this run back, when the report comes after the
 // handoff that sent the pull request to review. A report from an earlier round is stale and left out.
-func ciFeedback(ctx context.Context, c ghClient, repo string, number int) (string, error) {
-	comments, err := c.ListComments(ctx, repo, number)
+func ciFeedback(ctx context.Context, c github.Client, repo workflow.Repo, number int) (string, error) {
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
 	if err != nil {
 		return "", err
 	}
@@ -616,7 +616,7 @@ func outputProblem(file string, err error) error {
 // rejectOutput posts every problem with a rejected output file in one comment, then returns the
 // failure the run reports. Nothing in the file is applied: the issue goes to failed instead.
 func rejectOutput(
-	ctx context.Context, c ghClient, repo string, number int, role workflow.Role, err error,
+	ctx context.Context, c github.Client, repo workflow.Repo, number int, role workflow.Role, err error,
 ) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
@@ -631,7 +631,7 @@ func rejectOutput(
 	}
 
 	text := workflow.Truncate(strings.Join(lines, "\n"), workflow.CommentLimitChars)
-	if postErr := c.Comment(ctx, repo, number, text); postErr != nil {
+	if postErr := c.Comment(ctx, workflow.IssueRef{Repo: repo, Number: number}, text); postErr != nil {
 		// Both failures matter: the file was bad and the report never reached the issue.
 		return errors.Join(err, postErr)
 	}
@@ -643,7 +643,7 @@ func rejectOutput(
 // the pull request, and posts the replies to the review. Every step is keyed to the tree, the branch
 // or the commit, so applying the same output twice changes nothing.
 func (s session) applyImplementer(
-	ctx context.Context, j job, repo, branch, start string, original *github.PullRequest,
+	ctx context.Context, j job, repo workflow.Repo, branch, start string, original *github.PullRequest,
 	out workflow.ImplementerOutput,
 ) error {
 	if err := s.commit(ctx, out.CommitMessage); err != nil {
@@ -686,7 +686,7 @@ func (s session) commit(ctx context.Context, message string) error {
 // reply posts the answers to the review's findings, keyed to the commit they answer. A first run has
 // no review to answer.
 func (s session) reply(
-	ctx context.Context, j job, repo string, pr *github.PullRequest, rework bool, out workflow.ImplementerOutput,
+	ctx context.Context, j job, repo workflow.Repo, pr *github.PullRequest, rework bool, out workflow.ImplementerOutput,
 ) error {
 	if !rework || len(out.Replies) == 0 {
 		return nil
@@ -697,13 +697,15 @@ func (s session) reply(
 		return err
 	}
 
-	return j.c.PostReplies(ctx, repo, pr.Number, sha, workflow.RenderReplies(sha, out.Replies))
+	ref := workflow.IssueRef{Repo: repo, Number: pr.Number}
+
+	return j.c.PostReplies(ctx, ref, sha, workflow.RenderReplies(sha, out.Replies))
 }
 
 // prepare clones the repository and checks out the issue's branch. It returns the open pull request, if
 // any, the review feedback on it, and the commit the agent starts from.
 func (s session) prepare(
-	ctx context.Context, c ghClient, repo, branch string,
+	ctx context.Context, c github.Client, repo workflow.Repo, branch string,
 ) (pr *github.PullRequest, feedback, start string, err error) {
 	if err := s.clone(ctx, repo); err != nil {
 		return nil, "", "", err
@@ -722,7 +724,8 @@ func (s session) prepare(
 // publish pushes the agent's new commits and opens or updates the pull request. A first run must
 // carry a commit; a rerun may change nothing and still refreshes the pull request.
 func (s session) publish(
-	ctx context.Context, j job, repo, branch, start string, pr *github.PullRequest, out workflow.ImplementerOutput,
+	ctx context.Context, j job, repo workflow.Repo, branch, start string, pr *github.PullRequest,
+	out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
 	if err := s.requireNewCommits(ctx, start, branch, pr); err != nil {
 		return nil, err
@@ -743,14 +746,16 @@ func (s session) publish(
 // upsertPR opens the pull request linked to the issue, or updates the open one's text when the output
 // carries it.
 func (s session) upsertPR(
-	ctx context.Context, j job, repo, branch string, pr *github.PullRequest, out workflow.ImplementerOutput,
+	ctx context.Context, j job, repo workflow.Repo, branch string, pr *github.PullRequest, out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
 	if pr == nil {
 		return openPR(ctx, j.c, repo, j.issue, branch, out)
 	}
 
 	if out.PRTitle != "" && out.PRBody != "" {
-		if err := j.c.UpdatePR(ctx, repo, pr.Number, out.PRTitle, workflow.PRBody(j.issue.Number, out.PRBody)); err != nil {
+		ref := workflow.IssueRef{Repo: repo, Number: pr.Number}
+
+		if err := j.c.UpdatePR(ctx, ref, out.PRTitle, workflow.PRBody(j.issue.Number, out.PRBody)); err != nil {
 			return nil, err
 		}
 	}
@@ -761,7 +766,7 @@ func (s session) upsertPR(
 // checkoutBranch checks out the issue's branch. With an open pull request it builds on the reviewed
 // commits instead of discarding them, and returns the latest review as feedback.
 func (s session) checkoutBranch(
-	ctx context.Context, c ghClient, repo, branch string,
+	ctx context.Context, c github.Client, repo workflow.Repo, branch string,
 ) (*github.PullRequest, string, error) {
 	pr, err := c.ExistingPR(ctx, repo, branch)
 	if err != nil {
@@ -781,7 +786,7 @@ func (s session) checkoutBranch(
 		return nil, "", err
 	}
 
-	feedback, err := c.LatestReviewBody(ctx, repo, pr.Number)
+	feedback, err := c.LatestReviewBody(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
 
 	return pr, feedback, err
 }
@@ -807,7 +812,7 @@ func (s session) requireNewCommits(ctx context.Context, start, branch string, pr
 
 // openPR opens the pull request for the branch, linked to the issue, and comments its link.
 func openPR(
-	ctx context.Context, c ghClient, repo string, issue workflow.Issue, branch string,
+	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue, branch string,
 	out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
 	base, err := c.DefaultBranch(ctx, repo)
@@ -820,7 +825,9 @@ func openPR(
 		return nil, err
 	}
 
-	if err := c.Comment(ctx, repo, issue.Number, "Pull request: "+pr.HTMLURL); err != nil {
+	ref := workflow.IssueRef{Repo: repo, Number: issue.Number}
+
+	if err := c.Comment(ctx, ref, "Pull request: "+pr.HTMLURL); err != nil {
 		return nil, err
 	}
 
@@ -867,7 +874,7 @@ func researchRun(
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Researcher, Prompt: prompt.Researcher(docs, spec.repo, j.issue, thread, paths.out),
+		Role: workflow.Researcher, Prompt: prompt.Researcher(docs, spec.repo.String(), j.issue, thread, paths.out),
 		Timeout: spec.agent.Deadline(), Steps: spec.agent.Steps,
 	})
 	if err != nil {
@@ -989,8 +996,8 @@ func readResearcherOutput(path string) (workflow.ResearcherOutput, error) {
 // parentMap finds the map a research ticket belongs to: its sub-issue parent when the repository has
 // them, otherwise the "Part of #N" line at the top of the ticket. A parent that is not a map fails
 // closed, so the decision line is never written to an unrelated issue.
-func parentMap(ctx context.Context, c ghClient, repo string, issue workflow.Issue) (workflow.Issue, error) {
-	parent, supported, err := c.Parent(ctx, repo, issue.Number)
+func parentMap(ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue) (workflow.Issue, error) {
+	parent, supported, err := c.Parent(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return workflow.Issue{}, fmt.Errorf("read the parent of #%d: %w", issue.Number, err)
 	}
@@ -1001,7 +1008,7 @@ func parentMap(ctx context.Context, c ghClient, repo string, issue workflow.Issu
 			return workflow.Issue{}, fmt.Errorf("#%d has no parent map", issue.Number)
 		}
 
-		parent, err = c.GetIssue(ctx, repo, number)
+		parent, err = c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
 		if err != nil {
 			return workflow.Issue{}, fmt.Errorf("read the parent map #%d: %w", number, err)
 		}
@@ -1120,14 +1127,11 @@ func (s session) rebaseOntoBranch(ctx context.Context, branch, message string) e
 // resolveResearch posts the resolution, keyed to the branch, and appends the decision line to the
 // ticket's map. Both are keyed, so applying the same output twice changes nothing.
 func (s session) resolveResearch(
-	ctx context.Context, j job, repo, branch string, parent workflow.Issue, out workflow.ResearcherOutput,
+	ctx context.Context, j job, repo workflow.Repo, branch string, parent workflow.Issue, out workflow.ResearcherOutput,
 ) error {
-	ref, err := issueRef(repo, j.issue.Number)
-	if err != nil {
-		return err
-	}
+	ref := workflow.IssueRef{Repo: repo, Number: j.issue.Number}
 
-	if err := j.c.PostResolution(ctx, repo, j.issue.Number, branch,
+	if err := j.c.PostResolution(ctx, ref, branch,
 		workflow.RenderResolution(ref.Repo, branch, out.Resolution)); err != nil {
 		return err
 	}
@@ -1143,7 +1147,7 @@ func (s session) resolveResearch(
 		return nil
 	}
 
-	return j.c.UpdateIssueBody(ctx, repo, parent.Number, body)
+	return j.c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: parent.Number}, body)
 }
 
 // runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
@@ -1246,7 +1250,9 @@ func reviewRun(
 }
 
 // reviewTarget is the open pull request for branch and the branch it merges into.
-func reviewTarget(ctx context.Context, c ghClient, repo, branch string) (*github.PullRequest, string, error) {
+func reviewTarget(
+	ctx context.Context, c github.Client, repo workflow.Repo, branch string,
+) (*github.PullRequest, string, error) {
 	pr, err := c.ExistingPR(ctx, repo, branch)
 	if err != nil {
 		return nil, "", err
@@ -1298,7 +1304,7 @@ func reviewPaths(root string, number int) (reviewFiles, error) {
 }
 
 // checkoutForReview clones the repository on the pull request's branch and returns the reviewed commit.
-func (s session) checkoutForReview(ctx context.Context, repo, branch string) (string, error) {
+func (s session) checkoutForReview(ctx context.Context, repo workflow.Repo, branch string) (string, error) {
 	if err := s.clone(ctx, repo); err != nil {
 		return "", err
 	}
@@ -1327,15 +1333,15 @@ func readReviewerOutput(path string) (workflow.ReviewerOutput, error) {
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The
 // verdict leaves only through the output file, so nothing else can decide it.
 func postVerdict(
-	ctx context.Context, d Deps, c ghClient, repo string, pr int, sha string,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, pr int, sha string,
 	out workflow.ReviewerOutput, issue workflow.Issue, limit int,
 ) (int, error) {
-	reviews, err := c.Reviews(ctx, repo, pr)
+	reviews, err := c.Reviews(ctx, workflow.IssueRef{Repo: repo, Number: pr})
 	if err != nil {
 		return 1, err
 	}
 
-	comments, err := c.ListComments(ctx, repo, issue.Number)
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
 	if err != nil {
 		return 1, err
 	}
@@ -1343,7 +1349,7 @@ func postVerdict(
 	// A repeat of this commit's review posts nothing: the same head SHA is reviewed once.
 	if len(workflow.StartsWith(reviews, workflow.ReviewMarker(sha))) == 0 {
 		body := workflow.RenderReview(sha, out)
-		if err := c.PostReview(ctx, repo, pr, sha, body, out.Verdict); err != nil {
+		if err := c.PostReview(ctx, workflow.IssueRef{Repo: repo, Number: pr}, sha, body, out.Verdict); err != nil {
 			return 1, err
 		}
 	}
@@ -1364,7 +1370,7 @@ func postVerdict(
 			return workflow.ReviewClean, nil
 		}
 
-		return workflow.ReviewClean, c.RequestReviewers(ctx, repo, pr, []string{reviewer})
+		return workflow.ReviewClean, c.RequestReviewers(ctx, workflow.IssueRef{Repo: repo, Number: pr}, []string{reviewer})
 	}
 
 	if workflow.RoundLimitReached(workflow.ReviewRounds(reviews, comments, sha), limit) {
@@ -1377,7 +1383,7 @@ func postVerdict(
 // approvalReviewer is the human writer an approval asks to merge: the issue's author when a human
 // wrote it, otherwise the latest human writer who commented. Empty means no human writer was found.
 func approvalReviewer(
-	ctx context.Context, d Deps, c ghClient, repo string, issue workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item,
 ) (string, error) {
 	if issue.Author != "" && !workflow.BotAuthored(issue.Author) {

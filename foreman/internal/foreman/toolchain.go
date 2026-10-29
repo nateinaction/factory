@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // devEnv is the part of `nix print-dev-env --json` foreman reads: the shell variables, of which PATH
@@ -20,7 +22,7 @@ type devEnv struct {
 // accept-flake-config is off, so a flake cannot grant itself settings, and the evaluation is told not
 // to write a lock file: the default branch is used exactly as committed.
 func (d Deps) toolchain(
-	ctx context.Context, c ghClient, repo, token, branch string, f sandboxFiles,
+	ctx context.Context, c github.Client, repo workflow.Repo, token, branch string, f sandboxFiles,
 ) (string, error) {
 	if branch == "" {
 		var err error
@@ -32,7 +34,7 @@ func (d Deps) toolchain(
 	if _, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
 			gitProgram, gitClone, "--depth", "1", "--branch", branch,
-			"https://github.com/" + repo + ".git", f.toolchain,
+			"https://github.com/" + repo.String() + ".git", f.toolchain,
 		},
 		Env: GitAuthEnv(token), Timeout: ToolchainTimeout,
 	}); err != nil {

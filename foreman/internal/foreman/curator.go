@@ -98,7 +98,7 @@ func curateRun(
 // curatorInputs reads the repository's retro log, the dashboard's state and the repository's
 // visibility. The dashboard issue is the run's issue.
 func curatorInputs(
-	ctx context.Context, d Deps, c ghClient, repo string, dashboard workflow.Issue,
+	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, dashboard workflow.Issue,
 ) ([]workflow.DashboardReport, workflow.DashboardState, bool, error) {
 	state, err := workflow.ParseDashboard(dashboard.Body)
 	if err != nil {
@@ -140,11 +140,11 @@ func curatorPaths(root string, number int) (runFiles, error) {
 }
 
 // cloneDefault clones only the default branch, which is all the Curator reads.
-func (s session) cloneDefault(ctx context.Context, repo, branch string) error {
+func (s session) cloneDefault(ctx context.Context, repo workflow.Repo, branch string) error {
 	_, err := s.d.run(ctx, proc.Cmd{
 		Argv: []string{
 			gitProgram, gitClone, "--depth", "1", "--branch", branch,
-			"https://github.com/" + repo + ".git", s.workdir,
+			"https://github.com/" + repo.String() + ".git", s.workdir,
 		},
 		Env: s.gitEnv, Timeout: ToolchainTimeout,
 	})
@@ -173,9 +173,9 @@ type curatedIssue struct {
 // applyCurator records the accepted proposals, files each promoted issue once, and records the run.
 // Every effect is keyed, so applying the same output twice changes nothing.
 func (s session) applyCurator(
-	ctx context.Context, j job, repo string, number int, out workflow.CuratorOutput, private bool,
+	ctx context.Context, j job, repo workflow.Repo, number int, out workflow.CuratorOutput, private bool,
 ) error {
-	issue, err := j.c.GetIssue(ctx, repo, number)
+	issue, err := j.c.GetIssue(ctx, workflow.IssueRef{Repo: repo, Number: number})
 	if err != nil {
 		return err
 	}
@@ -207,19 +207,19 @@ func (s session) applyCurator(
 
 // writeDashboardBody writes the dashboard only when the redrawn body differs.
 func (s session) writeDashboardBody(
-	ctx context.Context, c ghClient, repo string, number int, before, after string,
+	ctx context.Context, c github.Client, repo workflow.Repo, number int, before, after string,
 ) error {
 	if before == after {
 		return nil
 	}
 
-	return c.UpdateIssueBody(ctx, repo, number, after)
+	return c.UpdateIssueBody(ctx, workflow.IssueRef{Repo: repo, Number: number}, after)
 }
 
 // fileCuratorIssues files each draft where its group belongs, reusing the issue an earlier run filed.
 // A draft that cannot be filed is reported without stopping the others.
 func (s session) fileCuratorIssues(
-	ctx context.Context, j job, repo string, drafts []workflow.CuratorIssueDraft, private bool,
+	ctx context.Context, j job, repo workflow.Repo, drafts []workflow.CuratorIssueDraft, private bool,
 ) ([]curatedIssue, error) {
 	filed := make([]curatedIssue, 0, len(drafts))
 
@@ -245,10 +245,7 @@ func (s session) curatorAgent(
 	ctx context.Context, spec runSpec, docs []prompt.Doc, private bool,
 	reports []workflow.DashboardReport, view workflow.DashboardView, out string,
 ) (opencode.Result, error) {
-	ref, err := issueRef(spec.repo, spec.number)
-	if err != nil {
-		return opencode.Result{}, err
-	}
+	ref := workflow.IssueRef{Repo: spec.repo, Number: spec.number}
 
 	return s.agent(ctx, opencode.Run{
 		Role:    workflow.Curator,
@@ -257,41 +254,25 @@ func (s session) curatorAgent(
 	})
 }
 
-// issueRef checks a configured repository name at the edge and pairs it with an issue number.
-func issueRef(repo string, number int) (workflow.IssueRef, error) {
-	parsed, err := workflow.ParseRepo(repo)
-	if err != nil {
-		return workflow.IssueRef{}, err
-	}
-
-	return workflow.IssueRef{Repo: parsed, Number: number}, nil
-}
-
-// promotionRepo checks the configured names at the edge and asks workflow where a group is filed. An
+// promotionRepo checks the configured factory repository at the edge and asks workflow where a group is filed. An
 // unset factory repo stays the zero Repo, which PromotionRepo refuses for a group that would leave a
 // public repository.
-func promotionRepo(g workflow.GroupID, repo string, private bool, factoryRepo string) (string, error) {
-	here, err := workflow.ParseRepo(repo)
-	if err != nil {
-		return "", err
-	}
-
+func promotionRepo(g workflow.GroupID, repo workflow.Repo, private bool, factoryRepo string) (workflow.Repo, error) {
 	var factory workflow.Repo
 
 	if factoryRepo != "" {
+		var err error
 		if factory, err = workflow.ParseRepo(factoryRepo); err != nil {
-			return "", err
+			return workflow.Repo{}, err
 		}
 	}
 
-	dest, err := workflow.PromotionRepo(g, here, private, factory)
-
-	return dest.String(), err
+	return workflow.PromotionRepo(g, repo, private, factory)
 }
 
 // fileCuratorIssue files one draft in the repository its group belongs to.
 func (s session) fileCuratorIssue(
-	ctx context.Context, j job, repo string, draft workflow.CuratorIssueDraft, private bool,
+	ctx context.Context, j job, repo workflow.Repo, draft workflow.CuratorIssueDraft, private bool,
 ) (workflow.Issue, error) {
 	dest, err := promotionRepo(draft.Group, repo, private, s.d.Settings.FactoryRepo)
 	if err != nil {
@@ -327,15 +308,15 @@ func (s session) fileCuratorIssue(
 // curatorClient returns the client for dest: this run's client in the repository, and the Curator
 // App's token minted for another repository.
 func (s session) curatorClient(
-	ctx context.Context, c ghClient, repo, dest string,
-) (ghClient, error) {
+	ctx context.Context, c github.Client, repo workflow.Repo, dest workflow.Repo,
+) (github.Client, error) {
 	if dest == repo {
 		return c, nil
 	}
 
 	token, err := s.d.mintToken(ctx, workflow.Curator, dest)
 	if err != nil {
-		return ghClient{}, fmt.Errorf("mint a token for %s: %w", dest, err)
+		return github.Client{}, fmt.Errorf("mint a token for %s: %w", dest, err)
 	}
 
 	return s.d.client(token), nil

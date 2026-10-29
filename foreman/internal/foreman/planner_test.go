@@ -204,7 +204,7 @@ var _ = Describe("applying an approved proposal", func() {
 	// applyPlanner twice calls the Planner's apply directly, as a crashed poll would be retried.
 	applyPlanner := func(p workflow.PlannerProposal) {
 		c := h.deps.client("minted-token-planner")
-		Expect(applyProposal(context.Background(), h.deps, c, "o/r", 1, 99, p)).To(Succeed())
+		Expect(applyProposal(context.Background(), h.deps, c, testRepo("o/r"), 1, 99, p)).To(Succeed())
 	}
 
 	single := workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: plannerSpec}
@@ -476,7 +476,7 @@ var _ = Describe("applying an approved proposal", func() {
 		}
 		applyResolution := func() {
 			c := h.deps.client("minted-token-planner")
-			Expect(applyProposal(context.Background(), h.deps, c, "o/r", 5, 99, resolution)).To(Succeed())
+			Expect(applyProposal(context.Background(), h.deps, c, testRepo("o/r"), 5, 99, resolution)).To(Succeed())
 		}
 		applyResolution()
 

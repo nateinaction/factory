@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -35,7 +36,7 @@ func retroPath(root string, number int, role workflow.Role) string {
 // dropped or invalid retro is logged and never changes the run's outcome. runErr is the run's own
 // failure, whose kind can exclude the retro.
 func (s session) retroEpilogue(
-	ctx context.Context, j job, repo string, number int, role workflow.Role, sessionID, key string, runErr error,
+	ctx context.Context, j job, repo workflow.Repo, number int, role workflow.Role, sessionID, key string, runErr error,
 	budget config.Budget,
 ) opencode.Usage {
 	if !opencode.RetroAllowed(runErr) {
@@ -73,7 +74,7 @@ func (s session) retroEpilogue(
 // it strictly, and posts the whole retro on the issue it worked, keyed by issue, agent role and run
 // key.
 func (s session) retro(
-	ctx context.Context, c ghClient, repo string, number int, role workflow.Role, sessionID, key string,
+	ctx context.Context, c github.Client, repo workflow.Repo, number int, role workflow.Role, sessionID, key string,
 	budget config.Budget,
 ) (opencode.Usage, error) {
 	path := retroPath(s.d.Settings.WorkRoot, number, role)
@@ -83,7 +84,7 @@ func (s session) retro(
 		return opencode.Usage{}, err
 	}
 
-	comments, err := c.ListComments(ctx, repo, number)
+	comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: number})
 	if err != nil {
 		return opencode.Usage{}, fmt.Errorf("read the retro log: %w", err)
 	}
@@ -96,7 +97,7 @@ func (s session) retro(
 	res, err := s.agent(ctx, opencode.Run{
 		Role: role,
 		Prompt: prompt.Retro(prompt.RetroRequest{
-			Role: role, Repo: repo, Issue: number, OutPath: out, Groups: groups,
+			Role: role, Repo: repo.String(), Issue: number, OutPath: out, Groups: groups,
 		}),
 		Session: sessionID, Timeout: budget.Deadline(), Steps: budget.Steps,
 	})
@@ -119,5 +120,5 @@ func (s session) retro(
 		return res.Usage, err
 	}
 
-	return res.Usage, c.PostRetro(ctx, repo, number, role, key, body)
+	return res.Usage, c.PostRetro(ctx, workflow.IssueRef{Repo: repo, Number: number}, role, key, body)
 }

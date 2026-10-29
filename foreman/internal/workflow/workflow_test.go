@@ -43,20 +43,6 @@ var _ = Describe("ParseIssueNumber", func() {
 	)
 })
 
-var _ = Describe("ValidateRepo", func() {
-	It("accepts owner/name", func() {
-		Expect(workflow.ValidateRepo("nateinaction/factory.x_y-z")).To(Succeed())
-	})
-
-	DescribeTable("rejects anything else",
-		func(repo string) {
-			Expect(workflow.ValidateRepo(repo)).NotTo(Succeed())
-		},
-		Entry(nil, ""), Entry(nil, "a"), Entry(nil, "a/b/c"), Entry(nil, "a/b c"), Entry(nil, "a/../b?x"),
-		Entry(nil, "/b"), Entry(nil, "a/b\n"), Entry(nil, "../etc"), Entry(nil, "a/.."),
-	)
-})
-
 var _ = Describe("names and markers", func() {
 	It("puts an issue's work on agent/issue-<n>", func() {
 		Expect(workflow.BranchName(7)).To(Equal("agent/issue-7"))

@@ -1031,12 +1031,17 @@ func (h *harness) usageLines() []map[string]any {
 	return out
 }
 
-// testRef is an issue in the harness's repository, as the command edge would have parsed it.
-func testRef(number int) workflow.IssueRef {
-	repo, err := workflow.ParseRepo("o/r")
+// testRepo parses a repository name the way the command edge would.
+func testRepo(name string) workflow.Repo {
+	repo, err := workflow.ParseRepo(name)
 	Expect(err).NotTo(HaveOccurred())
 
-	return workflow.IssueRef{Repo: repo, Number: number}
+	return repo
+}
+
+// testRef is an issue in the harness's repository, as the command edge would have parsed it.
+func testRef(number int) workflow.IssueRef {
+	return workflow.IssueRef{Repo: testRepo("o/r"), Number: number}
 }
 
 // beNear matches a per-attempt timeout: the deadline less a moment of elapsed time.
