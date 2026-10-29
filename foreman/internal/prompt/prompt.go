@@ -120,10 +120,63 @@ func Reviewer(docs []Doc, base, specPath, outPath string) string {
 		"The spec is the issue saved at %s.\nWrite the JSON to %s.", base, specPath, outPath))
 }
 
-// Retro asks the finished session for its retro.
-func Retro(repo string, number int, outPath string) string {
-	return fmt.Sprintf("Use the `retro` skill on the session you just finished, which implemented issue "+
-		"#%d of %s. Do not change the repository and do not ask questions. "+
-		"Instead of presenting the candidates to a user, write them as Markdown, most "+
-		"severe first, to %s; they will be posted as a comment on the retro ticket.", number, repo, outPath)
+// retroJSONShape tells the model the exact file foreman validates.
+const retroJSONShape = `write retro.json to %s: {"version":1,"findings":[{"target":"skill:<name>" or ` +
+	`"docs:<path>" or "factory:<area>","group":"<key>","severity":"high|medium|low",` +
+	`"claim":"<one line>","evidence":"<what the session showed>"}]}`
+
+// retroReviewerNote is the Reviewer's extra instruction: its retro may judge the Implementer's skills.
+const retroReviewerNote = " You are the Reviewer; findings may target the Implementer's skills, " +
+	"saying what should have been caught before review."
+
+// RetroRequest is what the retro prompt needs.
+type RetroRequest struct {
+	// Role is the agent role the retro reports for.
+	Role workflow.Role
+	// Repo is owner/name.
+	Repo string
+	// Issue is the issue the run worked.
+	Issue int
+	// OutPath is where the model writes retro.json.
+	OutPath string
+	// Groups are the existing group keys and one-line claims for each target.
+	Groups []workflow.RetroGroup
+}
+
+// Retro asks the finished session for its retro, showing only group keys and claims, never another
+// retro's evidence.
+func Retro(r RetroRequest) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Use the `retro` skill on the session you just finished, which worked issue #%d of %s. "+
+		"Do not change the repository and do not ask questions. Instead of presenting the candidates to a user, ",
+		r.Issue, r.Repo)
+	fmt.Fprintf(&b, retroJSONShape, r.OutPath)
+	b.WriteString(" Each target is a skill the factory ships, a document under the repository's AGENTS.md or " +
+		"docs/agents/, or an area of the factory. Pick a group key from the existing groups for that target " +
+		"below, or a new one; the wording of a finding never decides its group.")
+
+	if r.Role == workflow.Reviewer {
+		b.WriteString(retroReviewerNote)
+	}
+
+	b.WriteString("\n\n# Existing groups\n")
+
+	if len(r.Groups) == 0 {
+		b.WriteString("\nNo existing groups.\n")
+
+		return b.String()
+	}
+
+	last := workflow.RetroTarget{}
+	for _, g := range r.Groups {
+		if g.Target != last {
+			fmt.Fprintf(&b, "\n## %s\n\n", g.Target)
+			last = g.Target
+		}
+
+		fmt.Fprintf(&b, "- `%s`: %s\n", g.Key, g.Claim)
+	}
+
+	return b.String()
 }

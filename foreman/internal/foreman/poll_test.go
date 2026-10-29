@@ -105,7 +105,6 @@ var _ = Describe("Poll", func() {
 			},
 			Entry("a wayfinder map", []string{"wayfinder:map"}, "A map"),
 			Entry("the retro dashboard", nil, workflow.DashboardTitle),
-			Entry("the retro log ticket", nil, workflow.RetroTitle),
 		)
 
 		It("routes an issue only after a writer's comment when a non-writer opened it", func() {

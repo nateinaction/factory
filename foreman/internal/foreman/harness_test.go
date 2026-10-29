@@ -539,24 +539,49 @@ func (h *harness) reviewPath() string {
 	return fmt.Sprintf("/repos/o/r/pulls/%d/reviews", pr)
 }
 
-// retroNumber is the open retro ticket's number, or 0.
-func (h *harness) retroNumber() int {
-	GinkgoHelper()
-
-	number, err := emulator.FindIssueByLabel(context.Background(), "o/r", workflow.LabelRetro)
-	Expect(err).NotTo(HaveOccurred())
-
-	return number
+// retroOut is where a run's retro.json is written for o/r#5.
+func (h *harness) retroOut(role workflow.Role) string {
+	return filepath.Join(h.deps.Settings.WorkRoot, fmt.Sprintf("issue-5-%s.retro.json", role))
 }
 
-// retroPath is the retro ticket's comments endpoint.
-func (h *harness) retroPath() string {
+// retroComments are the retro marker comments posted on o/r#5, oldest first.
+func (h *harness) retroComments() []string {
 	GinkgoHelper()
 
-	number := h.retroNumber()
-	Expect(number).NotTo(BeZero(), "no retro ticket")
+	var out []string
 
-	return fmt.Sprintf("/repos/o/r/issues/%d/comments", number)
+	for _, raw := range h.gh.Bodies("POST", "/repos/o/r/issues/5/comments") {
+		var body struct {
+			Body string `json:"body"`
+		}
+		Expect(json.Unmarshal([]byte(raw), &body)).To(Succeed())
+
+		if strings.HasPrefix(body.Body, workflow.RetroMarkerPrefix) {
+			out = append(out, body.Body)
+		}
+	}
+
+	return out
+}
+
+// seedComment posts a comment as the repository's admin and returns its id.
+func (h *harness) seedComment(number int, text string) int64 {
+	GinkgoHelper()
+
+	h.comment(number, "o", text)
+
+	comments, err := emulator.Comments(context.Background(), "o/r", number)
+	Expect(err).NotTo(HaveOccurred())
+
+	for _, c := range slices.Backward(comments) {
+		if c.Body == text {
+			return c.ID
+		}
+	}
+
+	Fail("seeded comment not found")
+
+	return 0
 }
 
 // factoryHalf is what the fake factory half saw: the token file's content and mode.
@@ -632,6 +657,18 @@ func (h *harness) reviewOut() string {
 
 // cleanReview is a review with no findings.
 const cleanReview = `{"summary":"fine","findings":[]}`
+
+// validRetro is a retro with one finding about the Implementer's skill.
+const validRetro = `{"version":1,"findings":[{"target":"skill:implement","group":"guide-misses-tests",` +
+	`"severity":"medium","claim":"the guide never mentions tests","evidence":"I searched and found none"}]}`
+
+// retroBody renders a retro comment as foreman would post it, for seeding the log.
+func retroBody(role workflow.Role, key string, findings ...workflow.RetroFinding) string {
+	body, err := workflow.RenderRetro(workflow.RetroMarker(5, role, key), findings)
+	Expect(err).NotTo(HaveOccurred())
+
+	return body
+}
 
 // blockingReview is a review with one high finding.
 const blockingReview = `{"summary":"bad","findings":[` +
@@ -726,6 +763,19 @@ func errStream(name string, status int) string {
 
 // opencodeCalls are the recorded opencode processes.
 func (h *harness) opencodeCalls() []proc.Cmd { return h.runner.find("opencode run") }
+
+// runCalls are the recorded opencode processes of the run itself, leaving its retro out.
+func (h *harness) runCalls() []proc.Cmd {
+	var out []proc.Cmd
+
+	for _, c := range h.opencodeCalls() {
+		if !strings.Contains(joined(c), "--session") {
+			out = append(out, c)
+		}
+	}
+
+	return out
+}
 
 // answerOpencode makes the n-th (0-based) opencode process print outs[n]; later ones print the last.
 func (h *harness) answerOpencode(outs ...string) {

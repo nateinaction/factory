@@ -34,9 +34,36 @@ var _ = Describe("Implementer", func() {
 })
 
 var _ = Describe("Retro and Reviewer", func() {
-	It("names the issue and where the retro goes", func() {
-		r := Retro("o/r", 9, "/w/out.md")
-		Expect(r).To(And(ContainSubstring("#9 of o/r"), ContainSubstring("to /w/out.md;")))
+	It("names the issue, the output file and the JSON shape", func() {
+		r := Retro(RetroRequest{Role: workflow.Implementer, Repo: "o/r", Issue: 9, OutPath: "/w/retro.json"})
+		Expect(r).To(And(
+			ContainSubstring("#9 of o/r"), ContainSubstring("write retro.json to /w/retro.json"),
+			ContainSubstring(`"target"`), ContainSubstring(`"group"`), ContainSubstring(`"evidence"`),
+		))
+	})
+
+	It("shows the existing group keys and one-line claims for each target", func() {
+		r := Retro(RetroRequest{
+			Role: workflow.Reviewer, Repo: "o/r", Issue: 9, OutPath: "/w/retro.json",
+			Groups: []workflow.RetroGroup{
+				{
+					Target: workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"},
+					Key:    "guide-misses-tests", Claim: "the guide never mentions tests",
+				},
+				{
+					Target: workflow.RetroTarget{Kind: workflow.TargetFactory, Name: "retro"},
+					Key:    "slow-retro", Claim: "the retro takes too long",
+				},
+			},
+		})
+		Expect(r).To(ContainSubstring("## factory:retro\n\n- `slow-retro`: the retro takes too long"))
+		Expect(r).To(ContainSubstring("## skill:implement\n\n- `guide-misses-tests`: the guide never mentions tests"))
+		Expect(r).To(ContainSubstring("findings may target the Implementer's skills"))
+	})
+
+	It("says so when there are no existing groups", func() {
+		Expect(Retro(RetroRequest{Role: workflow.Implementer, Repo: "o/r", Issue: 1, OutPath: "/w/x"})).To(
+			ContainSubstring("No existing groups."))
 	})
 
 	It("names the fixed point, the spec and the output", func() {

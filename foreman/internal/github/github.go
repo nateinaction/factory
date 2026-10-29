@@ -151,12 +151,6 @@ type (
 	labelRequest struct {
 		Name string `json:"name"`
 	}
-	// issueRequest opens an issue.
-	issueRequest struct {
-		Title  string   `json:"title"`
-		Labels []string `json:"labels"`
-		Body   string   `json:"body"`
-	}
 	// pullRequestRequest opens a pull request.
 	pullRequestRequest struct {
 		Title string `json:"title"`
@@ -476,39 +470,14 @@ func (c Client) LatestReviewBody(ctx context.Context, repo string, pr int) (stri
 	return ours[len(ours)-1].Body, nil
 }
 
-// RetroTicket returns the number of the one open retro ticket, creating it on first use.
-func (c Client) RetroTicket(ctx context.Context, repo string) (int, error) {
-	issues, err := c.ListLabeled(ctx, repo, workflow.LabelRetro)
-	if err != nil {
-		return 0, err
-	}
+// PostRetro posts a run's retro on the issue it worked, keyed by issue, agent role and run key. A
+// repeat for the same key updates that comment rather than adding another.
+func (c Client) PostRetro(
+	ctx context.Context, repo string, number int, role workflow.Role, key string, body string,
+) error {
+	marker := workflow.RetroMarker(number, role, key)
 
-	if found, ok := workflow.PickIssue(issues); ok {
-		return found.Number, nil
-	}
-
-	var created workflow.Issue
-
-	err = c.Call(ctx, http.MethodPost, "/repos/"+repo+"/issues", issueRequest{
-		Title: workflow.RetroTitle, Labels: []string{workflow.LabelRetro},
-		Body: "One comment per agent implementation run, from the retro skill.",
-	}, &created)
-
-	return created.Number, err
-}
-
-// PostRetro comments on the retro ticket, keyed by issue and commit so a repeat updates the comment.
-func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, text string) error {
-	ticket, err := c.RetroTicket(ctx, repo)
-	if err != nil {
-		return err
-	}
-
-	marker := workflow.RetroMarker(number, sha)
-	body := workflow.Truncate(fmt.Sprintf("%s\n## Retro: #%d\n\n%s", marker, number, text),
-		workflow.CommentLimitChars)
-
-	comments, err := Paged[workflow.Item](ctx, c, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, ticket))
+	comments, err := c.ListComments(ctx, repo, number)
 	if err != nil {
 		return err
 	}
@@ -518,7 +487,7 @@ func (c Client) PostRetro(ctx context.Context, repo string, number int, sha, tex
 			bodyRequest{Body: body}, nil)
 	}
 
-	return c.Comment(ctx, repo, ticket, body)
+	return c.Comment(ctx, repo, number, body)
 }
 
 // PostReview posts a native pull request review on a commit. An approval GitHub refuses (the App
