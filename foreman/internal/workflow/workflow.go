@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 )
 
 // Role is an agent role. Only the known set parses; anything else fails closed.
@@ -44,39 +43,6 @@ const (
 	MaxReviewRounds = 3
 )
 
-// Each agent role's wall-clock deadline, from the spec's limits table. The scheduling slice moves
-// them into group_vars; `foreman status` compares a run's elapsed time against them until then.
-const (
-	// PlannerDeadline bounds a Planner run.
-	PlannerDeadline = 20 * time.Minute
-	// ResearcherDeadline bounds a Researcher run.
-	ResearcherDeadline = 45 * time.Minute
-	// ImplementerDeadline bounds an Implementer run.
-	ImplementerDeadline = 90 * time.Minute
-	// ReviewerDeadline bounds a Reviewer run.
-	ReviewerDeadline = 30 * time.Minute
-	// CuratorDeadline bounds a Curator run.
-	CuratorDeadline = 30 * time.Minute
-)
-
-// Deadline is the agent role's wall-clock deadline. An unknown role has none.
-func Deadline(role Role) time.Duration {
-	switch role {
-	case Planner:
-		return PlannerDeadline
-	case Researcher:
-		return ResearcherDeadline
-	case Implementer:
-		return ImplementerDeadline
-	case Reviewer:
-		return ReviewerDeadline
-	case Curator:
-		return CuratorDeadline
-	}
-
-	return 0
-}
-
 // Exit codes of `run reviewer`, read by `start reviewer`.
 const (
 	// ReviewClean means no high or medium findings.
@@ -87,25 +53,164 @@ const (
 	ReviewExhausted = 11
 )
 
-// Labels that drive today's flow. Old names are kept until the label slice.
+// Labels of the handoff channel. Every factory label is prefixed "factory:".
 const (
-	// LabelReady queues an issue for the Implementer.
-	LabelReady = "ready-for-agent"
-	// LabelWorking marks an issue the Implementer has claimed.
-	LabelWorking = "agent-working"
-	// LabelReviewReady queues an issue for the Reviewer.
-	LabelReviewReady = "ready-for-agent-review"
+	// LabelPlan queues an issue for the Planner.
+	LabelPlan = "factory:plan"
+	// LabelPlanning marks an issue the Planner has claimed.
+	LabelPlanning = "factory:planning"
+	// LabelResearch queues an issue for the Researcher.
+	LabelResearch = "factory:research"
+	// LabelResearching marks an issue the Researcher has claimed.
+	LabelResearching = "factory:researching"
+	// LabelImplement queues an issue for the Implementer.
+	LabelImplement = "factory:implement"
+	// LabelImplementing marks an issue the Implementer has claimed.
+	LabelImplementing = "factory:implementing"
+	// LabelReview queues an issue for the Reviewer.
+	LabelReview = "factory:review"
 	// LabelReviewing marks an issue the Reviewer has claimed.
-	LabelReviewing = "agent-reviewing"
-	// LabelDone marks an issue whose review found nothing blocking.
-	LabelDone = "agent-done"
+	LabelReviewing = "factory:reviewing"
+	// LabelWaiting marks an issue whose Planner round awaits a writer.
+	LabelWaiting = "factory:waiting"
+	// LabelDone marks an issue that needs only a human to merge it.
+	LabelDone = "factory:done"
 	// LabelFailed marks an issue a person needs to look at.
-	LabelFailed = "agent-failed"
-	// LabelRetro labels the retro ticket.
+	LabelFailed = "factory:failed"
+	// LabelPaused takes an issue out of the factory's hands. It is the only label a human sets.
+	LabelPaused = "factory:paused"
+
+	// LabelRetro labels the retro ticket, which is not a factory label.
 	LabelRetro = "retro"
+	// LabelMap labels a wayfinder map, whose tickets are worked instead.
+	LabelMap = "wayfinder:map"
+	// LabelResearchTicket marks a ticket for the Researcher.
+	LabelResearchTicket = "wayfinder:research"
+	// LabelGrilling marks a grilling ticket.
+	LabelGrilling = "wayfinder:grilling"
+	// LabelPrototype marks a prototype ticket.
+	LabelPrototype = "prototype"
+	// LabelWayfinderPrototype marks a prototype ticket in the wayfinder's namespace.
+	LabelWayfinderPrototype = "wayfinder:prototype"
+	// LabelTask marks a task ticket.
+	LabelTask = "task"
 	// RetroTitle is the retro ticket's title.
 	RetroTitle = "Agent retros"
+	// DashboardTitle is the retro dashboard's title; the dashboard is never routed.
+	DashboardTitle = "Retro dashboard"
 )
+
+// State is a handoff state, carried by the label of the same name.
+type State string
+
+// The handoff states, named by the label that holds them.
+const (
+	// Plan queues an issue for the Planner.
+	Plan State = LabelPlan
+	// Planning is a Planner claim.
+	Planning State = LabelPlanning
+	// Research queues an issue for the Researcher.
+	Research State = LabelResearch
+	// Researching is a Researcher claim.
+	Researching State = LabelResearching
+	// Implement queues an issue for the Implementer.
+	Implement State = LabelImplement
+	// Implementing is an Implementer claim.
+	Implementing State = LabelImplementing
+	// Review queues an issue for the Reviewer.
+	Review State = LabelReview
+	// Reviewing is a Reviewer claim.
+	Reviewing State = LabelReviewing
+	// Waiting waits for a writer to answer the Planner.
+	Waiting State = LabelWaiting
+	// Done waits for a writer to merge the pull request.
+	Done State = LabelDone
+	// Failed waits for a writer to send the issue back.
+	Failed State = LabelFailed
+	// Paused waits until a writer removes the label.
+	Paused State = LabelPaused
+)
+
+// States is the closed set of handoff states, in spec order.
+func States() []State {
+	return []State{
+		Plan, Planning, Research, Researching, Implement, Implementing, Review, Reviewing,
+		Waiting, Done, Failed, Paused,
+	}
+}
+
+// ParseState accepts only a known handoff state.
+func ParseState(name string) (State, error) {
+	if s := State(name); slices.Contains(States(), s) {
+		return s, nil
+	}
+
+	return "", fmt.Errorf("unknown handoff state %q", name)
+}
+
+// Queue is an agent role's pair of handoff labels.
+type Queue struct {
+	// Role is the agent role that takes the queue.
+	Role Role
+	// State queues the issue for the role.
+	State State
+	// Running is the label a claim adds.
+	Running State
+}
+
+// Queues lists the agent roles that queue work, in scheduling order. The Curator looks after the
+// retro dashboard and takes no issue queue.
+func Queues() []Queue {
+	return []Queue{
+		{Role: Reviewer, State: Review, Running: Reviewing},
+		{Role: Implementer, State: Implement, Running: Implementing},
+		{Role: Planner, State: Plan, Running: Planning},
+		{Role: Researcher, State: Research, Running: Researching},
+	}
+}
+
+// Queued returns the state that queues an issue for role.
+func Queued(role Role) (State, bool) {
+	for _, q := range Queues() {
+		if q.Role == role {
+			return q.State, true
+		}
+	}
+
+	return "", false
+}
+
+// Running returns the state that marks a claim by role.
+func Running(role Role) (State, bool) {
+	for _, q := range Queues() {
+		if q.Role == role {
+			return q.Running, true
+		}
+	}
+
+	return "", false
+}
+
+// RoleOf names the agent role that owns a handoff state.
+func RoleOf(state State) (Role, bool) {
+	for _, q := range Queues() {
+		if q.State == state || q.Running == state {
+			return q.Role, true
+		}
+	}
+
+	return "", false
+}
+
+// FactoryLabels lists every label foreman creates, idempotently, for an assigned repository.
+func FactoryLabels() []string {
+	out := make([]string, 0, len(States()))
+	for _, s := range States() {
+		out = append(out, string(s))
+	}
+
+	return out
+}
 
 // Severity is how much a review finding matters. Only the known set parses.
 type Severity string
@@ -188,30 +293,358 @@ type Issue struct {
 	Number        int
 	Title         string
 	Body          string
+	State         string
+	Author        string
+	Labels        []string
+	Comments      int
 	IsPullRequest bool
 }
 
 // UnmarshalJSON reads an issue; the issues endpoint marks pull requests with a pull_request key.
 func (i *Issue) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Number      int              `json:"number"`
-		Title       string           `json:"title"`
-		Body        string           `json:"body"`
+		Number   int    `json:"number"`
+		Title    string `json:"title"`
+		Body     string `json:"body"`
+		State    string `json:"state"`
+		Comments int    `json:"comments"`
+		User     *struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 		PullRequest *json.RawMessage `json:"pull_request"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("decode issue: %w", err)
 	}
 
-	*i = Issue{Number: raw.Number, Title: raw.Title, Body: raw.Body, IsPullRequest: raw.PullRequest != nil}
+	author := ""
+	if raw.User != nil {
+		author = raw.User.Login
+	}
+
+	labels := make([]string, 0, len(raw.Labels))
+	for _, l := range raw.Labels {
+		labels = append(labels, l.Name)
+	}
+
+	*i = Issue{
+		Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Author: author,
+		Labels: labels, Comments: raw.Comments, IsPullRequest: raw.PullRequest != nil,
+	}
 
 	return nil
 }
 
-// Item is a comment or review: an id and a body.
+// HasLabel reports whether the issue carries label.
+func HasLabel(issue Issue, label string) bool {
+	return slices.Contains(issue.Labels, label)
+}
+
+// FactoryLabelled reports whether the issue already carries a factory label, so it is not new.
+func FactoryLabelled(issue Issue) bool {
+	for _, l := range issue.Labels {
+		if strings.HasPrefix(l, "factory:") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// NeverRouted reports whether an issue is one the factory never routes: a wayfinder map, the retro
+// dashboard, or the retro log ticket.
+func NeverRouted(issue Issue) bool {
+	return HasLabel(issue, LabelMap) || issue.Title == DashboardTitle || issue.Title == RetroTitle
+}
+
+// Route returns the first queue for a new issue, or false for an issue the factory never routes. A
+// paused or already-labelled issue is not new. The caller applies the label.
+func Route(issue Issue) (State, bool) {
+	if issue.IsPullRequest || FactoryLabelled(issue) || NeverRouted(issue) {
+		return "", false
+	}
+
+	switch {
+	case HasLabel(issue, LabelResearchTicket):
+		return Research, true
+	case HasLabel(issue, LabelGrilling), HasLabel(issue, LabelPrototype),
+		HasLabel(issue, LabelWayfinderPrototype), HasLabel(issue, LabelTask):
+		return Plan, true
+	}
+
+	return Plan, true
+}
+
+// BotAuthored reports whether a login is a GitHub App or another bot. A promoted retro group is
+// authored by a factory App and waits for a writer's comment, like any other non-writer's issue.
+func BotAuthored(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
+}
+
+// WriterPermission reports whether a collaborator permission grants write access. Anything else,
+// including a permission the factory could not read, is not a writer.
+func WriterPermission(permission string) bool {
+	switch permission {
+	case "admin", "maintain", "write", "push":
+		return true
+	case "read", "triage", "none", "":
+		return false
+	}
+
+	return false
+}
+
+// WriterComment reports whether any comment was written by a writer.
+func WriterComment(comments []Item, writers map[string]bool) bool {
+	for _, c := range comments {
+		if writers[c.Author] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// BlockedBy reads the fallback "Blocked by: #1, #2" line where native dependencies are unavailable.
+func BlockedBy(body string) []int {
+	var (
+		out  []int
+		seen = map[int]bool{}
+	)
+
+	for line := range strings.SplitSeq(body, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Blocked by:")
+		if !ok {
+			continue
+		}
+
+		for field := range strings.FieldsSeq(rest) {
+			digits, ok := strings.CutPrefix(strings.TrimSuffix(field, ","), "#")
+			if !ok {
+				continue
+			}
+
+			number, err := ParseIssueNumber(digits)
+			if err != nil || seen[number] {
+				continue
+			}
+
+			seen[number] = true
+			out = append(out, number)
+		}
+	}
+
+	return out
+}
+
+// Item is a comment or review: an id, a body and its author.
 type Item struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
+	ID     int64  `json:"id"`
+	Body   string `json:"body"`
+	Author string `json:"-"`
+}
+
+// UnmarshalJSON reads a comment or review, whose author is nested under user.login.
+func (i *Item) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+		User *struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("decode comment: %w", err)
+	}
+
+	author := ""
+	if raw.User != nil {
+		author = raw.User.Login
+	}
+
+	*i = Item{ID: raw.ID, Body: raw.Body, Author: author}
+
+	return nil
+}
+
+// MarkerPrefix starts every marker comment foreman posts, and never appears in a model's text.
+const MarkerPrefix = "<!-- factory:"
+
+// transitionPrefix starts a handoff marker.
+const transitionPrefix = MarkerPrefix + "handoff "
+
+// Transition is the marker comment that records one handoff between agent roles.
+type Transition struct {
+	// Role is the agent role that made the transition.
+	Role Role
+	// RunID identifies the run that made it.
+	RunID string
+	// From is the state the issue left.
+	From State
+	// To is the state the issue entered.
+	To State
+	// SHA is the commit the transition concerns, when there is one.
+	SHA string
+}
+
+// trans values are tokens that cannot break the marker or inject a second one.
+var (
+	runIDRE = regexp.MustCompile(`^[A-Za-z0-9._:@+-]{1,128}$`)
+	shaRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{0,64}$`)
+)
+
+// RenderTransition renders the marker for t, refusing a value that could break the marker.
+func RenderTransition(t Transition) (string, error) {
+	if err := validTransition(t); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%srole=%s run=%s from=%s to=%s sha=%s -->",
+		transitionPrefix, t.Role, t.RunID, t.From, t.To, t.SHA), nil
+}
+
+// transitionFields is how many key=value fields a marker carries.
+const transitionFields = 5
+
+// transitionKeys are the fields of a marker, in the order it renders them.
+func transitionKeys() []string {
+	return []string{"role", "run", "from", "to", "sha"}
+}
+
+// validTransition checks every value against what a marker can carry.
+func validTransition(t Transition) error {
+	if _, err := ParseRole(string(t.Role)); err != nil {
+		return err
+	}
+
+	if _, err := ParseState(string(t.From)); err != nil {
+		return err
+	}
+
+	if _, err := ParseState(string(t.To)); err != nil {
+		return err
+	}
+
+	if !runIDRE.MatchString(t.RunID) {
+		return fmt.Errorf("run id %q is not a marker-safe token", t.RunID)
+	}
+
+	if !shaRE.MatchString(t.SHA) {
+		return fmt.Errorf("commit %q is not a marker-safe token", t.SHA)
+	}
+
+	return nil
+}
+
+// ParseTransition reads a marker at the top of body. found is false when body does not start with
+// one; a body that does is parsed strictly, so a malformed marker is an error.
+func ParseTransition(body string) (Transition, bool, error) {
+	if !strings.HasPrefix(body, transitionPrefix) {
+		return Transition{}, false, nil
+	}
+
+	line, _, _ := strings.Cut(body, "\n")
+
+	rest, ok := strings.CutSuffix(line, " -->")
+	if !ok {
+		return Transition{}, true, errors.New("transition marker is not closed")
+	}
+
+	t, err := transitionFromFields(strings.TrimPrefix(rest, transitionPrefix))
+	if err != nil {
+		return Transition{}, true, err
+	}
+
+	return t, true, nil
+}
+
+// transitionFromFields parses and validates a marker's key=value fields.
+func transitionFromFields(text string) (Transition, error) {
+	fields := strings.Fields(text)
+	if len(fields) != transitionFields {
+		return Transition{}, fmt.Errorf("transition marker has %d fields, want %d", len(fields), transitionFields)
+	}
+
+	values, err := transitionValues(fields)
+	if err != nil {
+		return Transition{}, err
+	}
+
+	t := Transition{
+		Role: Role(values["role"]), RunID: values["run"],
+		From: State(values["from"]), To: State(values["to"]), SHA: values["sha"],
+	}
+
+	if err := validTransition(t); err != nil {
+		return Transition{}, err
+	}
+
+	return t, nil
+}
+
+// transitionValues reads the fields strictly: no unknown or repeated key, and only sha may be empty.
+func transitionValues(fields []string) (map[string]string, error) {
+	values := make(map[string]string, len(fields))
+
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || !slices.Contains(transitionKeys(), key) {
+			return nil, fmt.Errorf("unknown transition field %q", field)
+		}
+
+		if _, seen := values[key]; seen {
+			return nil, fmt.Errorf("repeated transition field %q", key)
+		}
+
+		// Only the commit may be empty: a claim before any commit exists has no SHA yet.
+		if value == "" && key != "sha" {
+			return nil, fmt.Errorf("empty transition field %q", field)
+		}
+
+		values[key] = value
+	}
+
+	for _, key := range transitionKeys() {
+		if _, ok := values[key]; !ok {
+			return nil, fmt.Errorf("transition marker has no %s", key)
+		}
+	}
+
+	return values, nil
+}
+
+// LatestTransition is the last transition marker in API order, which is oldest first.
+func LatestTransition(comments []Item) (Transition, bool, error) {
+	var (
+		latest Transition
+		found  bool
+	)
+
+	for _, c := range comments {
+		t, ok, err := ParseTransition(c.Body)
+		if err != nil {
+			return Transition{}, false, err
+		}
+
+		if ok {
+			latest, found = t, true
+		}
+	}
+
+	return latest, found, nil
+}
+
+// Repair returns the state label to re-apply when the latest marker names a state the issue does not
+// carry. A paused issue is frozen, so it is never repaired.
+func Repair(issue Issue, latest Transition, found bool) (State, bool) {
+	if !found || HasLabel(issue, LabelPaused) || HasLabel(issue, string(latest.To)) {
+		return "", false
+	}
+
+	return latest.To, true
 }
 
 // PickIssue returns the first issue that is not a pull request: oldest first, as the API returns them.

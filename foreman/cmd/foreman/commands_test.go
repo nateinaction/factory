@@ -103,9 +103,12 @@ func (h *cliHarness) writeConfig(text string) string {
 
 // validConfig is a config file with every agent role.
 const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
-	`"planner":{"model":"prov/model","context_cap":200000},"researcher":{"model":"prov/model","context_cap":200000},` +
-	`"implementer":{"model":"prov/model","context_cap":200000},"reviewer":{"model":"prov/model","context_cap":200000},` +
-	`"curator":{"model":"prov/model","context_cap":200000}}}`
+	`"planner":{"model":"prov/model","context_cap":200000,"steps":40,"deadline_minutes":20},` +
+	`"researcher":{"model":"prov/model","context_cap":200000,"steps":80,"deadline_minutes":45},` +
+	`"implementer":{"model":"prov/model","context_cap":200000,"steps":200,"deadline_minutes":90},` +
+	`"reviewer":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30},` +
+	`"curator":{"model":"prov/model","context_cap":200000,"steps":60,"deadline_minutes":30}},` +
+	`"retro":{"steps":20,"deadline_minutes":15}}`
 
 var _ = Describe("the foreman command", func() {
 	var h *cliHarness
@@ -242,12 +245,15 @@ var _ = Describe("the foreman command", func() {
 	)
 
 	Context("with no runs in dagu", func() {
+		var configPath string
+
 		BeforeEach(func() {
+			configPath = h.writeConfig(validConfig)
 			h.runner.reply = func(proc.Cmd) (string, error) { return "[]", nil }
 		})
 
 		It("reports nothing running, read-only", func() {
-			Expect(h.execute("status")).To(BeZero())
+			Expect(h.execute("status", "--config", configPath)).To(BeZero())
 			Expect(h.out.String()).To(ContainSubstring("Active runs"))
 			Expect(h.out.String()).To(ContainSubstring("(none)"))
 			Expect(h.out.String()).To(ContainSubstring("Recent usage"))

@@ -21,12 +21,6 @@ import (
 const (
 	// GitTimeout bounds git and the small helpers.
 	GitTimeout = proc.DefaultTimeout
-	// AgentTimeout bounds the Implementer's model run.
-	AgentTimeout = 3600 * time.Second
-	// RetroTimeout bounds the retro step.
-	RetroTimeout = 900 * time.Second
-	// ReviewTimeout bounds the Reviewer's model run.
-	ReviewTimeout = 1800 * time.Second
 	// MintTimeout bounds minting a token.
 	MintTimeout = 30 * time.Second
 )
@@ -71,6 +65,8 @@ type Deps struct {
 	Log *slog.Logger
 	// Host names this worker host in the usage report; empty is reported as missing.
 	Host string
+	// RunID is the dagu run id recorded in transition markers; empty is recorded as unknown.
+	RunID string
 	// Sleep waits between model retries; nil waits on the clock.
 	Sleep func(ctx context.Context, d time.Duration) error
 	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
@@ -104,6 +100,15 @@ func (d Deps) log() *slog.Logger {
 	}
 
 	return d.Log
+}
+
+// runID is the id transition markers record: the dagu run's id, or a placeholder outside dagu.
+func (d Deps) runID() string {
+	if d.RunID == "" {
+		return "unknown"
+	}
+
+	return d.RunID
 }
 
 // writeLine writes text and a newline.

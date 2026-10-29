@@ -10,7 +10,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // statusHistory is the run history `foreman status` starts from.
@@ -28,12 +30,22 @@ const statusUsage = `{"event":"usage","repository":"o/r","issue":6,"agent_role":
 	`"cached_tokens":5,"context_cap":200000,"peak_context":15,"cost":0.25,"missing":[]}`
 
 var _ = Describe("Status", func() {
-	var h *harness
+	var (
+		h   *harness
+		cfg config.Config
+	)
 
 	BeforeEach(func() {
 		h = newHarness()
 		// A fixed clock makes every elapsed time exactly assertable.
 		h.deps.Now = func() time.Time { return time.Date(2026, 10, 28, 10, 4, 0, 0, time.UTC) }
+
+		// The active run is an implementer, so its configured deadline is what the report shows.
+		cfg = testConfig()
+
+		implementer := cfg.Agents[string(workflow.Implementer)]
+		implementer.DeadlineMinutes = 75
+		cfg.Agents[string(workflow.Implementer)] = implementer
 	})
 
 	// answerDagu answers history and one run's status tree, and fails the spec on anything else.
@@ -62,13 +74,13 @@ var _ = Describe("Status", func() {
 		answerDagu("Succeeded - 2026-10-28 09:50:00\n\ndag: factory-reviewer\n" +
 			"└─reviewer [succeeded]\n  ├─stdout: " + log + "\n\nResult: Succeeded\n")
 
-		code, err := Status(context.Background(), h.deps)
+		code, err := Status(context.Background(), h.deps, cfg)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(code).To(BeZero())
 
 		out := h.out.String()
 		Expect(out).To(ContainSubstring("Active runs"))
-		Expect(out).To(MatchRegexp(`(?m)^factory-2\s+implementer\s+o/r\s+#5\s+4m0s\s+1h30m0s\s+run-imp\s*$`))
+		Expect(out).To(MatchRegexp(`(?m)^factory-2\s+implementer\s+o/r\s+#5\s+4m0s\s+1h15m0s\s+run-imp\s*$`))
 		Expect(out).To(ContainSubstring("Queues"))
 		Expect(out).To(MatchRegexp(`(?m)^planner\s+1\s*$`))
 		Expect(out).To(MatchRegexp(`(?m)^implementer\s+0\s*$`))
@@ -81,7 +93,7 @@ var _ = Describe("Status", func() {
 	It("makes no writes", func() {
 		answerDagu("")
 
-		Expect(Status(context.Background(), h.deps)).To(BeZero())
+		Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
 		Expect(h.gh.Summary()).To(BeEmpty(), "status talked to GitHub")
 
 		for _, c := range h.runner.cmds {
@@ -94,7 +106,7 @@ var _ = Describe("Status", func() {
 			return "", errors.New("dagu down")
 		})
 
-		code, err := Status(context.Background(), h.deps)
+		code, err := Status(context.Background(), h.deps, cfg)
 		Expect(code).To(Equal(1))
 		Expect(err).To(MatchError(ContainSubstring("dagu down")))
 		Expect(h.gh.Summary()).To(BeEmpty())

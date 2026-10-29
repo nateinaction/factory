@@ -55,6 +55,7 @@ func run() int {
 		Out:    os.Stdout,
 		Log:    logger,
 		Host:   host,
+		RunID:  os.Getenv("DAG_RUN_ID"),
 	}
 
 	root, err := newRootCommand(d, config.SettingsViper(home))

@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/dagu"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
@@ -134,15 +135,16 @@ func runIssue(run dagu.Run) int {
 }
 
 // Status is `foreman status`: a read-only report of active runs, the queues, agent roles with no
-// host, and recent usage. It reads dagu's state and logs and talks to nothing else.
-func Status(ctx context.Context, d Deps) (int, error) {
+// host, and recent usage. It reads dagu's state and logs plus the config's per-role deadlines, and
+// talks to nothing else.
+func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	runs, err := readHistory(ctx, d)
 	if err != nil {
 		return 1, err
 	}
 
 	items := factoryRuns(runs, d.Settings.DAGPrefix)
-	report := statusReport{now: d.now(), runs: items, usage: recentUsage(ctx, d, items)}
+	report := statusReport{now: d.now(), runs: items, usage: recentUsage(ctx, d, items), cfg: cfg}
 
 	if _, err := io.WriteString(d.Out, report.render()); err != nil {
 		return 1, fmt.Errorf("write status: %w", err)
@@ -258,6 +260,8 @@ type statusReport struct {
 	runs []factoryRun
 	// usage are the newest usage records.
 	usage []usageRecord
+	// cfg supplies each agent role's deadline.
+	cfg config.Config
 }
 
 // render draws the report as plain text, one section per question.
@@ -265,7 +269,7 @@ func (r statusReport) render() string {
 	var b strings.Builder
 
 	b.WriteString("Active runs\n")
-	b.WriteString(renderActive(r.runs, r.now))
+	b.WriteString(renderActive(r.runs, r.now, r.cfg))
 	b.WriteString("\nQueues\n")
 	b.WriteString(renderQueues(r.runs))
 	b.WriteString("\nAgent roles with no host\n")
@@ -277,7 +281,7 @@ func (r statusReport) render() string {
 }
 
 // renderActive draws the runs dagu can still move.
-func renderActive(runs []factoryRun, now time.Time) string {
+func renderActive(runs []factoryRun, now time.Time, cfg config.Config) string {
 	rows := [][]string{{"HOST", "ROLE", "REPOSITORY", "ISSUE/PR", "ELAPSED", "DEADLINE", "RUN ID"}}
 
 	for _, run := range runs {
@@ -287,7 +291,7 @@ func renderActive(runs []factoryRun, now time.Time) string {
 
 		rows = append(rows, []string{
 			orNoValue(run.WorkerID), string(run.role), orNoValue(run.repo), issueLabel(run.issue),
-			elapsed(run, now), workflow.Deadline(run.role).String(), run.RunID,
+			elapsed(run, now), deadlineLabel(cfg, run.role), run.RunID,
 		})
 	}
 
@@ -296,6 +300,16 @@ func renderActive(runs []factoryRun, now time.Time) string {
 	}
 
 	return table(rows)
+}
+
+// deadlineLabel is the agent role's configured wall-clock deadline, or a dash when it has none.
+func deadlineLabel(cfg config.Config, role workflow.Role) string {
+	deadline := cfg.Agents[string(role)].Deadline()
+	if deadline <= 0 {
+		return noValue
+	}
+
+	return deadline.String()
 }
 
 // renderQueues draws how much work waits for each agent role, in spec order.
