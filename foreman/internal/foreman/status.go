@@ -369,7 +369,8 @@ func renderNoHost(runs []factoryRun, cfg config.Config) string {
 func renderUsage(records []usageRecord) string {
 	rows := make([][]string, 0, 1+len(records))
 	rows = append(rows, []string{
-		"REPOSITORY", "ISSUE/PR", headerRole, "MODEL", "HOST", "INPUT", "OUTPUT", "CACHED", "PEAK/CAP", "COST", "STARTED",
+		"REPOSITORY", "ISSUE/PR", headerRole, "MODEL", "HOST", "INPUT", "OUTPUT", "CACHED", "PEAK/CAP", "COST",
+		"DURATION", "ATTEMPTS", "OUTCOME", "STARTED",
 	})
 
 	for _, record := range records {
@@ -390,7 +391,8 @@ func usageRow(record usageRecord) []string {
 	return []string{
 		orNoValue(u.Repository), issueLabel(u.Issue), string(u.AgentRole), orNoValue(u.Model),
 		orNoValue(u.WorkerHost), intField(u.Input), intField(u.Output), intField(u.Cached),
-		peakField(u), costField(u.Cost), orNoValue(record.run.StartedAt),
+		peakField(u), costField(u.Cost), durationField(u.DurationMS), intField(u.Attempts),
+		orNoValue(string(u.Outcome)), orNoValue(record.run.StartedAt),
 	}
 }
 
@@ -464,6 +466,15 @@ func peakField(u opencode.UsageReport) string {
 	}
 
 	return fmt.Sprintf("%d/%d", *u.PeakContext, u.ContextCap)
+}
+
+// durationField is the run's wall-clock time, or a dash when the run could not measure it.
+func durationField(ms *int64) string {
+	if ms == nil {
+		return noValue
+	}
+
+	return (time.Duration(*ms) * time.Millisecond).String()
 }
 
 // costField is the run's cost, or a dash when the adapter could not report it.
