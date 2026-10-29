@@ -27,8 +27,7 @@ const (
 // ProposalShape is the kind of thing an approved proposal creates.
 type ProposalShape string
 
-// The proposal shapes. Only Single and Slices are implemented by this slice; Map and Resolution are
-// part of ticket #47 and slot into the same type.
+// The proposal shapes.
 const (
 	// ShapeSingle hands the issue itself to the Implementer.
 	ShapeSingle ProposalShape = "single"
@@ -65,6 +64,23 @@ func TicketTypes() []TicketType {
 	return []TicketType{TicketResearch, TicketPrototype, TicketGrilling, TicketTask}
 }
 
+// TicketLabels returns the labels a ticket of type t carries: the wayfinder label that names its type
+// and the factory label that queues it. foreman derives both; a proposal never picks a label.
+func TicketLabels(t TicketType) ([]string, error) {
+	switch t {
+	case TicketResearch:
+		return []string{LabelResearchTicket, LabelResearch}, nil
+	case TicketGrilling:
+		return []string{LabelGrilling, LabelPlan}, nil
+	case TicketPrototype:
+		return []string{LabelWayfinderPrototype, LabelPlan}, nil
+	case TicketTask:
+		return []string{LabelTask, LabelPlan}, nil
+	}
+
+	return nil, fmt.Errorf("unknown ticket type %q", t)
+}
+
 // PlannedIssue is one issue a proposal creates, with the key that makes a repeat finding it again.
 type PlannedIssue struct {
 	// Key is the slug the issue's idempotency marker carries.
@@ -97,6 +113,30 @@ type PlannerResolution struct {
 	Answer string `json:"answer"`
 	// DecisionLine is the one-line gist appended to the map's Decisions.
 	DecisionLine string `json:"decision_line"`
+}
+
+// RenderMap lays out an approved map's body in the wayfinder layout, keeping the writer's original
+// request under its own heading. Decisions so far starts empty: resolutions append to it.
+func RenderMap(original string, m PlannerMap) string {
+	var b strings.Builder
+
+	writeMapSection(&b, "Destination", m.Destination)
+	writeMapSection(&b, "Notes", m.Notes)
+	writeMapSection(&b, "Decisions so far", "")
+	writeMapSection(&b, "Not yet specified", m.NotYetSpecified)
+	writeMapSection(&b, "Out of scope", m.OutOfScope)
+	writeMapSection(&b, "Original request", original)
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// writeMapSection writes one map section, leaving an empty one as just its heading.
+func writeMapSection(b *strings.Builder, heading, text string) {
+	b.WriteString("## " + heading + "\n\n")
+
+	if trimmed := strings.TrimSpace(text); trimmed != "" {
+		b.WriteString(trimmed + "\n\n")
+	}
 }
 
 // PlannerProposal is what a final round asks a writer to approve. A shape fills the fields it uses:

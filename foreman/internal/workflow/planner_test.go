@@ -52,6 +52,42 @@ var _ = Describe("planner-output.json", func() {
 		Expect(out.Proposal.Issues[1].BlockedBy).To(Equal([]string{"first", "#7"}))
 	})
 
+	It("accepts a map final round and keeps its tickets' types", func() {
+		out, err := workflow.ParsePlannerOutput(mustJSON(plannerFinal(workflow.PlannerProposal{
+			Shape: workflow.ShapeMap, Spec: validSpec,
+			Map: &workflow.PlannerMap{Destination: "Ship it.", Notes: "None."},
+			Issues: []workflow.PlannedIssue{
+				{Key: "read", Title: "Read", Body: "## Question\n\nWhich?", Type: workflow.TicketResearch},
+				{
+					Key: "ask", Title: "Ask", Body: "## Question\n\nWhich?",
+					Type: workflow.TicketGrilling, BlockedBy: []string{"read"},
+				},
+			},
+		}, readyToBuild)))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Proposal.Issues[1].Type).To(Equal(workflow.TicketGrilling))
+	})
+
+	It("accepts a resolution only with the resolved gate", func() {
+		resolution := workflow.PlannerProposal{
+			Shape: workflow.ShapeResolution,
+			Resolution: &workflow.PlannerResolution{
+				Answer: "Use emulate.", DecisionLine: "Use emulate for GitHub.",
+			},
+			Issues: []workflow.PlannedIssue{
+				{Key: "follow-up", Title: "Follow up", Body: "## Question\n\nWhat?", Type: workflow.TicketTask},
+			},
+		}
+
+		out, err := workflow.ParsePlannerOutput(mustJSON(
+			plannerFinal(resolution, "We will use emulate. **Is this resolved?**")))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Proposal.Shape).To(Equal(workflow.ShapeResolution))
+
+		_, err = workflow.ParsePlannerOutput(mustJSON(plannerFinal(resolution, readyToBuild)))
+		Expect(err).To(MatchError(ContainSubstring("Is this resolved?")))
+	})
+
 	DescribeTable("rejects an output that is not a valid round",
 		func(mutate func(*workflow.PlannerOutput)) {
 			out := plannerFinal(workflow.PlannerProposal{Shape: workflow.ShapeSingle, Spec: validSpec}, readyToBuild)
@@ -189,6 +225,59 @@ var _ = Describe("planning markers", func() {
 		Expect(body).To(HavePrefix(workflow.SlicesMarker(12)))
 		Expect(body).To(ContainSubstring("- #20 First"))
 		Expect(body).To(ContainSubstring("- #21 Second"))
+	})
+})
+
+var _ = Describe("a wayfinder map's body", func() {
+	mapProposal := workflow.PlannerMap{
+		Destination: "Ship the export.", Notes: "Use the CLI.",
+		NotYetSpecified: "How accounts are matched.", OutOfScope: "Billing.",
+	}
+
+	It("lays out the map and keeps the writer's text under Original request", func() {
+		body := workflow.RenderMap("Make exports work.", mapProposal)
+
+		Expect(body).To(Equal("## Destination\n\nShip the export.\n\n## Notes\n\nUse the CLI.\n\n" +
+			"## Decisions so far\n\n## Not yet specified\n\nHow accounts are matched.\n\n" +
+			"## Out of scope\n\nBilling.\n\n## Original request\n\nMake exports work."))
+	})
+
+	It("leaves an empty section ready for its first decision", func() {
+		body := workflow.RenderMap("Make exports work.", mapProposal)
+
+		decision := "- [Add x](https://github.com/o/r/issues/2): Use it"
+
+		once, err := workflow.AppendDecision(body, decision)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(once).To(ContainSubstring("## Decisions so far\n\n" + decision + "\n\n## Not yet specified"))
+
+		twice, err := workflow.AppendDecision(once, decision)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(twice).To(Equal(once), "the second apply added the decision again")
+	})
+})
+
+var _ = Describe("deriving a ticket's labels", func() {
+	It("routes research to the Researcher and the rest to the Planner", func() {
+		research, err := workflow.TicketLabels(workflow.TicketResearch)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(research).To(ConsistOf(workflow.LabelResearchTicket, workflow.LabelResearch))
+
+		for _, typ := range []workflow.TicketType{workflow.TicketGrilling, workflow.TicketPrototype, workflow.TicketTask} {
+			labels, err := workflow.TicketLabels(typ)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(labels).To(ContainElement(workflow.LabelPlan))
+			Expect(labels).NotTo(ContainElement(workflow.LabelResearch))
+		}
+
+		prototype, err := workflow.TicketLabels(workflow.TicketPrototype)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(prototype).To(ContainElement(workflow.LabelWayfinderPrototype))
+	})
+
+	It("refuses a type it does not know", func() {
+		_, err := workflow.TicketLabels("epic")
+		Expect(err).To(HaveOccurred())
 	})
 })
 
