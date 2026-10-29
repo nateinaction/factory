@@ -95,8 +95,8 @@ reviews that PR.
 
 Setup: `cp secrets/opencode.example.yml secrets/opencode.yml` and add an
 OpenRouter key. The GitHub App needs Contents, Issues and Pull requests set to
-write, and the installation must accept them. Pick the model with
-`factory_agent_model` (a `provider/model` id for opencode).
+write, and the installation must accept them. Each agent role's
+model, context cap and compaction setting come from `factory_models`.
 
 Things to know:
 

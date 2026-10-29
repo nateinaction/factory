@@ -67,29 +67,28 @@ func TestBranchName(t *testing.T) {
 	}
 }
 
-// TestAgentPromptFirstRun pins: agent prompt first run.
-func TestAgentPromptFirstRun(t *testing.T) {
-	got := AgentPrompt("o/r", Issue{Number: 4, Title: "T", Body: "B"}, "")
-	want := "Use the `implement` skill to implement GitHub issue #4 of o/r. The repository is the " +
-		"current directory, already on its own branch. Commit your work to this branch; do not push." +
-		"\n\nTitle: T\n\nB"
+// TestImplementerPromptCarriesIssueAfterDocs pins: implementer prompt first run.
+func TestImplementerPromptCarriesIssueAfterDocs(t *testing.T) {
+	got := ImplementerPrompt([]Doc{{Path: "AGENTS.md", Text: "RULES"}}, "o/r", Issue{Number: 4, Title: "T", Body: "B"}, "")
+	want := implementerRolePrompt + "\n\n# Repository docs\n\n## AGENTS.md\n\nRULES\n" + IssueMaterialHeading +
+		"Repository: o/r\nIssue: #4\nTitle: T\n\nB"
 	if got != want {
 		t.Errorf("got %q", got)
 	}
 }
 
-// TestAgentPromptRework pins: agent prompt rework.
-func TestAgentPromptRework(t *testing.T) {
-	got := AgentPrompt("o/r", Issue{Number: 4, Title: "T", Body: "B"}, "FEEDBACK")
+// TestImplementerPromptRework pins: agent prompt rework.
+func TestImplementerPromptRework(t *testing.T) {
+	got := ImplementerPrompt(nil, "o/r", Issue{Number: 4, Title: "T", Body: "B"}, "FEEDBACK")
 	if !strings.HasSuffix(got, "Fix every high and medium finding below on top of the existing commits, then commit.\n\nReview:\nFEEDBACK") {
 		t.Errorf("got %q", got)
 	}
 }
 
-// TestAgentPromptTruncatesBodyAndFeedback pins: agent prompt truncates body and feedback.
-func TestAgentPromptTruncatesBodyAndFeedback(t *testing.T) {
+// TestImplementerPromptTruncatesBodyAndFeedback pins: agent prompt truncates body and feedback.
+func TestImplementerPromptTruncatesBodyAndFeedback(t *testing.T) {
 	long := strings.Repeat("é", BodyLimitChars+50)
-	got := AgentPrompt("o/r", Issue{Number: 1, Title: "T", Body: long}, long)
+	got := ImplementerPrompt(nil, "o/r", Issue{Number: 1, Title: "T", Body: long}, long)
 	if n := strings.Count(got, "é"); n != 2*BodyLimitChars {
 		t.Errorf("kept %d runes", n)
 	}
@@ -197,7 +196,7 @@ func TestPromptsForRetroAndReview(t *testing.T) {
 	if !strings.Contains(r, "#9 of o/r") || !strings.Contains(r, "to /w/out.md;") {
 		t.Error(r)
 	}
-	p := ReviewPrompt("main", "/w/spec.md", "/w/out.json")
+	p := ReviewerPrompt(nil, "main", "/w/spec.md", "/w/out.json")
 	for _, want := range []string{"origin/main", "saved at /w/spec.md", "JSON to /w/out.json"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("missing %q in %q", want, p)

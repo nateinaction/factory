@@ -43,4 +43,7 @@ if command -v visudo >/dev/null 2>&1; then
   check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
 fi
 
+# The harness adapter's config: one named opencode agent per agent role, each with its own model alias.
+check "opencode.json and config.json agree with factory_models" python3 -I "$root/tests/models_check.py" "$out"
+
 [ "$failures" -eq 0 ]

@@ -38,7 +38,20 @@ factory_agent_repo: nateinaction/finances
 # One dagu DAG per agent role, all in one single-slot queue until the run cap lands.
 factory_agent_roles: [planner, researcher, implementer, reviewer, curator]
 factory_agent_queue: factory-agents
-factory_agent_model: openrouter/deepseek/deepseek-v4.1-flash
+# One entry per agent role, rendered into that role's opencode agent and into foreman's config. A
+# repository cannot override any of it. Model ids name a specific model, never a router or a floating
+# alias; the Reviewer's family always differs from the Implementer's. compaction is whether opencode
+# compacts at the context cap (on) or the run fails on overflow (off). context_cap is optional per role.
+factory_models:
+  planner: { model: deepseek/deepseek-v4.1-flash, compaction: false }
+  researcher: { model: deepseek/deepseek-v4.1-flash, compaction: true }
+  implementer: { model: deepseek/deepseek-v4.1-flash, compaction: true }
+  reviewer: { model: z-ai/glm-5.3-flash, compaction: false }
+  curator: { model: deepseek/deepseek-v4.1-flash, compaction: false }
+# Input-token cap for every agent role unless its factory_models entry sets context_cap, and the
+# output-token limit each model alias declares.
+factory_context_cap: 200000
+factory_max_output: 32000
 opencode_version: "1.19.3"
 opencode_checksums:
   arm64: "sha256:7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405"

@@ -156,37 +156,12 @@ func truncate(s string, n int) string {
 	return string(r[:n])
 }
 
-// AgentPrompt is the Implementer's prompt; feedback is the latest review, empty on a first run.
-func AgentPrompt(repo string, issue Issue, feedback string) string {
-	rework := ""
-	if feedback != "" {
-		rework = "\n\nThe open pull request for this branch was reviewed and the review found " +
-			"problems. Fix every high and medium finding below on top of the existing " +
-			"commits, then commit.\n\nReview:\n" + truncate(feedback, BodyLimitChars)
-	}
-	return fmt.Sprintf("Use the `implement` skill to implement GitHub issue #%d of %s. The repository is "+
-		"the current directory, already on its own branch. Commit your work to this branch; do not push."+
-		"\n\nTitle: %s\n\n%s%s", issue.Number, repo, issue.Title, truncate(issue.Body, BodyLimitChars), rework)
-}
-
 // RetroPrompt asks the finished session for its retro.
 func RetroPrompt(repo string, number int, outPath string) string {
 	return fmt.Sprintf("Use the `retro` skill on the session you just finished, which implemented issue "+
 		"#%d of %s. Do not change the repository and do not ask questions. "+
 		"Instead of presenting the candidates to a user, write them as Markdown, most "+
 		"severe first, to %s; they will be posted as a comment on the retro ticket.", number, repo, outPath)
-}
-
-// ReviewPrompt asks the Reviewer for a JSON verdict at outPath.
-func ReviewPrompt(base, specPath, outPath string) string {
-	return fmt.Sprintf("Use the `code-review` skill. The fixed point is origin/%s; the spec is the "+
-		"issue saved at %s. Do not change the repository, do not post anything, "+
-		"and do not ask questions. Classify every finding as high (a bug, a spec miss or a "+
-		"security problem that must be fixed before merge), medium (a documented-standard "+
-		"breach or a notable defect) or low (a judgement call or nit). Write the result as "+
-		`JSON to %s: {"summary": "<one paragraph>", "findings": [{"severity": `+
-		`"high|medium|low", "title": "...", "detail": "...", "location": "file:line or empty"}]}. `+
-		"An empty findings list means the change is clean.", base, specPath, outPath)
 }
 
 // ReviewMarker keys a review to the commit it judged.

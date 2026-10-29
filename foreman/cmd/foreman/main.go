@@ -25,6 +25,11 @@ func run() int {
 		_, _ = fmt.Fprintf(os.Stderr, "foreman: %v\n", err)
 		return 1
 	}
+	// A host name that cannot be read is reported as missing in the usage line, not guessed.
+	host, hostErr := os.Hostname()
+	if hostErr != nil {
+		host = ""
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d := foreman.Deps{
@@ -33,6 +38,7 @@ func run() int {
 		HTTP:     &http.Client{Timeout: foreman.HTTPTimeout},
 		Out:      os.Stdout,
 		Err:      os.Stderr,
+		Host:     host,
 	}
 	return foreman.Main(ctx, os.Args[1:], d)
 }

@@ -75,11 +75,12 @@ func DefaultSettings(home, configOverride string) Settings {
 
 // Config is what the Ansible role writes: a file rather than the environment, because sudo resets the environment.
 type Config struct {
-	Repo  string `json:"repo"`
-	Model string `json:"model"`
+	Repo string `json:"repo"`
+	// Agents holds each agent role's model settings, keyed by the role's name.
+	Agents map[string]AgentConfig `json:"agents"`
 }
 
-// LoadConfig reads and validates the config file.
+// LoadConfig reads and validates the config file: every agent role needs a model and a context cap.
 func LoadConfig(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -92,8 +93,11 @@ func LoadConfig(path string) (Config, error) {
 	if err := ValidateRepo(c.Repo); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
-	if c.Model == "" {
-		return Config{}, fmt.Errorf("config %s: model is required", path)
+	for _, r := range knownRoles {
+		a, ok := c.Agents[string(r)]
+		if !ok || a.Model == "" || a.ContextCap <= 0 {
+			return Config{}, fmt.Errorf("config %s: agent role %s needs a model and a context cap", path, r)
+		}
 	}
 	return c, nil
 }

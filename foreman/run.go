@@ -8,20 +8,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Run is the factory half, run as the factory user: it works the issue as the agent role. For the
 // Reviewer the code is the verdict (ReviewClean, ReviewFindings, ReviewExhausted).
-func Run(ctx context.Context, d Deps, role Role, repo, model string, number int) (int, error) {
+func Run(ctx context.Context, d Deps, role Role, repo string, agent AgentConfig, number int) (int, error) {
 	switch role {
 	case Implementer:
-		if err := runImplementer(ctx, d, repo, model, number); err != nil {
+		if err := runImplementer(ctx, d, repo, agent, number); err != nil {
 			return 1, err
 		}
 		return 0, nil
 	case Reviewer:
-		return runReviewer(ctx, d, repo, model, number)
+		return runReviewer(ctx, d, repo, agent, number)
 	case Planner, Researcher, Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
@@ -89,58 +88,69 @@ func (s session) clone(repo string) error {
 	return err
 }
 
-// opencode runs the model with a prompt in the clone.
-func (s session) opencode(model, prompt string, extra []string, timeout time.Duration) error {
-	argv := append([]string{"opencode", "run"}, extra...)
-	argv = append(argv, "--model", model, prompt)
-	_, err := s.d.run(s.ctx, Cmd{Argv: argv, Dir: s.workdir, Env: s.agentEnv, Timeout: timeout})
+// newSession prepares the environments for a clone at workdir; agentEnv is the model process's environment.
+func newSession(ctx context.Context, d Deps, sec secrets, workdir string, identity []string, agentEnv map[string]string) session {
+	gitArgv := append([]string{"git", "-C", workdir}, identity...)
+	return session{d: d, ctx: ctx, workdir: workdir, gitEnv: GitAuthEnv(sec.githubToken), agentEnv: agentEnv, gitArgv: gitArgv}
+}
+
+// runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
+// when the run failed.
+func runImplementer(ctx context.Context, d Deps, repo string, agent AgentConfig, number int) error {
+	var usage Usage
+	err := withState(d.Settings.WorkRoot, Implementer, number, func(db string) error {
+		var err error
+		usage, err = implement(ctx, d, repo, agent, number, db)
+		return err
+	})
+	d.logUsage(NewUsageReport(Implementer, repo, number, d.Host, agent, usage))
 	return err
 }
 
-// newSession prepares the environments for a clone at workdir.
-func newSession(ctx context.Context, d Deps, sec secrets, workdir string, identity []string) session {
-	gitArgv := append([]string{"git", "-C", workdir}, identity...)
-	return session{
-		d: d, ctx: ctx, workdir: workdir, gitEnv: GitAuthEnv(sec.githubToken),
-		agentEnv: map[string]string{"OPENROUTER_API_KEY": sec.openrouterKey}, gitArgv: gitArgv,
-	}
-}
-
-// runImplementer clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
-func runImplementer(ctx context.Context, d Deps, repo, model string, number int) error {
+// implement clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
+func implement(ctx context.Context, d Deps, repo string, agent AgentConfig, number int, db string) (Usage, error) {
 	sec, err := readSecrets(d.Settings)
 	if err != nil {
-		return err
+		return Usage{}, err
+	}
+	env, err := AgentEnv(sec.openrouterKey, db, agent)
+	if err != nil {
+		return Usage{}, err
 	}
 	c := d.client(sec.githubToken)
 	issue, err := c.GetIssue(ctx, repo, number)
 	if err != nil {
-		return err
+		return Usage{}, err
 	}
 	branch := BranchName(number)
 	workdir, err := freshPath(d.Settings.WorkRoot, fmt.Sprintf("issue-%d", number)) // a clean slate makes a re-run equal to a first run
 	if err != nil {
-		return err
+		return Usage{}, err
 	}
 	s := newSession(ctx, d, sec, workdir, []string{
 		"-c", "user.name=factory-agent", "-c", "user.email=factory-agent@users.noreply.github.com",
-	})
+	}, env)
 	if err := s.clone(repo); err != nil {
-		return err
+		return Usage{}, err
 	}
 	pr, feedback, err := s.checkoutBranch(c, repo, branch)
 	if err != nil {
-		return err
+		return Usage{}, err
 	}
 	start, err := s.head()
 	if err != nil {
-		return err
+		return Usage{}, err
 	}
-	if err := s.opencode(model, AgentPrompt(repo, issue, feedback), nil, AgentTimeout); err != nil {
-		return err
+	docs, err := ReadRepoDocs(workdir)
+	if err != nil {
+		return Usage{}, err
+	}
+	res, err := s.agent(AgentRun{Role: Implementer, Prompt: ImplementerPrompt(docs, repo, issue, feedback), Timeout: AgentTimeout})
+	if err != nil {
+		return res.Usage, err
 	}
 	if err := s.requireNewCommits(start, branch); err != nil {
-		return err
+		return res.Usage, err
 	}
 	// agent/* branches are ours alone; a first run replaces any stale one, a rework fast-forwards.
 	push := []string{"push", "origin", branch}
@@ -148,21 +158,22 @@ func runImplementer(ctx context.Context, d Deps, repo, model string, number int)
 		push = []string{"push", "--force", "origin", branch}
 	}
 	if _, err := s.git(s.gitEnv, push...); err != nil {
-		return err
+		return res.Usage, err
 	}
 	if pr == nil {
 		if pr, err = openPR(ctx, c, repo, issue, branch); err != nil {
-			return err
+			return res.Usage, err
 		}
 	}
 	if err := writeLine(d.Out, pr.HTMLURL); err != nil {
-		return err
+		return res.Usage, err
 	}
 	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
-	if err := s.retro(c, repo, model, number); err != nil {
+	retroUsage, err := s.retro(c, repo, number, res.Session)
+	if err != nil {
 		d.logf("retro failed: %v", err)
 	}
-	return nil
+	return res.Usage.Add(retroUsage), nil
 }
 
 // checkoutBranch checks out the issue's branch. With an open pull request it builds on the reviewed
@@ -215,70 +226,100 @@ func openPR(ctx context.Context, c Client, repo string, issue Issue, branch stri
 	return &pr, nil
 }
 
-// retro resumes the finished session for its retro and posts it on the retro ticket.
-func (s session) retro(c Client, repo, model string, number int) error {
+// retro resumes the finished session, by its explicit id, for its retro and posts it on the retro ticket.
+func (s session) retro(c Client, repo string, number int, session string) (Usage, error) {
+	if session == "" {
+		return Usage{}, errors.New("the run reported no session to resume")
+	}
 	out, err := freshPath(s.d.Settings.WorkRoot, fmt.Sprintf("issue-%d.retro.md", number))
 	if err != nil {
-		return err
+		return Usage{}, err
 	}
-	if err := s.opencode(model, RetroPrompt(repo, number, out), []string{"--continue"}, RetroTimeout); err != nil {
-		return err
+	res, err := s.agent(AgentRun{Role: Implementer, Prompt: RetroPrompt(repo, number, out), Session: session, Timeout: RetroTimeout})
+	if err != nil {
+		return res.Usage, err
 	}
 	raw, err := os.ReadFile(out)
 	if err != nil {
-		return err
+		return res.Usage, err
 	}
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
-		return errors.New("the retro wrote nothing")
+		return res.Usage, errors.New("the retro wrote nothing")
 	}
 	sha, err := s.head()
 	if err != nil {
-		return err
+		return res.Usage, err
 	}
-	return c.PostRetro(s.ctx, repo, number, sha, text)
+	return res.Usage, c.PostRetro(s.ctx, repo, number, sha, text)
 }
 
-// runReviewer clones the pull request's branch, runs the review, posts it, and returns the verdict code.
-func runReviewer(ctx context.Context, d Deps, repo, model string, number int) (int, error) {
+// runReviewer reviews in memory-only state and logs the run's one usage line, even when the run failed.
+func runReviewer(ctx context.Context, d Deps, repo string, agent AgentConfig, number int) (int, error) {
+	var usage Usage
+	var code int
+	err := withState(d.Settings.WorkRoot, Reviewer, number, func(db string) error {
+		var err error
+		code, usage, err = review(ctx, d, repo, agent, number, db)
+		return err
+	})
+	d.logUsage(NewUsageReport(Reviewer, repo, number, d.Host, agent, usage))
+	if err != nil && code == 0 {
+		code = 1
+	}
+	return code, err
+}
+
+// review clones the pull request's branch, runs the review, posts it, and returns the verdict code.
+func review(ctx context.Context, d Deps, repo string, agent AgentConfig, number int, db string) (int, Usage, error) {
 	sec, err := readSecrets(d.Settings)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
+	}
+	env, err := AgentEnv(sec.openrouterKey, db, agent)
+	if err != nil {
+		return 1, Usage{}, err
 	}
 	c := d.client(sec.githubToken)
 	issue, err := c.GetIssue(ctx, repo, number)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
 	branch := BranchName(number)
 	pr, err := c.ExistingPR(ctx, repo, branch)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
 	if pr == nil {
-		return 1, fmt.Errorf("no open pull request for %s", branch)
+		return 1, Usage{}, fmt.Errorf("no open pull request for %s", branch)
 	}
 	base, err := c.DefaultBranch(ctx, repo)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
 	paths, err := reviewPaths(d.Settings.WorkRoot, number)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
-	s := newSession(ctx, d, sec, paths.workdir, nil)
+	s := newSession(ctx, d, sec, paths.workdir, nil, env)
 	sha, err := s.checkoutForReview(repo, branch)
 	if err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
 	spec := fmt.Sprintf("# %s\n\n%s\n", issue.Title, truncate(issue.Body, BodyLimitChars))
 	if err := os.WriteFile(paths.spec, []byte(spec), 0o600); err != nil {
-		return 1, err
+		return 1, Usage{}, err
 	}
-	if err := s.opencode(model, ReviewPrompt(base, paths.spec, paths.out), nil, ReviewTimeout); err != nil {
-		return 1, err
+	docs, err := ReadRepoDocs(paths.workdir)
+	if err != nil {
+		return 1, Usage{}, err
 	}
-	return postVerdict(ctx, c, repo, pr.Number, sha, paths.out)
+	res, err := s.agent(AgentRun{Role: Reviewer, Prompt: ReviewerPrompt(docs, base, paths.spec, paths.out), Timeout: ReviewTimeout})
+	if err != nil {
+		return 1, res.Usage, err
+	}
+	code, err := postVerdict(ctx, c, repo, pr.Number, sha, paths.out)
+	return code, res.Usage, err
 }
 
 // reviewFiles are a review run's scratch paths.

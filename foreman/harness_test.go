@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every process and answers through fn.
@@ -58,7 +59,11 @@ type harness struct {
 	out    *bytes.Buffer
 	errb   *bytes.Buffer
 	dir    string
+	sleeps []time.Duration
 }
+
+// testAgent is the agent role settings tests run with.
+var testAgent = AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
 
 // newHarness builds a harness whose runner answers the helpers every flow needs.
 func newHarness(t *testing.T) *harness {
@@ -78,6 +83,7 @@ func newHarness(t *testing.T) *harness {
 			TokenHelper: "/usr/local/bin/github-app-token", Dagu: "/usr/local/bin/dagu", DAGPrefix: "factory-",
 		},
 		Runner: h.runner, HTTP: gh.srv.Client(), Out: h.out, Err: h.errb,
+		Sleep: func(_ context.Context, d time.Duration) error { h.sleeps = append(h.sleeps, d); return nil },
 	}
 	return h
 }
@@ -86,6 +92,8 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) defaultRun(c Cmd) (string, error) {
 	line := joined(c)
 	switch {
+	case c.Argv[0] == "opencode":
+		return okStream("ses_1"), nil
 	case strings.Contains(line, "github-app-token"):
 		return "minted-token\n", nil
 	case strings.Contains(line, "rev-parse HEAD"):

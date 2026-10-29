@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Deps is everything at the edge: settings, processes, HTTP and the output streams.
@@ -23,6 +24,10 @@ type Deps struct {
 	Out io.Writer
 	// Err receives diagnostics.
 	Err io.Writer
+	// Host names this worker host in the usage report; empty is reported as missing.
+	Host string
+	// Sleep waits between model retries; nil waits on the clock.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // client returns a GitHub client for token.

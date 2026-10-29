@@ -72,7 +72,7 @@ func roleVerb(ctx context.Context, d Deps, verb string, rest []string) int {
 	if verb == "start" {
 		code, err = Start(ctx, d, role, rest[1], number)
 	} else {
-		code, err = Run(ctx, d, role, rest[1], cfg.Model, number)
+		code, err = Run(ctx, d, role, rest[1], cfg.Agents[string(role)], number)
 	}
 	if err != nil {
 		d.logf("%v", err)

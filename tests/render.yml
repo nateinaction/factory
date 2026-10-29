@@ -25,6 +25,18 @@
       loop_control:
         loop_var: agent_role
 
+    - name: Render opencode's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/opencode.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/opencode.json"
+        mode: "0644"
+
+    - name: Render foreman's config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/config.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config.json"
+        mode: "0644"
+
     - name: Render the sudoers file
       ansible.builtin.template:
         src: ../roles/agent/templates/dagu-agent.sudoers.j2
