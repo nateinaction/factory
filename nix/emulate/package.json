@@ -1,0 +1,9 @@
+{
+  "name": "emulate-nix",
+  "version": "0.12.3",
+  "private": true,
+  "description": "Pinned vercel-labs/emulate for the factory dev shell",
+  "dependencies": {
+    "emulate": "0.12.3"
+  }
+}

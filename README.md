@@ -42,6 +42,10 @@ CI runs the same set. Run them all yourself with:
 pre-commit run --all-files
 ```
 
+The dev shell also provides `emulate`, the GitHub emulator foreman's Go tests run against; see
+[`foreman/docs/emulate.md`](foreman/docs/emulate.md) for how the suites use it and the GitHub
+behaviour it does not model.
+
 ## GitHub App credentials
 
 One GitHub App per agent role, named `<owner>-factory-<agent role>` (at most 34

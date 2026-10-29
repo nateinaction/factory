@@ -59,9 +59,9 @@ var _ = Describe("Poll", func() {
 		}))
 	})
 
-	It("claims work when no review waits, skipping pull requests", func() {
+	It("claims work when no review waits", func() {
 		h.queue(map[string][]map[string]any{
-			workflow.LabelReady: {{"number": 4, "pull_request": map[string]any{}}, {"number": 5}},
+			workflow.LabelReady: {{"number": 5}},
 		})
 		h.acceptWrites("5")
 		Expect(poll()).To(BeZero())

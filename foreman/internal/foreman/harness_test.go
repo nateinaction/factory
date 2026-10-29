@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +19,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
-	"github.com/nateinaction/factory/foreman/internal/fakegh"
+	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
@@ -135,9 +135,9 @@ func (c *logCapture) String() string {
 	return b.String()
 }
 
-// harness wires Deps to a fake GitHub, a fake runner and a temp directory.
+// harness wires Deps to a recording proxy in front of the emulator, a fake runner and a temp directory.
 type harness struct {
-	gh     *fakegh.Server
+	gh     *ghtest.Proxy
 	runner *fakeRunner
 	deps   Deps
 	out    *bytes.Buffer
@@ -146,6 +146,9 @@ type harness struct {
 	// installed maps an agent role to the repositories its App is installed on.
 	installed map[workflow.Role][]string
 	sleeps    []time.Duration
+	// pr and prURL are the open pull request the setup created or the run opened.
+	pr    int
+	prURL string
 }
 
 // testAgent() is the agent role settings tests run with.
@@ -153,15 +156,24 @@ func testAgent() config.AgentConfig {
 	return config.AgentConfig{Model: "prov/model", ContextCap: 200_000, Compaction: true}
 }
 
-// newHarness builds a harness whose runner answers the helpers every flow needs. The fake GitHub
-// is closed when the spec ends, and any request it did not expect fails the spec.
+// newHarness builds a harness whose runner answers the helpers every flow needs. Each spec gets a
+// fresh repository on the shared emulator; setup calls bypass the proxy, so it records only foreman's
+// calls, and any request the proxy did not expect fails the spec.
 func newHarness() *harness {
 	dir := GinkgoT().TempDir()
-	gh := fakegh.New()
+	ctx := context.Background()
+
+	Expect(emulator).NotTo(BeNil(), "the suite must start the GitHub emulator first")
+	Expect(emulator.ResetRepo(ctx, "o/r")).To(Succeed())
+
+	gh := ghtest.NewProxy(emulator.URL())
 
 	DeferCleanup(func() {
-		Expect(gh.Unexpected()).To(BeEmpty(), "requests no route expected")
+		Expect(gh.Unexpected()).To(BeEmpty(), "requests nothing answered")
 		gh.Close()
+	})
+	DeferCleanup(func() {
+		Expect(emulator.DeleteRepo(ctx, "o/r")).To(Succeed())
 	})
 
 	key := filepath.Join(dir, "openrouter-key")
@@ -311,33 +323,127 @@ func (h *harness) writeToken(role workflow.Role, token string) {
 	Expect(os.WriteFile(h.deps.Settings.TokenPath(role), []byte(token), 0o640)).To(Succeed())
 }
 
-// queue registers the issues listing of o/r: each label maps to the issues the fake returns for it.
+// queue creates the issues a poll of o/r should find: each label maps to the issues carrying it.
 func (h *harness) queue(byLabel map[string][]map[string]any) {
 	h.queueRepo("o/r", byLabel)
 }
 
-// queueRepo registers the issues listing of one repository.
+// queueRepo creates the issues a poll of one repository should find.
 func (h *harness) queueRepo(repo string, byLabel map[string][]map[string]any) {
-	h.gh.Handle("GET /repos/"+repo+"/issues", func(w http.ResponseWriter, r *http.Request) {
-		list := byLabel[r.URL.Query().Get("labels")]
-		if list == nil {
-			list = []map[string]any{}
-		}
+	GinkgoHelper()
 
-		fakegh.WriteJSON(w, list)
-	})
+	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
+
+	labels := map[int][]string{}
+	highest := 0
+
+	for label, issues := range byLabel {
+		for _, fields := range issues {
+			number, ok := fields["number"].(int)
+			if !ok {
+				Fail(fmt.Sprintf("queue entry for %s has no issue number", label))
+			}
+
+			labels[number] = append(labels[number], label)
+			highest = maxInt(highest, number)
+		}
+	}
+
+	for number := 1; number <= highest; number++ {
+		_, err := emulator.CreateIssue(context.Background(), repo, labels[number], "Add x", "Do x")
+		Expect(err).NotTo(HaveOccurred())
+	}
 }
 
-// acceptWrites lets label and comment writes on issue n succeed.
+// acceptWrites makes sure issue n exists. Label and comment writes then succeed against the emulator.
 func (h *harness) acceptWrites(n string) {
-	h.gh.Status("DELETE /repos/o/r/issues/"+n+"/labels/{label}", http.StatusOK)
-	h.gh.Status("POST /repos/o/r/issues/"+n+"/labels", http.StatusOK)
-	h.gh.Status("POST /repos/o/r/issues/"+n+"/comments", http.StatusCreated)
+	GinkgoHelper()
+
+	number, err := strconv.Atoi(n)
+	Expect(err).NotTo(HaveOccurred(), "issue number %q", n)
+
+	h.ensureIssue("o/r", number)
+}
+
+// ensureIssue creates the filler issues below number and then number itself.
+func (h *harness) ensureIssue(repo string, number int) {
+	GinkgoHelper()
+
+	Expect(emulator.EnsureRepo(context.Background(), repo)).To(Succeed())
+
+	for attempt := 0; attempt <= number; attempt++ {
+		exists, err := emulator.HasIssue(context.Background(), repo, number)
+		Expect(err).NotTo(HaveOccurred())
+
+		if exists {
+			return
+		}
+
+		_, err = emulator.CreateIssue(context.Background(), repo, nil, "Add x", "Do x")
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	Fail(fmt.Sprintf("could not create issue %s#%d", repo, number))
+}
+
+// maxInt is the larger of a and b.
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+
+	return b
 }
 
 // outcome returns the labels added and comments posted on issue 5, in order.
 func (h *harness) outcome() (labels, comments []string) {
 	return h.gh.Bodies("POST", "/repos/o/r/issues/5/labels"), h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")
+}
+
+// pullRequest is the open pull request's number and advertised web URL.
+func (h *harness) pullRequest() (int, string) {
+	GinkgoHelper()
+
+	if h.pr != 0 {
+		return h.pr, h.prURL
+	}
+
+	prs, err := emulator.PullRequests(context.Background(), "o/r")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(prs).To(HaveLen(1))
+
+	h.pr, h.prURL = prs[0].Number, prs[0].HTMLURL
+
+	return h.pr, h.prURL
+}
+
+// reviewPath is the pull request's reviews endpoint.
+func (h *harness) reviewPath() string {
+	GinkgoHelper()
+
+	pr, _ := h.pullRequest()
+
+	return fmt.Sprintf("/repos/o/r/pulls/%d/reviews", pr)
+}
+
+// retroNumber is the open retro ticket's number, or 0.
+func (h *harness) retroNumber() int {
+	GinkgoHelper()
+
+	number, err := emulator.FindIssueByLabel(context.Background(), "o/r", workflow.LabelRetro)
+	Expect(err).NotTo(HaveOccurred())
+
+	return number
+}
+
+// retroPath is the retro ticket's comments endpoint.
+func (h *harness) retroPath() string {
+	GinkgoHelper()
+
+	number := h.retroNumber()
+	Expect(number).NotTo(BeZero(), "no retro ticket")
+
+	return fmt.Sprintf("/repos/o/r/issues/%d/comments", number)
 }
 
 // factoryHalf is what the fake factory half saw: the token file's content and mode.
@@ -375,35 +481,34 @@ func (h *harness) sudoExit(code int) *factoryHalf {
 	return seen
 }
 
-// implementerGH registers the GitHub side of an Implementer run on issue 5; pr is the existing PR or nil.
+// implementerGH creates the GitHub side of an Implementer run on issue 5; pr is the existing PR or nil.
 func (h *harness) implementerGH(pr map[string]any, reviews []workflow.Item) {
-	h.gh.JSON("GET /repos/o/r/issues/5", map[string]any{"number": 5, "title": "Add x", "body": "Do x"})
+	GinkgoHelper()
+
+	h.ensureIssue("o/r", 5)
+
+	h.pr, h.prURL = 0, ""
 
 	if pr == nil {
-		h.gh.JSON("GET /repos/o/r/pulls", []map[string]any{})
-	} else {
-		h.gh.JSON("GET /repos/o/r/pulls", []map[string]any{pr})
-		h.gh.JSON("GET /repos/o/r/pulls/8/reviews", reviews)
+		return
 	}
 
-	h.gh.JSON("GET /repos/o/r", map[string]any{"default_branch": "main"})
-	h.gh.Handle("POST /repos/o/r/pulls", func(w http.ResponseWriter, _ *http.Request) {
-		fakegh.WriteJSON(w, map[string]any{"number": 8, "html_url": "http://github/pr/8"})
-	})
-	h.gh.Status("POST /repos/o/r/issues/5/comments", http.StatusCreated)
-	h.gh.JSON("GET /repos/o/r/issues", []map[string]any{{"number": 41}})
-	h.gh.JSON("GET /repos/o/r/issues/41/comments", []workflow.Item{})
-	h.gh.Status("POST /repos/o/r/issues/41/comments", http.StatusCreated)
+	created, err := emulator.CreatePR(context.Background(), "o/r", workflow.BranchName(5), "Add x", "Do x")
+	Expect(err).NotTo(HaveOccurred())
+
+	h.pr, h.prURL = created.Number, created.HTMLURL
+
+	for _, review := range reviews {
+		Expect(emulator.CreateReview(context.Background(), "o/r", h.pr, review.Body)).To(Succeed())
+	}
 }
 
-// reviewerGH registers the GitHub side of a Reviewer run on issue 5, with the given earlier reviews,
+// reviewerGH creates the GitHub side of a Reviewer run on issue 5, with the given earlier reviews,
 // and leaves the Reviewer's token.
 func (h *harness) reviewerGH(reviews []workflow.Item) {
-	h.gh.JSON("GET /repos/o/r/issues/5", map[string]any{"number": 5, "title": "Add x", "body": "Do x"})
-	h.gh.JSON("GET /repos/o/r/pulls", []map[string]any{{"number": 8, "html_url": "http://github/pr/8"}})
-	h.gh.JSON("GET /repos/o/r", map[string]any{"default_branch": "main"})
-	h.gh.JSON("GET /repos/o/r/pulls/8/reviews", reviews)
-	h.gh.Status("POST /repos/o/r/pulls/8/reviews", http.StatusOK)
+	GinkgoHelper()
+
+	h.implementerGH(map[string]any{}, reviews)
 	h.writeToken(workflow.Reviewer, "repo-token")
 }
 
@@ -465,7 +570,7 @@ func (h *harness) answerOpencode(outs ...string) {
 	})
 }
 
-// runImpl runs the Implementer on issue 5 against a fake GitHub.
+// runImpl runs the Implementer on issue 5 against the emulator.
 func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
 	h.implementerGH(nil, nil)
 	h.writeToken(workflow.Implementer, "repo-token\n")

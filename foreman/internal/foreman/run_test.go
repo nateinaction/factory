@@ -39,6 +39,8 @@ var _ = Describe("Run", func() {
 			h.opencodeWrites("--session", retroOut(), "lessons\n")
 			Expect(run(workflow.Implementer)).To(BeZero())
 
+			pr, prURL := h.pullRequest()
+
 			work := filepath.Join(h.deps.Settings.WorkRoot, "issue-5")
 			Expect(h.runner.find("git clone https://github.com/o/r.git " + work)).To(HaveLen(1))
 			Expect(h.runner.find("checkout -B agent/issue-5")).To(HaveLen(1))
@@ -61,10 +63,11 @@ var _ = Describe("Run", func() {
 				ContainSubstring(`"base":"main"`), ContainSubstring(`Closes #5\n\nOpened by the factory agent.`),
 			)))
 			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ConsistOf(
-				ContainSubstring("Pull request: http://github/pr/8")))
-			Expect(h.out.String()).To(HavePrefix("http://github/pr/8\n"))
+				ContainSubstring("Pull request: " + prURL)))
+			Expect(pr).NotTo(BeZero())
+			Expect(h.out.String()).To(HavePrefix(prURL + "\n"))
 
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/41/comments")).To(ConsistOf(
+			Expect(h.gh.Bodies("POST", h.retroPath())).To(ConsistOf(
 				ContainSubstring(`<!-- agent-retro:5:sha-head -->\n## Retro: #5\n\nlessons`)))
 			retro := h.runner.find("--session")
 			Expect(retro).To(HaveLen(1))
@@ -104,14 +107,14 @@ var _ = Describe("Run", func() {
 			h.opencodeWrites("--session", retroOut(), "  \n")
 			Expect(run(workflow.Implementer)).To(BeZero())
 			Expect(h.logs.String()).To(ContainSubstring("the retro wrote nothing"))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/41/comments")).To(BeEmpty())
+			Expect(h.retroNumber()).To(BeZero(), "created a retro ticket")
 		})
 
 		It("clears stale scratch from an earlier run", func() {
 			Expect(os.MkdirAll(h.deps.Settings.WorkRoot, 0o700)).To(Succeed())
 			Expect(os.WriteFile(retroOut(), []byte("stale retro"), 0o600)).To(Succeed())
 			Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
-			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/41/comments")).To(BeEmpty(), "posted a stale retro")
+			Expect(h.retroNumber()).To(BeZero(), "posted a stale retro")
 		})
 	})
 
@@ -120,6 +123,8 @@ var _ = Describe("Run", func() {
 			[]workflow.Item{{Body: workflow.ReviewMarker("old") + "\nFIX THE THING"}})
 		h.writeToken(workflow.Implementer, "repo-token")
 		Expect(run(workflow.Implementer)).Error().NotTo(HaveOccurred())
+
+		_, prURL := h.pullRequest()
 		Expect(h.runner.find("fetch origin agent/issue-5")).To(HaveLen(1))
 		Expect(h.runner.find("checkout -B agent/issue-5 origin/agent/issue-5")).To(HaveLen(1))
 		oc := h.runner.find("opencode run --agent implementer")
@@ -132,7 +137,7 @@ var _ = Describe("Run", func() {
 		Expect(joined(push[0])).NotTo(ContainSubstring("--force"), "rework must fast-forward")
 		Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty(), "opened a second PR")
 		Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(BeEmpty(), "commented a PR link again")
-		Expect(h.out.String()).To(HavePrefix("http://github/pr/8\n"))
+		Expect(h.out.String()).To(HavePrefix(prURL + "\n"))
 	})
 
 	Describe("the Reviewer", func() {
@@ -140,7 +145,7 @@ var _ = Describe("Run", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewClean))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(ConsistOf(And(
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
 				ContainSubstring(`"event":"APPROVE"`), ContainSubstring(`"commit_id":"sha-head"`),
 				ContainSubstring("<!-- agent-review:sha-head -->"),
 			)))
@@ -164,7 +169,7 @@ var _ = Describe("Run", func() {
 			h.reviewerGH(nil)
 			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(ConsistOf(And(
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(ConsistOf(And(
 				ContainSubstring(`"event":"COMMENT"`), ContainSubstring("### High (1)"),
 			)))
 		})
@@ -179,7 +184,7 @@ var _ = Describe("Run", func() {
 			h.reviewerGH([]workflow.Item{{Body: workflow.ReviewMarker("sha-head") + "\nearlier"}})
 			h.opencodeWrites("code-review", h.reviewOut(), blockingReview)
 			Expect(run(workflow.Reviewer)).To(Equal(workflow.ReviewFindings))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(BeEmpty(), "posted again")
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty(), "posted again")
 		})
 
 		It("fails closed on a malformed review, posting nothing", func() {
@@ -189,7 +194,7 @@ var _ = Describe("Run", func() {
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(HaveOccurred())
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
 		})
 
 		It("fails closed when the model wrote no review", func() {
@@ -216,12 +221,11 @@ var _ = Describe("Run", func() {
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(MatchError(ContainSubstring("read review")))
 			Expect(code).NotTo(Equal(workflow.ReviewClean))
-			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls/8/reviews")).To(BeEmpty())
+			Expect(h.gh.Bodies("POST", h.reviewPath())).To(BeEmpty())
 		})
 
 		It("fails without an open pull request", func() {
-			h.gh.JSON("GET /repos/o/r/issues/5", map[string]any{"number": 5})
-			h.gh.JSON("GET /repos/o/r/pulls", []map[string]any{})
+			h.ensureIssue("o/r", 5)
 			h.writeToken(workflow.Reviewer, "t")
 			code, err := run(workflow.Reviewer)
 			Expect(err).To(MatchError(ContainSubstring("no open pull request for agent/issue-5")))

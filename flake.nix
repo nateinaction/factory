@@ -7,6 +7,22 @@
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
+
+      # vercel-labs/emulate is a Node package and not in nixpkgs. Pin the npm
+      # version and its lock file, so the tests' GitHub emulator is reproducible.
+      emulate = pkgs: pkgs.buildNpmPackage {
+        pname = "emulate";
+        version = "0.12.3";
+        src = ./nix/emulate;
+        npmDepsHash = "sha256-5nKi0JGlWjH65JfrgMruJ9zb55kv25YWjywkZQcuRjE=";
+        dontNpmBuild = true;
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postInstall = ''
+          makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/emulate \
+            --add-flags "$out/lib/node_modules/emulate-nix/node_modules/emulate/dist/index.js"
+        '';
+        meta.mainProgram = "emulate";
+      };
     in {
       # foreman is a static Go binary, so hosts need no Go toolchain.
       packages = forAll (pkgs: rec {
@@ -34,6 +50,8 @@
             pkgs.govulncheck
             # Pinned to 4.7.0 by the locked nixpkgs revision (see flake.lock).
             pkgs.pre-commit
+            # foreman's tests run the GitHub emulator for their state.
+            (emulate pkgs)
           ];
           # Install the git hook from .pre-commit-config.yaml. A leftover hooksPath
           # would take precedence over the hook pre-commit writes, so clear it.
