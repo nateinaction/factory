@@ -28,15 +28,17 @@ const (
 // the rejection emits.
 type OutputProblem string
 
-// The classes of problem an output file can carry. A file with a marker is refused for that, whatever
-// else is wrong with it: forging a transition is the security-relevant part.
+// The classes of problem an output file can carry, and the security outcome each is recorded under.
+// There is one value set: the security event uses the problem's own value, so the two cannot drift.
+// A file with a marker is refused for that, whatever else is wrong with it: forging a transition is
+// the security-relevant part.
 const (
 	// OutputUnreadable is a file foreman could not read at all.
-	OutputUnreadable OutputProblem = "unreadable"
+	OutputUnreadable OutputProblem = "unreadable_output"
 	// OutputFactoryMarker is a file that carries a factory marker.
 	OutputFactoryMarker OutputProblem = "factory_marker"
 	// OutputInvalid is a file that is readable but does not fit its shape.
-	OutputInvalid OutputProblem = "invalid"
+	OutputInvalid OutputProblem = "invalid_output"
 )
 
 // OutputError is an output file foreman rejected. Nothing in the file is applied, and the issue is

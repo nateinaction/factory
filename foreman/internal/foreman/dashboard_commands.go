@@ -20,6 +20,8 @@ type commandRun struct {
 	repo  workflow.Repo
 	// role is the App that polls here: it files a promoted issue in another repository too.
 	role workflow.Role
+	// alerts are the poll's instruments, so a command's security event records through the same set.
+	alerts alertInstruments
 	// issues is every issue in the repository, newest first.
 	issues []workflow.Issue
 	// threads are the promoted issues' comments, by issue number.
@@ -116,8 +118,8 @@ func (r *commandRun) onComment(
 			security.Scope(r.d.log(), string(r.role), r.repo.String(), number),
 			security.EventDashboardCommandRefused, outcome, "",
 		)
-		newAlertInstruments(r.d).securityEvent(
-			ctx, r.role, r.repo, security.EventDashboardCommandRefused, outcome,
+		r.alerts.securityEvent(
+			ctx, r.role, r.repo, number, security.EventDashboardCommandRefused, outcome,
 		)
 
 		r.d.log().Info("a non-writer's dashboard command is minimized and takes no action",

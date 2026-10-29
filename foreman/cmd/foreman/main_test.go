@@ -51,7 +51,7 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		code := executeTraced(context.Background(), tracer, h.logger, root, []string{"poll", "--config", path}, false)
+		code := executeTraced(context.Background(), tracer, h.logger, root, []string{"poll", "--config", path}, false, "")
 		Expect(code).To(BeZero())
 
 		spans := recorder.Ended()
@@ -74,7 +74,7 @@ var _ = Describe("the root span", func() {
 		root.SetErr(&h.errOut)
 
 		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"start", "implementer", "o/r", "5", testTraceParent}, false)
+			[]string{"start", "implementer", "o/r", "5", testTraceParent}, false, "")
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -94,7 +94,7 @@ var _ = Describe("the root span", func() {
 		root.SetErr(&h.errOut)
 
 		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"run", "implementer", "o/r", "5"}, false)
+			[]string{"run", "implementer", "o/r", "5"}, false, "")
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -112,7 +112,7 @@ var _ = Describe("the root span", func() {
 		root.SetErr(&h.errOut)
 
 		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"start", "implementer", "o/r", "5", "not-a-traceparent"}, false)
+			[]string{"start", "implementer", "o/r", "5", "not-a-traceparent"}, false, "")
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -128,7 +128,8 @@ var _ = Describe("the root span", func() {
 		root.SetErr(&h.errOut)
 
 		logger := slog.New(telemetry.LogHandler(slog.NewJSONHandler(&h.logs, nil)))
-		code := executeTraced(context.Background(), tracer, logger, root, []string{"poll", "--config", "/nonexistent"}, false)
+		code := executeTraced(context.Background(), tracer, logger, root,
+			[]string{"poll", "--config", "/nonexistent"}, false, "")
 		Expect(code).To(Equal(1))
 
 		spans := recorder.Ended()

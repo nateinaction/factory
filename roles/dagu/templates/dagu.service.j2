@@ -11,6 +11,12 @@ Group={{ dagu_user }}
 WorkingDirectory={{ dagu_home }}
 Environment=HOME={{ dagu_home }}
 Environment=PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+{% if factory_foreman_otlp_endpoint | length > 0 %}
+# Foreman exports to this host's collector. The factory half gets the same values from start, which
+# keeps them across sudo by name (roles/agent/templates/dagu-agent.sudoers.j2).
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT={{ factory_foreman_otlp_endpoint }}
+Environment=OTEL_SERVICE_NAME={{ factory_foreman_otel_service_name }}
+{% endif %}
 {% if dagu_mode == 'server' %}
 # Bound to localhost; tailscale serve exposes the UI and the coordinator. Change the host deliberately.
 ExecStart=/usr/local/bin/dagu start-all --host {{ dagu_host }} --port {{ dagu_port }} --coordinator.host 127.0.0.1 --coordinator.advertise {{ hostvars[groups["dagu_server"][0]].ansible_host }} --coordinator.port {{ dagu_coordinator_port }}

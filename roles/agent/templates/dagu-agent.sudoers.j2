@@ -3,8 +3,10 @@ Defaults:{{ dagu_user }} secure_path="/nix/var/nix/profiles/default/bin:/usr/loc
 # The dagu run id is the factory half's too: it records the run's transition markers before the retro,
 # and start records the same ones afterwards. It names a run; it grants nothing.
 # sudo resets the environment, so the trace context start hands the factory half is kept by name like
-# the run id: it only links the two halves of one run's trace.
-Defaults:{{ dagu_user }} env_keep += "DAG_RUN_ID TRACEPARENT"
+# the run id: it only links the two halves of one run's trace. The OTEL_* names are the export
+# settings, which are telemetry and never a FACTORY_* setting: no variable here can point the factory
+# half at another configuration.
+Defaults:{{ dagu_user }} env_keep += "DAG_RUN_ID TRACEPARENT OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME"
 # One command, as one user: foreman run, and nothing else. sudoers cannot count or constrain the
 # arguments, so the trailing wildcard is unavoidable; foreman itself refuses everything under sudo
 # except the verb `run` followed by exactly three positional arguments, the agent role, repository

@@ -154,6 +154,7 @@ func addSettingsFlags(fs *pflag.FlagSet) {
 	fs.String("token-helper", "", "the GitHub App token helper")
 	fs.String("dagu", "", "the dagu binary")
 	fs.String("dag-prefix", "", "prefix of an agent role's dagu DAG")
+	fs.String("telemetry-url", "", "the telemetry backend's trace API, which status reads usage from")
 }
 
 // pollCommand is `foreman poll`: claim up to each agent role's free run capacity and queue the runs.

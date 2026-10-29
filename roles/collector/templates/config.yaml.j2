@@ -1,6 +1,7 @@
 # {{ ansible_managed }}
-# Receives foreman's OTLP on loopback, keeps only allowlisted attributes, derives run counts and
-# durations from spans, and forwards to the telemetry backend once one is named.
+# Receives foreman's OTLP on loopback, ships the run diagnostics dagu writes, keeps only allowlisted
+# attributes, derives run counts and durations from spans, and forwards to the telemetry backend once
+# one is named.
 receivers:
   otlp:
     protocols:
@@ -24,6 +25,38 @@ receivers:
               source_labels: [__name__]
               regex: "{{ factory_host_health_metrics | join('|') }}"
 {% endif %}
+{% if factory_dagu_logs_dir | length > 0 %}
+  # Foreman's diagnostics and security events are on the DAG step's standard error, which dagu writes
+  # under its logs directory as one JSON record per line. The record carries the trace id start hands
+  # the factory half, so a run's diagnostics can be found from its trace id. The collector's unit
+  # grants CAP_DAC_READ_SEARCH, because dagu writes these files 0600.
+  filelog/foreman:
+    include:
+      - {{ factory_dagu_logs_dir }}/factory-*/dag-run_*/*.err
+    start_at: end
+    include_file_path: true
+    storage: file_storage/offsets
+    operators:
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999999999Z07:00"
+        severity:
+          parse_from: attributes.level
+      # The record's trace_id and span_id become the log record's own trace context, which is what
+      # Loki stores so Tempo can link a trace to its diagnostics.
+      - type: trace_parser
+        trace_id:
+          parse_from: attributes.trace_id
+        span_id:
+          parse_from: attributes.span_id
+      - type: move
+        from: attributes.msg
+        to: body
+{% endif %}
 
 processors:
   memory_limiter:
@@ -31,12 +64,33 @@ processors:
     limit_mib: {{ factory_collector_memory_limit_mib }}
   # Every metric names the host that produced it, so the dashboard joins a run's duration to that
   # host's health. The inventory name is the OS hostname base sets, which a run's span also carries.
+  # Host health's own labels are generic Prometheus names (mountpoint, kind, state), so they are
+  # renamed into the factory namespace: the redaction allowlist then admits only host health's own
+  # labels, and an unrelated new attribute called "state" is still dropped.
   transform/host:
     error_mode: ignore
     metric_statements:
       - context: resource
         statements:
           - set(resource.attributes["host.name"], "{{ inventory_hostname }}")
+      - context: datapoint
+        conditions:
+          - metric.name == "factory_host_throttled"
+        statements:
+          - set(datapoint.attributes["factory.host_health.kind"], datapoint.attributes["kind"])
+          - set(datapoint.attributes["factory.host_health.state"], datapoint.attributes["state"])
+          - delete_key(datapoint.attributes, "kind")
+          - delete_key(datapoint.attributes, "state")
+      - context: datapoint
+        conditions:
+          - metric.name == "node_filesystem_size_bytes" or metric.name == "node_filesystem_avail_bytes"
+        statements:
+          - set(datapoint.attributes["factory.host_health.mountpoint"], datapoint.attributes["mountpoint"])
+          - set(datapoint.attributes["factory.host_health.device"], datapoint.attributes["device"])
+          - set(datapoint.attributes["factory.host_health.fstype"], datapoint.attributes["fstype"])
+          - delete_key(datapoint.attributes, "mountpoint")
+          - delete_key(datapoint.attributes, "device")
+          - delete_key(datapoint.attributes, "fstype")
   # Anything not in allowed_keys is redacted, so a new attribute is dropped until it is added to
   # factory_collector_allowed_attributes. summary: info logs which keys were dropped, never values.
   redaction:
@@ -99,18 +153,30 @@ exporters:
       max_elapsed_time: 0s
 {% endif %}
 
-{% if factory_collector_backend_host | length > 0 %}
 extensions:
-  file_storage/queue:
-    directory: /var/lib/otelcol/queue
-    # StateDirectory makes /var/lib/otelcol; the queue below it must exist before the collector
+{% if factory_dagu_logs_dir | length > 0 %}
+  # The filelog receiver's read positions, so a collector restart resumes rather than reshipping.
+  file_storage/offsets:
+    directory: {{ factory_collector_state_dir }}/offsets
+    # StateDirectory makes the parent; the offsets directory below it must exist before the collector
     # starts, or it refuses the config and crash-loops.
     create_directory: true
-
 {% endif %}
-service:
 {% if factory_collector_backend_host | length > 0 %}
-  extensions: [file_storage/queue]
+  file_storage/queue:
+    directory: {{ factory_collector_state_dir }}/queue
+    create_directory: true
+{% endif %}
+
+service:
+{% if factory_dagu_logs_dir | length > 0 or factory_collector_backend_host | length > 0 %}
+  extensions:
+{% if factory_dagu_logs_dir | length > 0 %}
+    - file_storage/offsets
+{% endif %}
+{% if factory_collector_backend_host | length > 0 %}
+    - file_storage/queue
+{% endif %}
 {% endif %}
   telemetry:
     metrics:
@@ -125,6 +191,6 @@ service:
       processors: [memory_limiter, transform/host, redaction, batch]
       exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/metrics{% endif %}]
     logs:
-      receivers: [otlp]
+      receivers: [otlp{% if factory_dagu_logs_dir | length > 0 %}, filelog/foreman{% endif %}]
       processors: [memory_limiter, redaction, batch]
       exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/logs{% endif %}]

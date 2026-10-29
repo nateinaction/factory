@@ -13,9 +13,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
-	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
@@ -23,6 +21,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/security"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -157,20 +156,12 @@ func (d Deps) log() *slog.Logger {
 
 // tracer returns d's tracer. A Deps built without one traces nowhere.
 func (d Deps) tracer() trace.Tracer {
-	if d.Tracer == nil {
-		return tracenoop.NewTracerProvider().Tracer("")
-	}
-
-	return d.Tracer
+	return telemetry.TracerOr(d.Tracer)
 }
 
 // meter returns d's meter. A Deps built without one records nowhere.
 func (d Deps) meter() metric.Meter {
-	if d.Meter == nil {
-		return metricnoop.NewMeterProvider().Meter("")
-	}
-
-	return d.Meter
+	return telemetry.MeterOr(d.Meter)
 }
 
 // runID is the id transition markers record: the dagu run's id, or a placeholder outside dagu.

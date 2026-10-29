@@ -46,6 +46,10 @@ type Settings struct {
 	// FactoryRepo is the Ansible role config's factory repository, where a public repository's ready
 	// skill or factory group is filed. The edge copies it here so a run can file a promoted issue.
 	FactoryRepo string `mapstructure:"-"`
+	// TelemetryURL is the telemetry backend's trace API (Tempo's HTTP endpoint). `status` reads a
+	// run's usage from the run's root span there when it is set, because a worker's local record is
+	// not visible from the server. Empty reads only the local record.
+	TelemetryURL string `mapstructure:"telemetry-url"`
 }
 
 // SettingsViper returns the settings source: the host layout as defaults, overridden by FACTORY_*

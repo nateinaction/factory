@@ -41,17 +41,6 @@ const (
 	RefusedBadToken Outcome = "refused_bad_token"
 )
 
-// The output rejection outcomes: the class of problem the file carried.
-const (
-	// OutputFactoryMarker is a file that carries a factory marker: an attempt to forge a state
-	// transition or a review.
-	OutputFactoryMarker Outcome = "factory_marker"
-	// OutputInvalid is a file that is readable but does not fit its shape.
-	OutputInvalid Outcome = "invalid_output"
-	// OutputUnreadable is a file foreman could not read at all.
-	OutputUnreadable Outcome = "unreadable_output"
-)
-
 // The dashboard command outcomes.
 const (
 	// CommandByNonWriter is a command from a login that may not write to the repository.
@@ -66,6 +55,9 @@ const (
 	// RunStepCap is a run that reached its step cap, which fails it and is never retried.
 	RunStepCap Outcome = "step_cap"
 )
+
+// A rejected output's outcome is workflow.OutputProblem's own value, so the two packages share one
+// set of values and a rejection needs no bridge that could fall through.
 
 // Scope returns log carrying the run every event it emits belongs to.
 func Scope(log *slog.Logger, agentRole, repository string, issue int) *slog.Logger {

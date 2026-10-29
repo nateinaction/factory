@@ -137,6 +137,21 @@ var _ = Describe("security events", func() {
 		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedNotRoutable: 2}))
 	})
 
+	It("refuses a sandboxed run the collector's loopback OTLP address", func() {
+		// srt sends the model's egress through this proxy and blocks it elsewhere, so a model asking
+		// for the host's collector (factory_collector_http_port, 4318) is refused here, before a dial.
+		p, logged := loggedProxy(policy(), "", gateway{
+			resolve: staticResolver{netip.MustParseAddr("127.0.0.1")}, dial: publicGateway.dial,
+		})
+
+		_, conn := connect(p.Address(), "127.0.0.1:4318")
+		_ = conn.Close() // test cleanup
+
+		expectOne(logged, string(security.RefusedNotRoutable), "127.0.0.1")
+		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedNotRoutable: 1}))
+		Expect(p.Domains()).NotTo(ContainElement("127.0.0.1"))
+	})
+
 	It("reports a tunnel refused at the limit, and lists the host as refused", func() {
 		p, logged := loggedProxy(policy(), "", publicGateway)
 

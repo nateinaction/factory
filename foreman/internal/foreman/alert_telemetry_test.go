@@ -6,6 +6,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -57,11 +58,11 @@ var _ = Describe("alert telemetry", func() {
 		return rm
 	}
 
-	It("records a security event by agent role, repository, event and outcome, never its issue", func() {
+	It("records a security event by agent role, repository, issue, event and outcome", func() {
 		repo, err := workflow.ParseRepo("o/r")
 		Expect(err).NotTo(HaveOccurred())
 
-		emitStepCap(context.Background(), deps, workflow.Implementer, repo, 5,
+		emitStepCap(context.Background(), deps, newAlertInstruments(deps), workflow.Implementer, repo, 5,
 			&opencode.ModelError{Kind: opencode.FailStepCap, Attempts: 1})
 
 		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
@@ -70,10 +71,35 @@ var _ = Describe("alert telemetry", func() {
 		point, ok := pointWith(points,
 			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
 			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, 5),
 			attribute.String(telemetry.AttrEvent, security.EventRunCapped),
 			attribute.String(telemetry.AttrOutcome, string(security.RunStepCap)),
 		)
-		Expect(ok).To(BeTrue(), "the point carries the run's role, repository, event and outcome")
+		Expect(ok).To(BeTrue(), "the point carries the run's role, repository, issue, event and outcome")
+		Expect(point.Value).To(Equal(int64(1)))
+	})
+
+	It("carries the trace that raised a security event, so its alert links straight to it", func() {
+		repo, err := workflow.ParseRepo("o/r")
+		Expect(err).NotTo(HaveOccurred())
+
+		tracer := sdktrace.NewTracerProvider().Tracer("test")
+		ctx, span := tracer.Start(context.Background(), telemetry.RootSpanName("run"))
+		DeferCleanup(span.End)
+
+		newAlertInstruments(deps).securityEvent(
+			ctx, workflow.Implementer, repo, 5, security.EventOutputRejected, security.Outcome(workflow.OutputFactoryMarker),
+		)
+
+		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
+		Expect(points).To(HaveLen(1))
+
+		point, ok := pointWith(points,
+			attribute.String(telemetry.AttrTraceID, span.SpanContext().TraceID().String()),
+			attribute.Int(telemetry.AttrIssue, 5),
+			attribute.String(telemetry.AttrOutcome, string(workflow.OutputFactoryMarker)),
+		)
+		Expect(ok).To(BeTrue(), "the point carries the trace that raised it")
 		Expect(point.Value).To(Equal(int64(1)))
 	})
 
@@ -151,6 +177,7 @@ var _ = Describe("run alert telemetry", func() {
 		notRoutable, ok := pointWith(points,
 			attribute.String(telemetry.AttrEvent, security.EventEgressRefused),
 			attribute.String(telemetry.AttrOutcome, string(security.RefusedNotRoutable)),
+			attribute.Int(telemetry.AttrIssue, 5),
 		)
 		Expect(ok).To(BeTrue())
 		Expect(notRoutable.Value).To(Equal(int64(1)))
@@ -158,6 +185,7 @@ var _ = Describe("run alert telemetry", func() {
 		badToken, ok := pointWith(points,
 			attribute.String(telemetry.AttrEvent, security.EventKeyProxyRefused),
 			attribute.String(telemetry.AttrOutcome, string(security.RefusedBadToken)),
+			attribute.Int(telemetry.AttrIssue, 5),
 		)
 		Expect(ok).To(BeTrue())
 		Expect(badToken.Value).To(Equal(int64(2)))
