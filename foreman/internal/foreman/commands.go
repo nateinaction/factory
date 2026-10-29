@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
@@ -17,6 +18,9 @@ import (
 
 // MaxAssignedRepos bounds how many assigned repositories one poll looks at.
 const MaxAssignedRepos = 200
+
+// supervisorGitRuns is how many git ceilings the supervisor adds around a run: the clone and the push.
+const supervisorGitRuns = 2
 
 // mintToken asks the helper for a token of the agent role's own App, scoped to the repository.
 // There is no fallback: if this App can't mint, no other App's token stands in for it.
@@ -187,12 +191,12 @@ func claimAndEnqueue(ctx context.Context, d Deps, c github.Client, repo string, 
 var errNoBehaviour = errors.New("agent role has no behaviour yet")
 
 // Start runs on the worker: it hands the factory user a token, runs the agent role, and records the outcome.
-func Start(ctx context.Context, d Deps, role workflow.Role, repo string, number int) (int, error) {
+func Start(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) (int, error) {
 	switch role {
 	case workflow.Implementer:
-		return startImplementer(ctx, d, repo, number)
+		return startImplementer(ctx, d, cfg, repo, number)
 	case workflow.Reviewer:
-		return startReviewer(ctx, d, repo, number)
+		return startReviewer(ctx, d, cfg, repo, number)
 	case workflow.Planner, workflow.Researcher, workflow.Curator:
 		return 1, fmt.Errorf("%s: %w", role, errNoBehaviour)
 	}
@@ -201,8 +205,8 @@ func Start(ctx context.Context, d Deps, role workflow.Role, repo string, number 
 }
 
 // startImplementer implements the issue, then queues it for review or fails it.
-func startImplementer(ctx context.Context, d Deps, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, workflow.Implementer, repo, number)
+func startImplementer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Implementer, repo, number)
 	if code == 0 {
 		return 0, finishAs(ctx, d, workflow.Implementer, repo, number, workflow.LabelWorking, workflow.LabelReviewReady,
 			"The agent finished; see the linked pull request. Queued for review.")
@@ -213,8 +217,8 @@ func startImplementer(ctx context.Context, d Deps, repo string, number int) (int
 }
 
 // startReviewer reviews the issue's pull request and routes the issue by what the review found.
-func startReviewer(ctx context.Context, d Deps, repo string, number int) (int, error) {
-	code := factoryExit(ctx, d, workflow.Reviewer, repo, number)
+func startReviewer(ctx context.Context, d Deps, cfg config.Config, repo string, number int) (int, error) {
+	code := factoryExit(ctx, d, cfg, workflow.Reviewer, repo, number)
 	dst := workflow.LabelFailed
 	text := "The review failed. Check the dagu run log, then re-apply `ready-for-agent-review` to retry."
 
@@ -270,8 +274,8 @@ func finishAs(ctx context.Context, d Deps, role workflow.Role, repo string, numb
 
 // factoryExit is the exit code of `foreman run <role> <repo> <n>` as the factory user, with the token file
 // in place. It is -1 when the run could not be started: that is logged, and the issue must not stay claimed.
-func factoryExit(ctx context.Context, d Deps, role workflow.Role, repo string, number int) int {
-	code, err := runAsFactory(ctx, d, role, repo, number)
+func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int) int {
+	code, err := runAsFactory(ctx, d, cfg, role, repo, number)
 	if err != nil {
 		d.log().Error("run as factory failed", "role", role, "repo", repo, "issue", number, "error", err)
 		return -1
@@ -281,8 +285,11 @@ func factoryExit(ctx context.Context, d Deps, role workflow.Role, repo string, n
 }
 
 // runAsFactory writes the token where the factory user can read it, runs the factory half, and removes
-// the token.
-func runAsFactory(ctx context.Context, d Deps, role workflow.Role, repo string, number int) (code int, err error) {
+// the token. The supervisor gets the agent role's deadline plus its retro's, so foreman's own
+// enforcement fires first and this ceiling only catches a factory half that never returns.
+func runAsFactory(
+	ctx context.Context, d Deps, cfg config.Config, role workflow.Role, repo string, number int,
+) (code int, err error) {
 	token, err := d.mintToken(ctx, role, repo)
 	if err != nil {
 		return 0, err
@@ -300,9 +307,11 @@ func runAsFactory(ctx context.Context, d Deps, role workflow.Role, repo string, 
 		}
 	}()
 
+	ceiling := cfg.Agents[string(role)].Deadline() + cfg.Retro.Deadline() + supervisorGitRuns*GitTimeout
+
 	_, runErr := d.Runner.Run(ctx, proc.Cmd{
 		Argv:    []string{"sudo", "-n", "-u", "factory", d.Settings.Self, "run", string(role), repo, strconv.Itoa(number)},
-		Timeout: AgentTimeout + 2*GitTimeout,
+		Timeout: ceiling,
 	})
 
 	var ee *proc.ExitError

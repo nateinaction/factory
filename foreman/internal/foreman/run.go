@@ -21,11 +21,12 @@ import (
 // Run is the factory half, run as the factory user: it works the issue as the agent role. For the
 // Reviewer the code is the verdict (workflow.ReviewClean, ReviewFindings, ReviewExhausted).
 func Run(
-	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, number int,
+	ctx context.Context, d Deps, role workflow.Role, repo string, agent config.AgentConfig, retro config.Budget,
+	number int,
 ) (int, error) {
 	switch role {
 	case workflow.Implementer:
-		if err := runImplementer(ctx, d, repo, agent, number); err != nil {
+		if err := runImplementer(ctx, d, repo, agent, retro, number); err != nil {
 			return 1, err
 		}
 
@@ -214,13 +215,15 @@ func reported(u openrouter.Usage) opencode.Usage {
 
 // runImplementer works the issue in a fresh state directory and logs the run's one usage line, even
 // when the run failed.
-func runImplementer(ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int) error {
+func runImplementer(
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int,
+) error {
 	var usage opencode.Usage
 
 	err := withState(d.Settings.WorkRoot, workflow.Implementer, number, func(db string) error {
 		var err error
 
-		usage, err = implement(ctx, d, repo, agent, number, db)
+		usage, err = implement(ctx, d, repo, agent, retro, number, db)
 
 		return err
 	})
@@ -231,7 +234,7 @@ func runImplementer(ctx context.Context, d Deps, repo string, agent config.Agent
 
 // implement clones, runs the model, pushes, opens or updates the pull request, and writes the retro.
 func implement(
-	ctx context.Context, d Deps, repo string, agent config.AgentConfig, number int, db string,
+	ctx context.Context, d Deps, repo string, agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (opencode.Usage, error) {
 	sec, err := readSecrets(d.Settings, workflow.Implementer)
 	if err != nil {
@@ -239,14 +242,14 @@ func implement(
 	}
 
 	return d.withProxy(sec.openrouterKey, func(baseURL string) (opencode.Usage, error) {
-		return implementRun(ctx, d, sec, baseURL, repo, agent, number, db)
+		return implementRun(ctx, d, sec, baseURL, repo, agent, retro, number, db)
 	})
 }
 
 // implementRun is the Implementer's work, with its proxy already up.
 func implementRun(
 	ctx context.Context, d Deps, sec secrets, baseURL, repo string,
-	agent config.AgentConfig, number int, db string,
+	agent config.AgentConfig, retro config.Budget, number int, db string,
 ) (opencode.Usage, error) {
 	j, err := loadJob(ctx, d, sec, baseURL, repo, agent, number, db)
 	if err != nil {
@@ -276,7 +279,8 @@ func implementRun(
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback), Timeout: AgentTimeout,
+		Role: workflow.Implementer, Prompt: prompt.Implementer(docs, repo, j.issue, feedback),
+		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
 		return res.Usage, err
@@ -286,7 +290,7 @@ func implementRun(
 		return res.Usage, err
 	}
 	// The retro is best effort: the PR is already up, so a failed retro is logged, not fatal.
-	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session)
+	retroUsage, err := s.retro(ctx, j.c, repo, number, res.Session, retro)
 	if err != nil {
 		d.log().Warn("retro failed", "repo", repo, "issue", number, "error", err)
 	}
@@ -405,7 +409,7 @@ func openPR(
 
 // retro resumes the finished session, by its explicit id, for its retro and posts it on the retro ticket.
 func (s session) retro(
-	ctx context.Context, c github.Client, repo string, number int, session string,
+	ctx context.Context, c github.Client, repo string, number int, session string, budget config.Budget,
 ) (opencode.Usage, error) {
 	if session == "" {
 		return opencode.Usage{}, errors.New("the run reported no session to resume")
@@ -417,7 +421,8 @@ func (s session) retro(
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Implementer, Prompt: prompt.Retro(repo, number, out), Session: session, Timeout: RetroTimeout,
+		Role: workflow.Implementer, Prompt: prompt.Retro(repo, number, out), Session: session,
+		Timeout: budget.Deadline(), Steps: budget.Steps,
 	})
 	if err != nil {
 		return res.Usage, err
@@ -518,7 +523,8 @@ func reviewRun(
 	}
 
 	res, err := s.agent(ctx, opencode.Run{
-		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, paths.spec, paths.out), Timeout: ReviewTimeout,
+		Role: workflow.Reviewer, Prompt: prompt.Reviewer(docs, base, paths.spec, paths.out),
+		Timeout: agent.Deadline(), Steps: agent.Steps,
 	})
 	if err != nil {
 		return 1, res.Usage, err

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -76,10 +77,47 @@ var _ = Describe("the opencode adapter", func() {
 	It("keeps the Reviewer's state in memory", func() {
 		h.reviewerGH(nil)
 		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
-		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), 5)).Error().NotTo(HaveOccurred())
+		Expect(Run(context.Background(), h.deps, workflow.Reviewer, "o/r", testAgent(), testRetro(), 5)).
+			Error().NotTo(HaveOccurred())
 		calls := h.opencodeCalls()
 		Expect(calls).To(HaveLen(1))
 		Expect(calls[0].Env).To(HaveKeyWithValue("OPENCODE_DB", ":memory:"))
+	})
+
+	It("gives the run the agent role's wall-clock deadline", func() {
+		agent := testAgent()
+		agent.DeadlineMinutes = 20
+		Expect(h.runImpl(agent)).Error().NotTo(HaveOccurred())
+		Expect(h.opencodeCalls()[0].Timeout).To(beNear(20 * time.Minute))
+	})
+
+	It("gives the Reviewer its own deadline", func() {
+		h.reviewerGH(nil)
+		h.opencodeWrites("code-review", h.reviewOut(), cleanReview)
+
+		agent := testAgent()
+		agent.DeadlineMinutes = 30
+		_, err := Run(context.Background(), h.deps, workflow.Reviewer, "o/r", agent, testRetro(), 5)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(h.opencodeCalls()[0].Timeout).To(beNear(30 * time.Minute))
+	})
+
+	It("fails the run at the agent role's step cap, without a retry", func() {
+		h.answerOpencode(stepsStream(3))
+
+		agent := testAgent()
+		agent.Steps = 3
+		_, err := h.runImpl(agent)
+		Expect(err).To(MatchError(ContainSubstring("step cap")))
+		Expect(h.opencodeCalls()).To(HaveLen(1), "a step cap is not retried")
+	})
+
+	It("keeps a run that stays below its step cap", func() {
+		h.answerOpencode(stepsStream(3))
+
+		agent := testAgent()
+		agent.Steps = 4
+		Expect(h.runImpl(agent)).Error().NotTo(HaveOccurred())
 	})
 
 	DescribeTable("passes compaction per agent role as inline config",
@@ -129,6 +167,12 @@ var _ = Describe("the opencode adapter", func() {
 		h.answerOpencode(errStream("APIError", 429), errStream("APIError", 429), okStream("ses_1"))
 		Expect(h.runImpl(testAgent())).To(BeZero())
 		Expect(h.sleeps).To(HaveLen(2))
+	})
+
+	It("shows a permission denial in the log", func() {
+		h.answerOpencode(`{"type":"permission","sessionID":"ses_1","permission":"bash","action":"deny"}` + "\n")
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`), "a denial must reach the dagu run log")
 	})
 
 	It("removes the key from what it echoes to the log", func() {
