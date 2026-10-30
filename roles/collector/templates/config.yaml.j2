@@ -40,6 +40,10 @@ receivers:
       - type: json_parser
         parse_from: body
         parse_to: attributes
+        # A line that is not a JSON record is dropped, never shipped as raw text: the model process's
+        # standard error is logged at debug through the collector's allowlist, but any other writer on
+        # dagu's stderr must not be able to leak private text into Loki.
+        on_error: drop
         timestamp:
           parse_from: attributes.time
           layout_type: gotime
