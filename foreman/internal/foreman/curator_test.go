@@ -228,6 +228,7 @@ var _ = Describe("the Curator", func() {
 		factory := h.factoryRepo()
 		h.deps.Settings.FactoryRepo = factory
 		h.installed[workflow.Curator] = append(h.installed[workflow.Curator], factory)
+		h.writeFactoryToken(workflow.Curator)
 
 		number := dashboard(workflow.DashboardState{})
 

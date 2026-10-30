@@ -51,6 +51,13 @@ func Run(
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
+	handed, err := d.readHandedTokens(role, ref.Repo)
+	if err != nil {
+		return 1, err
+	}
+
+	d.handed = handed
+
 	r := run{
 		d: d, role: role, entry: entry,
 		spec:   runSpec{ref: ref, agent: agent, retro: retro, limit: limit},

@@ -67,7 +67,7 @@ var _ = Describe("Start", func() {
 					"from=factory:implementing to=factory:review sha= -->"))
 			Expect(h.gh.Summary()).To(
 				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:implementing"), "did not release the claim")
-			Expect(h.runner.find("github-app-token")).To(HaveLen(2), "want a fresh token after the run")
+			Expect(h.runner.find("github-app-token")).To(HaveLen(3), "want a fresh token after the run")
 			h.expectLeakFree("minted-token")
 		})
 
@@ -277,11 +277,11 @@ var _ = Describe("Start", func() {
 			Expect(start(workflow.Planner)).Error().NotTo(HaveOccurred())
 
 			mints := h.runner.find("app-token", " token ")
-			Expect(mints).To(HaveLen(1), "a successful round needs no second transition")
+			Expect(mints).To(HaveLen(2), "a successful round needs no second transition")
 
 			for _, c := range mints {
 				Expect(appOf(c)).To(Equal(string(workflow.Planner)))
-				Expect(c.Argv[len(c.Argv)-2:]).To(Equal([]string{"--repo", "o/r"}))
+				Expect(c.Argv).To(ContainElements("--repo", "o/r"))
 			}
 
 			h.expectAuthorizedAs(workflow.Planner)
@@ -312,11 +312,11 @@ var _ = Describe("Start", func() {
 				Expect(start(role)).Error().NotTo(HaveOccurred())
 
 				mints := h.runner.find("app-token", " token ")
-				Expect(mints).To(HaveLen(2))
+				Expect(mints).To(HaveLen(3))
 
 				for _, c := range mints {
 					Expect(appOf(c)).To(Equal(string(role)))
-					Expect(c.Argv[len(c.Argv)-2:]).To(Equal([]string{"--repo", "o/r"}))
+					Expect(c.Argv).To(ContainElements("--repo", "o/r"))
 				}
 
 				h.expectAuthorizedAs(role)

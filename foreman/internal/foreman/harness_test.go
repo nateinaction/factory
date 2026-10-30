@@ -589,6 +589,26 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 // writeToken leaves a token for the factory half of the agent role.
 func (h *harness) writeToken(role workflow.Role, token string) {
 	Expect(os.WriteFile(h.deps.Settings.TokenPath(role, h.deps.RunID), []byte(token), 0o640)).To(Succeed())
+	Expect(os.WriteFile(h.deps.Settings.ReadOnlyTokenPath(role, h.deps.RunID),
+		[]byte("read-only-token-"+string(role)), 0o640)).To(Succeed())
+}
+
+// writeFactoryToken leaves the Curator's token for the factory repository, as start does.
+func (h *harness) writeFactoryToken(role workflow.Role) {
+	Expect(os.WriteFile(h.deps.Settings.TokenPath(role, h.deps.RunID)+".factory",
+		[]byte("minted-token-"+string(role)), 0o640)).To(Succeed())
+}
+
+// denyMinting makes every call to the token helper fail, as it does for the factory user: only the
+// dagu user can read the Apps' keys, so the factory half works from the tokens start leaves it.
+func (h *harness) denyMinting() {
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if strings.Contains(joined(c), "github-app-token") {
+			return "", &proc.ExitError{Program: "github-app-token", Code: 13}
+		}
+
+		return base(c)
+	})
 }
 
 // queue creates the issues a poll of o/r should find: each label maps to the issues carrying it.

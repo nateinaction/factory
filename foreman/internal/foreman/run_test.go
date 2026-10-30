@@ -147,10 +147,7 @@ var _ = Describe("Run", func() {
 			Expect(oc).NotTo(BeEmpty())
 			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-implementer"))
 
-			mint := h.runner.find("app-token", " token ", "--read-only")
-			Expect(mint).To(HaveLen(1))
-			Expect(appOf(mint[0])).To(Equal(string(workflow.Implementer)))
-			Expect(mint[0].Argv[len(mint[0].Argv)-3:]).To(Equal([]string{"--repo", "o/r", "--read-only"}))
+			Expect(h.runner.find("app-token")).To(BeEmpty(), "the factory half cannot mint; start hands it the token")
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
@@ -956,6 +953,15 @@ var _ = Describe("Run", func() {
 			h.installed[workflow.Researcher] = []string{"o/r"}
 			h.writeToken(workflow.Researcher, "repo-token\n")
 			h.researchTicket()
+		})
+
+		It("works from the tokens start left, for the factory user cannot mint", func() {
+			h.denyMinting()
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
+
+			Expect(run(workflow.Researcher)).To(BeZero())
+			Expect(h.runner.find("github-app-token")).To(BeEmpty())
 		})
 
 		It("reads the ticket's comments though the Researcher's App cannot read pull requests", func() {

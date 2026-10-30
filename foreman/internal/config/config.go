@@ -100,6 +100,12 @@ func (s Settings) TokenPath(role workflow.Role, runID string) string {
 	return filepath.Join(s.TokenDir, "gh-token-"+string(role)+"-"+runID)
 }
 
+// ReadOnlyTokenPath is the read-only token file of one agent role's run, beside TokenPath's. The factory
+// user cannot read the Apps' keys, so `start` leaves it both tokens for the run.
+func (s Settings) ReadOnlyTokenPath(role workflow.Role, runID string) string {
+	return filepath.Join(s.TokenDir, "gh-token-ro-"+string(role)+"-"+runID)
+}
+
 // Budget is a run's step cap and wall-clock deadline: one agent role's run, or a retro.
 type Budget struct {
 	// Steps is opencode's step cap and foreman's count: reaching it fails the run.

@@ -110,6 +110,9 @@ type Deps struct {
 	Egress func(
 		ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
 	) (EgressProxy, error)
+	// handed is set in the factory half: the tokens `start` left for the run, which are the only ones it
+	// can have, since only the dagu user reads the Apps' keys.
+	handed *handedTokens
 }
 
 // client returns a GitHub client for token.
@@ -174,6 +177,16 @@ func (d Deps) tokenPath(role workflow.Role) (string, error) {
 	}
 
 	return d.Settings.TokenPath(role, id), nil
+}
+
+// readOnlyTokenPath is the run's own read-only token file, vetted as tokenPath is.
+func (d Deps) readOnlyTokenPath(role workflow.Role) (string, error) {
+	id := d.runID()
+	if !validRunID.MatchString(id) {
+		return "", fmt.Errorf("token file: run id %q is not a plain name", id)
+	}
+
+	return d.Settings.ReadOnlyTokenPath(role, id), nil
 }
 
 // writeLine writes text and a newline.

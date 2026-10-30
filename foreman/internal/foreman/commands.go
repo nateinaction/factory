@@ -41,6 +41,10 @@ const (
 // GitHub but never write to it. There is no fallback: if this App can't mint, no other App's token
 // stands in for it.
 func (d Deps) mint(ctx context.Context, role workflow.Role, repo workflow.Repo, readOnly bool) (string, error) {
+	if d.handed != nil {
+		return d.handed.token(role, repo, readOnly)
+	}
+
 	args := []string{d.Settings.TokenHelper, "token", "--app", string(role), "--repo", repo.String()}
 	if readOnly {
 		args = append(args, "--read-only")
@@ -1314,6 +1318,62 @@ func factoryExit(ctx context.Context, d Deps, cfg config.Config, role workflow.R
 	return code
 }
 
+// handTokens mints the run's tokens and leaves them where the factory user can read them: its own
+// App's writable and read-only tokens for the repository, and for the Curator its writable token for
+// the factory repository. The factory user cannot read the Apps' keys, so these are all it will have.
+// remove deletes whatever was left; it is safe to call when handTokens failed part way, and again.
+func handTokens(
+	ctx context.Context, d Deps, role workflow.Role, repo workflow.Repo,
+) (remove func() error, err error) {
+	var left []string
+
+	// The tokens also die within the hour; don't leave the files lying around.
+	remove = func() error {
+		var errs error
+
+		for _, path := range left {
+			if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				errs = errors.Join(errs, rmErr)
+			}
+		}
+
+		return errs
+	}
+
+	leave := func(path func(workflow.Role) (string, error), target workflow.Repo, readOnly bool) error {
+		token, err := d.mint(ctx, role, target, readOnly)
+		if err != nil {
+			return err
+		}
+
+		file, err := path(role)
+		if err != nil {
+			return err
+		}
+
+		left = append(left, file)
+
+		return writeTokenFile(file, token)
+	}
+
+	steps := []func() error{
+		func() error { return leave(d.tokenPath, repo, writableToken) },
+		func() error { return leave(d.readOnlyTokenPath, repo, readOnlyToken) },
+	}
+
+	if factory, ok := d.factoryRepoFor(role, repo); ok {
+		steps = append(steps, func() error { return leave(d.factoryTokenPath, factory, writableToken) })
+	}
+
+	for _, step := range steps {
+		if err := step(); err != nil {
+			return remove, errors.Join(err, remove())
+		}
+	}
+
+	return remove, nil
+}
+
 // runAsFactory writes the token where the factory user can read it, runs the factory half, and removes
 // the token. The supervisor gets the agent role's deadline plus its retro's, so foreman's own
 // enforcement fires first and this ceiling only catches a factory half that never returns.
@@ -1322,26 +1382,12 @@ func runAsFactory(
 ) (code int, err error) {
 	repo, number := ref.Repo, ref.Number
 
-	token, err := d.mint(ctx, role, repo, writableToken)
+	remove, err := handTokens(ctx, d, role, repo)
 	if err != nil {
 		return 0, err
 	}
 
-	path, err := d.tokenPath(role)
-	if err != nil {
-		return 0, err
-	}
-
-	if err := writeTokenFile(path, token); err != nil {
-		return 0, err
-	}
-
-	defer func() {
-		// The token also dies within the hour; don't leave it lying around.
-		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			err = errors.Join(err, rmErr)
-		}
-	}()
+	defer func() { err = errors.Join(err, remove()) }()
 
 	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
