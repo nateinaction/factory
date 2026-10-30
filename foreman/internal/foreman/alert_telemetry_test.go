@@ -1,7 +1,10 @@
 package foreman
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -72,8 +75,39 @@ var _ = Describe("alert telemetry", func() {
 			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
 			attribute.String(telemetry.AttrRepo, "o/r"),
 			attribute.Int(telemetry.AttrIssue, 5),
-			attribute.String(telemetry.AttrEvent, security.EventRunCapped),
+			attribute.String(telemetry.AttrEvent, string(security.EventRunCapped)),
 			attribute.String(telemetry.AttrOutcome, string(security.RunStepCap)),
+		)
+		Expect(ok).To(BeTrue(), "the point carries the run's role, repository, issue, event and outcome")
+		Expect(point.Value).To(Equal(int64(1)))
+	})
+
+	It("raises a security event as a log record and a measurement in one call", func() {
+		var logged bytes.Buffer
+
+		newAlertInstruments(deps).securityEvent(
+			context.Background(), slog.New(slog.NewJSONHandler(&logged, nil)),
+			security.Run{Role: string(workflow.Implementer), Repository: "o/r", Issue: 5},
+			security.EventOutputRejected, security.Outcome(workflow.OutputFactoryMarker), "blocked.example",
+		)
+
+		var record map[string]any
+		Expect(json.Unmarshal(logged.Bytes(), &record)).To(Succeed(), "the call wrote no single log record")
+		Expect(record).To(HaveKeyWithValue("msg", security.Message))
+		Expect(record).To(HaveKeyWithValue("event", string(security.EventOutputRejected)))
+		Expect(record).To(HaveKeyWithValue("outcome", string(workflow.OutputFactoryMarker)))
+		Expect(record).To(HaveKeyWithValue("host", "blocked.example"))
+		Expect(record).To(HaveKeyWithValue("repository", "o/r"))
+
+		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
+		Expect(points).To(HaveLen(1), "the call recorded no measurement")
+
+		point, ok := pointWith(points,
+			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, 5),
+			attribute.String(telemetry.AttrEvent, string(security.EventOutputRejected)),
+			attribute.String(telemetry.AttrOutcome, string(workflow.OutputFactoryMarker)),
 		)
 		Expect(ok).To(BeTrue(), "the point carries the run's role, repository, issue, event and outcome")
 		Expect(point.Value).To(Equal(int64(1)))
@@ -88,7 +122,9 @@ var _ = Describe("alert telemetry", func() {
 		DeferCleanup(span.End)
 
 		newAlertInstruments(deps).securityEvent(
-			ctx, workflow.Implementer, repo, 5, security.EventOutputRejected, security.Outcome(workflow.OutputFactoryMarker),
+			ctx, slog.New(slog.DiscardHandler),
+			security.Run{Role: string(workflow.Implementer), Repository: repo.String(), Issue: 5},
+			security.EventOutputRejected, security.Outcome(workflow.OutputFactoryMarker), "",
 		)
 
 		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
@@ -110,10 +146,12 @@ var _ = Describe("alert telemetry", func() {
 
 		alerts := newAlertInstruments(deps)
 
-		alerts.runOutcome(context.Background(), workflow.Implementer, repo, opencode.OutcomeFailed)
+		run := security.Run{Role: string(workflow.Implementer), Repository: repo.String(), Issue: 5}
+
+		alerts.runOutcome(context.Background(), run, opencode.OutcomeFailed)
 
 		cost := 0.25
-		alerts.runCost(context.Background(), workflow.Implementer, repo, "m", &cost)
+		alerts.runCost(context.Background(), run, "m", &cost)
 
 		rm := collect()
 
@@ -131,7 +169,9 @@ var _ = Describe("alert telemetry", func() {
 		repo, err := workflow.ParseRepo("o/r")
 		Expect(err).NotTo(HaveOccurred())
 
-		newAlertInstruments(deps).runCost(context.Background(), workflow.Implementer, repo, "m", nil)
+		run := security.Run{Role: string(workflow.Implementer), Repository: repo.String()}
+
+		newAlertInstruments(deps).runCost(context.Background(), run, "m", nil)
 
 		Expect(floatPoints(collect(), telemetry.MetricRunCost)).To(BeEmpty())
 	})
@@ -176,7 +216,7 @@ var _ = Describe("run alert telemetry", func() {
 		Expect(points).To(HaveLen(2))
 
 		notRoutable, ok := pointWith(points,
-			attribute.String(telemetry.AttrEvent, security.EventEgressRefused),
+			attribute.String(telemetry.AttrEvent, string(security.EventEgressRefused)),
 			attribute.String(telemetry.AttrOutcome, string(security.RefusedNotRoutable)),
 			attribute.Int(telemetry.AttrIssue, 5),
 		)
@@ -184,7 +224,7 @@ var _ = Describe("run alert telemetry", func() {
 		Expect(notRoutable.Value).To(Equal(int64(1)))
 
 		badToken, ok := pointWith(points,
-			attribute.String(telemetry.AttrEvent, security.EventKeyProxyRefused),
+			attribute.String(telemetry.AttrEvent, string(security.EventKeyProxyRefused)),
 			attribute.String(telemetry.AttrOutcome, string(security.RefusedBadToken)),
 			attribute.Int(telemetry.AttrIssue, 5),
 		)

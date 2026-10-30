@@ -2,6 +2,7 @@ package foreman
 
 import (
 	"context"
+	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -67,72 +68,77 @@ func newAlertInstruments(d Deps) alertInstruments {
 	}
 }
 
-// securityEvent records one security event raised by the run working issue.
-func (a alertInstruments) securityEvent(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, issue int, event string, outcome security.Outcome,
-) {
-	a.securityEvents(ctx, role, repo, issue, event, outcome, 1)
+// securityRun is the run a security event raised here belongs to.
+func securityRun(role workflow.Role, repo workflow.Repo, number int) security.Run {
+	return security.Run{Role: string(role), Repository: repo.String(), Issue: number}
 }
 
-// securityEvents records n refused requests of one event and outcome, raised by one run. The issue
-// is a label on purpose: #132's acceptance criterion is that a per-event alert names the issue it
-// needs a human to look at, and a Prometheus rule can template only labels. This metric and the
+// securityEvent raises one security event a run raised: it writes the event's log record and counts
+// it in the security metric, so raising an event is one call and a new event is one constant and one
+// call. The host is the event's whole payload: nothing else the caller holds reaches either.
+func (a alertInstruments) securityEvent(
+	ctx context.Context, log *slog.Logger, run security.Run, event security.Event, outcome security.Outcome,
+	host string,
+) {
+	security.Emit(security.Scope(log, run), event, outcome, host)
+	a.securityEvents(ctx, run, event, outcome, 1)
+}
+
+// securityEvents records n refused requests of one event and outcome, raised by one run. It counts
+// without logging, because a proxy's tally logs each refusal it counted, within its own log limit. The
+// issue is a label on purpose: #132's acceptance criterion is that a per-event alert names the issue
+// it needs a human to look at, and a Prometheus rule can template only labels. This metric and the
 // reaped-run metric are the only two that carry it, and no metric carries a trace id: see
 // telemetry.AttrIssue.
 func (a alertInstruments) securityEvents(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, issue int, event string,
-	outcome security.Outcome, n int64,
+	ctx context.Context, run security.Run, event security.Event, outcome security.Outcome, n int64,
 ) {
 	if n <= 0 {
 		return
 	}
 
 	attrs := []attribute.KeyValue{
-		attribute.String(telemetry.AttrAgentRole, string(role)),
-		attribute.String(telemetry.AttrRepo, repo.String()),
-		attribute.String(telemetry.AttrEvent, event),
+		attribute.String(telemetry.AttrAgentRole, run.Role),
+		attribute.String(telemetry.AttrRepo, run.Repository),
+		attribute.String(telemetry.AttrEvent, string(event)),
 		attribute.String(telemetry.AttrOutcome, string(outcome)),
 	}
-	if issue > 0 {
-		attrs = append(attrs, attribute.Int(telemetry.AttrIssue, issue))
+	if run.Issue > 0 {
+		attrs = append(attrs, attribute.Int(telemetry.AttrIssue, run.Issue))
 	}
 
 	a.security.Add(ctx, n, metric.WithAttributes(attrs...))
 }
 
 // runOutcome records how one run ended.
-func (a alertInstruments) runOutcome(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, outcome opencode.Outcome,
-) {
+func (a alertInstruments) runOutcome(ctx context.Context, run security.Run, outcome opencode.Outcome) {
 	a.outcomes.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(telemetry.AttrAgentRole, string(role)),
-		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.String(telemetry.AttrAgentRole, run.Role),
+		attribute.String(telemetry.AttrRepo, run.Repository),
 		attribute.String(telemetry.AttrOutcome, string(outcome)),
 	))
 }
 
 // runCost records what the run's model calls cost. A cost no response reported records nothing.
-func (a alertInstruments) runCost(
-	ctx context.Context, role workflow.Role, repo workflow.Repo, model string, cost *float64,
-) {
+func (a alertInstruments) runCost(ctx context.Context, run security.Run, model string, cost *float64) {
 	if cost == nil || *cost <= 0 {
 		return
 	}
 
 	a.cost.Add(ctx, *cost, metric.WithAttributes(
-		attribute.String(telemetry.AttrAgentRole, string(role)),
-		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.String(telemetry.AttrAgentRole, run.Role),
+		attribute.String(telemetry.AttrRepo, run.Repository),
 		attribute.String(telemetry.AttrModel, model),
 	))
 }
 
 // runReaped records one dead run a poll called failed. The issue is a label, as it is on a security
 // event, so the dead-run alert can name the issue it moved to failed; no trace id is.
-func (a alertInstruments) runReaped(ctx context.Context, role workflow.Role, repo workflow.Repo, issue int) {
+func (a alertInstruments) runReaped(ctx context.Context, run security.Run) {
 	a.reaped.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(telemetry.AttrAgentRole, string(role)),
-		attribute.String(telemetry.AttrRepo, repo.String()),
-		attribute.Int(telemetry.AttrIssue, issue),
+		attribute.String(telemetry.AttrAgentRole, run.Role),
+		attribute.String(telemetry.AttrRepo, run.Repository),
+		attribute.Int(telemetry.AttrIssue, run.Issue),
 	))
 }
 
@@ -146,19 +152,17 @@ func (r run) recordAlerts(
 ) {
 	alerts := r.alerts
 
-	alerts.runOutcome(ctx, r.role, r.spec.ref.Repo, st.Outcome)
-	alerts.runCost(ctx, r.role, r.spec.ref.Repo, r.spec.agent.Model, usage.Cost)
+	run := securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number)
+
+	alerts.runOutcome(ctx, run, st.Outcome)
+	alerts.runCost(ctx, run, r.spec.agent.Model, usage.Cost)
 
 	for outcome, n := range egress {
-		alerts.securityEvents(
-			ctx, r.role, r.spec.ref.Repo, r.spec.ref.Number, security.EventEgressRefused, outcome, int64(n),
-		)
+		alerts.securityEvents(ctx, run, security.EventEgressRefused, outcome, int64(n))
 	}
 
 	for outcome, n := range key {
-		alerts.securityEvents(
-			ctx, r.role, r.spec.ref.Repo, r.spec.ref.Number, security.EventKeyProxyRefused, outcome, int64(n),
-		)
+		alerts.securityEvents(ctx, run, security.EventKeyProxyRefused, outcome, int64(n))
 	}
 }
 
