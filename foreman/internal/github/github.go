@@ -339,7 +339,7 @@ func PagedUpTo[T any](ctx context.Context, c Client, path string, maxPages int) 
 func (c Client) ListLabeled(ctx context.Context, repo workflow.Repo, label string) ([]workflow.Issue, error) {
 	q := url.Values{
 		stateParam: {StateOpen}, "labels": {label}, sortParam: {sortCreated},
-		directionParam: {Oldest}, "per_page": {fmt.Sprint(IssuesPerPage)},
+		directionParam: {Oldest}, "per_page": {strconv.Itoa(IssuesPerPage)},
 	}
 
 	var issues []workflow.Issue

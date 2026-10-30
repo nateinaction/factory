@@ -354,7 +354,7 @@ func (d Deps) token() (string, error) {
 		}
 
 		if token == "" {
-			return "", fmt.Errorf("mint proxy token: empty")
+			return "", errors.New("mint proxy token: empty")
 		}
 
 		return token, nil

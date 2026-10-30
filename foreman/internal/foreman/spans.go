@@ -46,6 +46,8 @@ func (r run) spans() stageSpans {
 
 // start opens a stage span named for the stage. The returned context carries the span, so a stage's
 // own steps nest under it.
+//
+//nolint:spancheck // the caller ends the returned span
 func (s stageSpans) start(
 	ctx context.Context, name string, attrs ...attribute.KeyValue,
 ) (context.Context, trace.Span) {

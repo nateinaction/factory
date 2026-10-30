@@ -8,6 +8,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -89,7 +90,7 @@ func startProxy(
 	logger *slog.Logger, g gateway,
 ) (*Proxy, error) {
 	if token == "" {
-		return nil, fmt.Errorf("egress proxy: a per-run token is required")
+		return nil, errors.New("egress proxy: a per-run token is required")
 	}
 
 	if err := proxy.Address("egress", addr); err != nil {

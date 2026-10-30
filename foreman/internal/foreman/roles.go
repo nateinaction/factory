@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
@@ -187,7 +188,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 				return outcome{err: err}
 			}
 
-			return outcome{retroKey: fmt.Sprint(commentID)}
+			return outcome{retroKey: strconv.FormatInt(commentID, 10)}
 		},
 	}, nil
 }

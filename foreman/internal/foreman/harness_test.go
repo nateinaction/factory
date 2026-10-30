@@ -1124,7 +1124,7 @@ func (h *harness) usageRecord(runID string) map[string]any {
 	path, err := usageRecordPath(h.deps.Settings.WorkRoot, runID)
 	Expect(err).NotTo(HaveOccurred())
 
-	raw, err := os.ReadFile(path) //nolint:gosec // a path the test names, under the harness's own work root
+	raw, err := os.ReadFile(path)
 	Expect(err).NotTo(HaveOccurred())
 
 	var m map[string]any

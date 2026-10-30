@@ -120,7 +120,7 @@ var _ = Describe("acceptance: srt filesystem", func() {
 		script := fmt.Sprintf("cat %s 2>/dev/null || echo hidden; echo writable > %s; cat %s",
 			secret, filepath.Join(runDir, "out"), filepath.Join(runDir, "out"))
 
-		out, err := exec.CommandContext( //nolint:gosec // the acceptance test runs the pinned backend
+		out, err := exec.CommandContext(
 			GinkgoT().Context(), srtBinary, "--settings", settings, "--", "sh", "-c", script,
 		).CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(out))
@@ -236,7 +236,7 @@ var _ = Describe("acceptance: two sandboxed runs at once", func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
-				out, err := exec.CommandContext( //nolint:gosec // the acceptance test runs the pinned backend
+				out, err := exec.CommandContext(
 					GinkgoT().Context(), srtBinary,
 					"--settings", j.settings, "--", "sh", "-c", j.script,
 				).CombinedOutput()
@@ -272,7 +272,7 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 		}
 
 		ctx := GinkgoT().Context()
-		version, err := exec.CommandContext(ctx, opencodeBinary, "--version").Output() //nolint:gosec // the pinned binary
+		version, err := exec.CommandContext(ctx, opencodeBinary, "--version").Output()
 		Expect(err).NotTo(HaveOccurred())
 
 		if strings.TrimSpace(string(version)) != pinnedOpenCodeVersion {
@@ -305,7 +305,7 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 		defer cancel()
 
 		cmd := exec.CommandContext(
-			ctx, srtBinary, //nolint:gosec // the acceptance test runs the pinned backend
+			ctx, srtBinary,
 			"--settings", settings, "--",
 			opencodeBinary, "run", "--agent", "implementer", "--format", "json", "Say OK",
 		)

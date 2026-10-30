@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -37,7 +36,7 @@ var _ = Describe("Start", func() {
 	// The SDK's error handler is process-wide and a late export can log after its spec ended, so the
 	// sink must not be shared (or read) across specs.
 	logger := func() *slog.Logger {
-		return slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		return slog.New(slog.DiscardHandler)
 	}
 
 	It("exports one root span to the OTLP endpoint, then flushes", func() {
@@ -81,6 +80,8 @@ var _ = Describe("Start", func() {
 		tel := telemetry.Start(context.Background(), logger())
 
 		_, span := tel.Tracer.Start(context.Background(), "x")
+		defer span.End()
+
 		Expect(span.SpanContext().IsValid()).To(BeFalse())
 	})
 
@@ -184,7 +185,9 @@ var _ = Describe("LogHandler", func() {
 
 	It("adds the active span's trace and span ids", func() {
 		tp := sdktrace.NewTracerProvider()
+
 		ctx, span := tp.Tracer("t").Start(context.Background(), "s")
+		defer span.End()
 
 		m := record(ctx)
 		Expect(m).To(HaveKeyWithValue("trace_id", span.SpanContext().TraceID().String()))

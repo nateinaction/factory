@@ -127,7 +127,7 @@ func (r *historyRead) add(ctx context.Context, d Deps, c github.Client, ref work
 }
 
 // render draws the report as plain text: one row per issue, then where the read stopped short.
-func (r historyRead) render() string {
+func (r *historyRead) render() string {
 	var b strings.Builder
 
 	rows := make([][]string, 0, 1+len(r.histories))

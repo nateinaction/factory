@@ -2,6 +2,7 @@ package foreman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
@@ -384,7 +385,7 @@ func (r *commandRun) fileLesson(
 	ctx context.Context, group workflow.GroupID, lesson string, comment workflow.Item,
 ) (workflow.Issue, error) {
 	if r.cfg.FactoryRepo == "" {
-		return workflow.Issue{}, fmt.Errorf("no factory repository is configured")
+		return workflow.Issue{}, errors.New("no factory repository is configured")
 	}
 
 	factory, err := workflow.ParseRepo(r.cfg.FactoryRepo)

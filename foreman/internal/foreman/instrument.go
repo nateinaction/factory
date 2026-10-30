@@ -240,12 +240,14 @@ func (t *pollTraces) end() {
 
 // startRepoSpan opens the span for one assigned repository's poll.
 func startRepoSpan(ctx context.Context, d Deps, repo workflow.Repo) (context.Context, trace.Span) {
-	return d.tracer().Start(ctx, telemetry.PollRepoSpanName,
+	return d.tracer().Start(ctx, telemetry.PollRepoSpanName, //nolint:spancheck // the caller ends the returned span
 		trace.WithAttributes(attribute.String(telemetry.AttrRepo, repo.String())))
 }
 
 // startEnqueueSpan opens the span for one claimed issue's enqueue. A run continues this span's trace
 // through the DAG's parameters, so its name and attributes are stable across that handoff.
+//
+//nolint:spancheck // the caller ends the returned span
 func startEnqueueSpan(
 	ctx context.Context, d Deps, repo workflow.Repo, role workflow.Role, issue int,
 ) (context.Context, trace.Span) {

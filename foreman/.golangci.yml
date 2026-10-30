@@ -20,8 +20,12 @@ linters:
     - depguard
     # Duplicated code.
     - dupl
+    # Duplicated words in comments and strings ("the the").
+    - dupword
     # Two durations multiplied together.
     - durationcheck
+    # Sentinel errors named ErrX and error types named XError.
+    - errname
     # Error comparison and wrapping mistakes.
     - errorlint
     # Switches over an enum that miss a case.
@@ -29,6 +33,8 @@ linters:
     # Struct literals of the config and request types that omit a field: a missing field silently
     # takes its zero value. Explicit mode, so only the types listed under settings are checked.
     - exhaustruct_v5
+    # Contexts that nest on every loop iteration.
+    - fatcontext
     # Type assertions whose failure is not checked.
     - forcetypeassert
     # Functions over 60 lines or 40 statements.
@@ -65,14 +71,20 @@ linters:
     - importas
     # Interfaces with too many methods.
     - interfacebloat
+    # Counting for loops that could range over an integer.
+    - intrange
     # Lines over 120 characters.
     - lll
+    # Odd or mismatched key-value pairs in slog calls.
+    - loggercheck
     # Slices declared with a length and then appended to.
     - makezero
     # Common English misspellings.
     - misspell
     # Magic numbers.
     - mnd
+    # Code that newer Go idioms and the standard library simplify.
+    - modernize
     # Marshalled structs without field tags.
     - musttag
     # Naked returns in long functions.
@@ -81,6 +93,8 @@ linters:
     - nestif
     # Returning nil when an error was checked.
     - nilerr
+    # Returning a nil error variable after checking a different one.
+    - nilnesserr
     # Returning nil, nil.
     - nilnil
     # Nil values followed across calls and packages to a dereference. Not a built-in linter: it comes
@@ -88,14 +102,26 @@ linters:
     - nilaway
     # HTTP requests sent without a context.
     - noctx
+    # Malformed or unexplained nolint directives.
+    - nolintlint
+    # fmt.Sprintf calls a faster function replaces.
+    - perfsprint
     # Slices that could be preallocated.
     - prealloc
     # Shadowed predeclared identifiers.
     - predeclared
     # Reassigned package variables such as io.EOF.
     - reassign
+    # Mixed value and pointer receivers on one type.
+    - recvcheck
     # General style.
     - revive
+    # Consistent slog usage.
+    - sloglint
+    # OpenTelemetry spans that are never ended.
+    - spancheck
+    # Unnecessary type conversions.
+    - unconvert
     # Functions and parameters that are never used.
     - unparam
     # Standard library constants written as literals.

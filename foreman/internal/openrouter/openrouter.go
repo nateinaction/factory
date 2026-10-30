@@ -5,6 +5,7 @@ package openrouter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -64,7 +65,7 @@ func startAt(
 	ctx context.Context, key, token, addr, upstream string, logger *slog.Logger,
 ) (*Proxy, error) {
 	if token == "" {
-		return nil, fmt.Errorf("openrouter proxy: a per-run token is required")
+		return nil, errors.New("openrouter proxy: a per-run token is required")
 	}
 
 	if err := proxy.Address("openrouter", addr); err != nil {

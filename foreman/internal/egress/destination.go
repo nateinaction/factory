@@ -23,15 +23,15 @@ type gateway struct {
 	dial    proxy.DialFunc
 }
 
-// refusedDestination is a destination the proxy will not reach, named by the address that refused
+// refusedDestinationError is a destination the proxy will not reach, named by the address that refused
 // it.
-type refusedDestination struct {
+type refusedDestinationError struct {
 	host string
 	addr netip.Addr
 }
 
 // Error names the host and the address that made it unworthy of a connection.
-func (e refusedDestination) Error() string {
+func (e refusedDestinationError) Error() string {
 	return fmt.Sprintf("egress proxy: %q is not publicly routable: it resolves to %s", e.host, e.addr)
 }
 
@@ -116,7 +116,7 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 	for _, addr := range addrs[:min(len(addrs), maxResolvedAddresses)] {
 		addr = addr.Unmap()
 		if !publiclyRoutable(addr) {
-			return nil, refusedDestination{host: host, addr: addr}
+			return nil, refusedDestinationError{host: host, addr: addr}
 		}
 
 		checked = append(checked, addr)
@@ -126,10 +126,10 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 }
 
 // refusal finds a destination the gateway refused, reporting whether err is one.
-func refusal(err error) (refusedDestination, bool) {
-	if refused, ok := errors.AsType[refusedDestination](err); ok {
+func refusal(err error) (refusedDestinationError, bool) {
+	if refused, ok := errors.AsType[refusedDestinationError](err); ok {
 		return refused, true
 	}
 
-	return refusedDestination{}, false
+	return refusedDestinationError{}, false
 }
