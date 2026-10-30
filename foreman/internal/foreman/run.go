@@ -406,15 +406,13 @@ func startCode(err error, code int) int {
 // emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
 // and is never retried, so the run is worth recording on its own. It records through the run's own
 // instruments, built when the run started.
-func emitStepCap(
-	ctx context.Context, d Deps, alerts alertInstruments, role workflow.Role, repo workflow.Repo, number int, err error,
-) {
+func (r run) emitStepCap(ctx context.Context, err error) {
 	if opencode.KindOf(err) != opencode.FailStepCap {
 		return
 	}
 
-	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventRunCapped,
-		security.RunStepCap, "")
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventRunCapped, security.RunStepCap, "")
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -530,10 +528,7 @@ func outputProblem(file string, err error) error {
 // rejectOutput posts every problem with a rejected output file in one comment, emits the rejection's
 // security event, then returns the failure the run reports. Nothing in the file is applied: the issue
 // goes to failed instead.
-func rejectOutput(
-	ctx context.Context, d Deps, alerts alertInstruments, c github.Client, repo workflow.Repo, number int,
-	role workflow.Role, err error,
-) error {
+func (r run) rejectOutput(ctx context.Context, c github.Client, err error) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
 		return err
@@ -544,10 +539,11 @@ func rejectOutput(
 	// values, so there is no bridge to fall through.
 	outcome := security.Outcome(rejected.Problem)
 
-	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventOutputRejected, outcome, "")
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventOutputRejected, outcome, "")
 
 	lines := []string{
-		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
+		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", r.role), "",
 		fmt.Sprintf("File: `%s`", rejected.File), "",
 	}
 	for _, problem := range rejected.Problems {
@@ -555,7 +551,9 @@ func rejectOutput(
 	}
 
 	text := workflow.Truncate(strings.Join(lines, "\n"), workflow.CommentLimitChars)
-	if postErr := c.Comment(ctx, workflow.IssueRef{Repo: repo, Number: number}, text); postErr != nil {
+
+	ref := workflow.IssueRef{Repo: r.spec.ref.Repo, Number: r.spec.ref.Number}
+	if postErr := c.Comment(ctx, ref, text); postErr != nil {
 		// Both failures matter: the file was bad and the report never reached the issue.
 		return errors.Join(err, postErr)
 	}
@@ -1005,22 +1003,6 @@ func (s session) checkoutForReview(ctx context.Context, repo workflow.Repo, bran
 	}
 
 	return s.head(ctx)
-}
-
-// postVerdictTraced posts the verdict inside the publishing stage's review span.
-func postVerdictTraced(
-	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, pr int, sha string,
-	out workflow.ReviewerOutput, issue workflow.Issue, limit int, spans stageSpans,
-) (int, error) {
-	ctx, span := spans.start(ctx, telemetry.SpanPublishReview)
-	defer span.End()
-
-	code, err := postVerdict(ctx, d, c, repo, pr, sha, out, issue, limit)
-	if err != nil {
-		markFailureOf(span, err)
-	}
-
-	return code, err
 }
 
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The

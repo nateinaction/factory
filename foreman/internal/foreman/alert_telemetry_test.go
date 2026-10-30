@@ -65,8 +65,11 @@ var _ = Describe("alert telemetry", func() {
 		repo, err := workflow.ParseRepo("o/r")
 		Expect(err).NotTo(HaveOccurred())
 
-		emitStepCap(context.Background(), deps, newAlertInstruments(deps), workflow.Implementer, repo, 5,
-			&opencode.ModelError{Kind: opencode.FailStepCap, Attempts: 1})
+		r := run{
+			d: deps, role: workflow.Implementer,
+			spec: runSpec{ref: workflow.IssueRef{Repo: repo, Number: 5}}, alerts: newAlertInstruments(deps),
+		}
+		r.emitStepCap(context.Background(), &opencode.ModelError{Kind: opencode.FailStepCap, Attempts: 1})
 
 		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
 		Expect(points).To(HaveLen(1))
