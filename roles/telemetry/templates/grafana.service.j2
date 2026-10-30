@@ -9,7 +9,10 @@ StartLimitBurst=5
 [Service]
 Type=simple
 DynamicUser=yes
-StateDirectory=grafana
+StateDirectory=grafana grafana/plugins
+# DynamicUser mounts the private state directory noexec; the datasource plugins Grafana installs there
+# are executables. Only their directory is made executable, and the rest of the state stays noexec.
+ExecPaths=/var/lib/private/grafana/plugins
 # The config is root-only because it holds the admin password. Grafana runs as a DynamicUser and
 # cannot read it, so systemd reads it as root and gives the service a private copy instead.
 LoadCredential=grafana.ini:/etc/grafana/grafana.ini

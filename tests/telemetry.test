@@ -67,6 +67,10 @@ assert "admin_password = " + v["factory_telemetry_grafana_admin_password"] in te
 # plugins at start; without a writable plugin directory every install fails and the datasources never load.
 check "grafana installs its plugins into its writable state directory" \
   grep -Fxq 'plugins = /var/lib/grafana/plugins' "$out/grafana.ini"
+# DynamicUser mounts the private state directory noexec, and the datasource plugins are executables.
+check "grafana may execute the plugins it installs, and only those" bash -c "
+  grep -Fxq 'StateDirectory=grafana grafana/plugins' '$out/grafana.service' &&
+  grep -Fxq 'ExecPaths=/var/lib/private/grafana/plugins' '$out/grafana.service'"
 check "grafana reads its root-only config as a systemd credential" bash -c "
   grep -Fxq 'LoadCredential=grafana.ini:/etc/grafana/grafana.ini' '$out/grafana.service' &&
   grep -Fq -- '--config=%d/grafana.ini' '$out/grafana.service'"
