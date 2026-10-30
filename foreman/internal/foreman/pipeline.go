@@ -372,7 +372,7 @@ func (r run) work(ctx context.Context, env runEnv, files sandboxFiles) (runResul
 	}
 
 	rc := runCtx{
-		run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity, r.spans(), r.alerts), paths: paths,
+		run: r, j: j, s: newSession(r.d, j, paths.workdir, r.entry.run.identity, r.spans()), paths: paths,
 	}
 
 	prep, err := r.entry.run.prepare(ctx, rc)

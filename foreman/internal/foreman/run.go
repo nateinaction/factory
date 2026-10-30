@@ -171,8 +171,6 @@ type session struct {
 	gitArgv  []string
 	// spans opens the run's stage spans, each carrying the run's attributes.
 	spans stageSpans
-	// alerts are the run's instruments, so a stage of the run records through the same set.
-	alerts alertInstruments
 	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
@@ -212,7 +210,7 @@ func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
 // environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
 // run outside the sandbox; identity adds the committer a run needs.
-func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans, alerts alertInstruments) session {
+func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans) session {
 	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
 
 	return session{
@@ -222,7 +220,6 @@ func newSession(d Deps, j job, workdir string, identity []string, spans stageSpa
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
 		spans:    spans,
-		alerts:   alerts,
 		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
