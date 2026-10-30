@@ -48,7 +48,7 @@ repos:
 
       - id: go-test
         name: go test (ginkgo)
-        entry: bash -c 'cd foreman && go tool ginkgo -r --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'
+        entry: bash -c 'cd foreman && go tool ginkgo -r -p --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'
         language: system
         files: ^foreman/.*\.go$
         pass_filenames: false
