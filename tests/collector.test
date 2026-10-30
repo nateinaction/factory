@@ -105,9 +105,12 @@ check "spanmetrics dimensions stay inside the allowlist" conf '
 dims = [d["name"] for d in c["connectors"]["spanmetrics"].get("dimensions", [])]
 assert set(dims) <= set(v["factory_collector_allowed_attributes"]), dims
 '
+# dagu 2.21 writes a step's standard error to <dag>/dag-run_*/run_*/<step>.*.err. Earlier runs left
+# <dag>/<run>/<attempt>/<step>.stderr.log, and both are still on disk.
 check "dagu's run diagnostics are read from the factory DAGs' stderr" conf '
 r = c["receivers"]["filelog/foreman"]
-assert r["include"] == [v["factory_dagu_logs_dir"] + "/factory-*/*/*/*.stderr.log"], r["include"]
+assert r["include"] == [v["factory_dagu_logs_dir"] + "/factory-*/dag-run_*/run_*/*.err",
+                        v["factory_dagu_logs_dir"] + "/factory-*/*/*/*.stderr.log"], r["include"]
 assert r["storage"] in c["service"]["extensions"], r["storage"]
 types = [op["type"] for op in r["operators"]]
 assert types == ["filter", "json_parser", "trace_parser", "move"], types

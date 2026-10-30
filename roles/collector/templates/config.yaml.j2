@@ -32,6 +32,7 @@ receivers:
   # grants CAP_DAC_READ_SEARCH, because dagu writes these files 0600.
   filelog/foreman:
     include:
+      - {{ factory_dagu_logs_dir }}/factory-*/dag-run_*/run_*/*.err
       - {{ factory_dagu_logs_dir }}/factory-*/*/*/*.stderr.log
     start_at: end
     include_file_path: true
