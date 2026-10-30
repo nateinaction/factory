@@ -1137,6 +1137,18 @@ func headSHA(ctx context.Context, c github.Client, ref workflow.IssueRef) (strin
 	return pr.Head.SHA, nil
 }
 
+// claimSHA is the commit a claim by the agent role records: the open pull request's head. An agent role
+// whose App cannot read pull requests has none to read and records no commit; asking would be a 403.
+func claimSHA(
+	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue, role workflow.Role,
+) (string, error) {
+	if !slices.Contains(prReaders(), role) {
+		return "", nil
+	}
+
+	return headSHA(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
+}
+
 // claimAndEnqueue claims the issue, then queues its run. won is false when another run claimed the
 // issue first. A queue failure fails the issue rather than leaving it claimed. The enqueue is its own
 // span, so a run can continue this trace through the DAG's parameters.
@@ -1144,7 +1156,7 @@ func claimAndEnqueue(
 	ctx context.Context, d Deps, inst pollInstruments, c github.Client, repo workflow.Repo,
 	issue workflow.Issue, q queueStep,
 ) (won bool, code int, err error) {
-	sha, err := headSHA(ctx, c, workflow.IssueRef{Repo: repo, Number: issue.Number})
+	sha, err := claimSHA(ctx, c, repo, issue, q.role)
 	if err != nil {
 		return false, 1, err
 	}

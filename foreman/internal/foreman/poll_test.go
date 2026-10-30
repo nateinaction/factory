@@ -294,6 +294,27 @@ var _ = Describe("Poll", func() {
 			Expect(mint).NotTo(BeEmpty())
 			h.expectAuthorizedAs(workflow.Reviewer)
 		})
+
+		It("claims a planning issue though the Planner's App cannot read pull requests", func() {
+			h.installed = map[workflow.Role][]string{workflow.Planner: {"o/r"}}
+			h.queue(map[string][]map[string]any{workflow.LabelPlan: {{"number": 1}}})
+			// The Planner has no Pull requests permission: GitHub answers its pull request reads with 403.
+			h.gh.Handle("GET /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") == "Bearer minted-token-"+string(workflow.Planner) {
+					w.WriteHeader(http.StatusForbidden)
+
+					return
+				}
+
+				h.gh.Forward(w, r)
+			})
+
+			code, err := Poll(context.Background(), h.deps, pollConfig(workflow.Planner))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero())
+			Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
+			Expect(h.runner.find("enqueue")).To(HaveLen(1))
+		})
 	})
 
 	Describe("recovery", func() {
