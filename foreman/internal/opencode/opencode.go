@@ -368,7 +368,10 @@ func externalDirectory(paths []string) map[string]string {
 
 	for _, path := range paths {
 		if path != "" {
+			// opencode matches a file inside a directory against `dir/*`, and a file or the directory
+			// itself against the bare path: allow both.
 			rules[path] = "allow"
+			rules[path+"/*"] = "allow"
 		}
 	}
 

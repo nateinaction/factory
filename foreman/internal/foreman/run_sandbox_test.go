@@ -115,6 +115,9 @@ var _ = Describe("the sandbox", func() {
 				"every external path outside this run is denied")
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(runDir, "allow"))
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch, "allow"))
+			// opencode matches a file inside a directory against `dir/*`, so each directory needs that rule too.
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(runDir+"/*", "allow"))
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch+"/*", "allow"))
 			Expect(config.Permission.ExternalDirectory).To(
 				HaveKeyWithValue(retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer), "allow"))
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherRun))
