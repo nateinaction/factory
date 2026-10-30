@@ -79,7 +79,7 @@ var _ = Describe("alert telemetry", func() {
 		Expect(point.Value).To(Equal(int64(1)))
 	})
 
-	It("carries the trace that raised a security event, so its alert links straight to it", func() {
+	It("never carries a trace id as a metric label, even inside a span", func() {
 		repo, err := workflow.ParseRepo("o/r")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -95,12 +95,13 @@ var _ = Describe("alert telemetry", func() {
 		Expect(points).To(HaveLen(1))
 
 		point, ok := pointWith(points,
-			attribute.String(telemetry.AttrTraceID, span.SpanContext().TraceID().String()),
 			attribute.Int(telemetry.AttrIssue, 5),
 			attribute.String(telemetry.AttrOutcome, string(workflow.OutputFactoryMarker)),
 		)
-		Expect(ok).To(BeTrue(), "the point carries the trace that raised it")
+		Expect(ok).To(BeTrue(), "the point does not carry the issue it was raised on")
 		Expect(point.Value).To(Equal(int64(1)))
+		Expect(attributeValue(point.Attributes.ToSlice(), traceIDAttr)).To(BeEmpty(),
+			"the point carries the trace id")
 	})
 
 	It("records a run's outcome and cost by agent role and repository", func() {
@@ -196,5 +197,17 @@ var _ = Describe("run alert telemetry", func() {
 		costs := floatPoints(rm, telemetry.MetricRunCost)
 		Expect(costs).To(HaveLen(1))
 		Expect(costs[0].Value).To(Equal(0.5))
+
+		for _, point := range outcomes {
+			attrs := point.Attributes.ToSlice()
+			Expect(attributeValue(attrs, telemetry.AttrIssue)).To(BeEmpty(), "a run outcome carries the issue")
+			Expect(attributeValue(attrs, traceIDAttr)).To(BeEmpty(), "a run outcome carries the trace id")
+		}
+
+		for _, point := range costs {
+			attrs := point.Attributes.ToSlice()
+			Expect(attributeValue(attrs, telemetry.AttrIssue)).To(BeEmpty(), "a run cost carries the issue")
+			Expect(attributeValue(attrs, traceIDAttr)).To(BeEmpty(), "a run cost carries the trace id")
+		}
 	})
 })

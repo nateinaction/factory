@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 )
 
 // publicAddress is a name-independent address no refusal rule covers: everything a spec stands up
@@ -141,6 +142,14 @@ type staticResolver []netip.Addr
 // LookupNetIP returns the resolver's addresses whatever it was asked for.
 func (r staticResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
 	return r, nil
+}
+
+// resolverFunc adapts a function to a resolver, so a spec can change one name's answer.
+type resolverFunc func(context.Context, string, string) ([]netip.Addr, error)
+
+// LookupNetIP answers with whatever f returns.
+func (f resolverFunc) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return f(ctx, network, host)
 }
 
 // startWith binds a proxy on a free loopback port that reaches destinations through g.
@@ -783,6 +792,72 @@ var _ = Describe("Proxy", func() {
 			_ = conn.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		})
+
+		It("keeps a host allowed when a later request to it is refused", func() {
+			echo, stop := echoServer()
+			DeferCleanup(stop)
+
+			_, port, err := net.SplitHostPort(echo)
+			Expect(err).NotTo(HaveOccurred())
+
+			lookups := 0
+
+			p := startWith(policy(), gateway{
+				resolve: resolverFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+					lookups++
+
+					if lookups == 1 {
+						return []netip.Addr{netip.MustParseAddr(publicAddress)}, nil
+					}
+
+					return []netip.Addr{netip.MustParseAddr("10.1.2.3")}, nil
+				}),
+				dial: loopbackGateway().dial,
+			})
+
+			target := net.JoinHostPort("flip.example", port)
+
+			resp, conn := connect(p.Address(), target)
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(p.Domains()).To(ContainElement("flip.example"))
+
+			// The same host now answers with an address the proxy refuses. The refusal must not erase
+			// the earlier allowed record.
+			resp, conn = connect(p.Address(), target)
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+
+			resp, conn = forward(p.Address(), "http://flip.example/thing")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(p.Domains()).To(ContainElement("flip.example"))
+			Expect(p.Refused()).To(ContainElement("flip.example"))
+		})
+
+		It("bounds the refused hosts it remembers", func() {
+			p := start(policy("api.example.com"), "")
+			DeferCleanup(p.Close)
+
+			for i := range MaxRefusedHosts + 1 {
+				resp, conn := connect(p.Address(), fmt.Sprintf("refused-%d.example:443", i))
+				// test cleanup: a close error changes no assertion
+				_ = conn.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			}
+
+			Expect(p.Refused()).To(HaveLen(MaxRefusedHosts), "the refused host map grew without a limit")
+			Expect(p.Refusals()).To(Equal(map[security.Outcome]int{
+				security.RefusedByPolicy: MaxRefusedHosts + 1,
+			}), "the cap dropped a refusal from the tally")
 		})
 
 		It("dials the address it checked instead of resolving the name again", func() {

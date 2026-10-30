@@ -21,8 +21,7 @@ SAMPLES = {
         "series": [
             'factory_security_events_total{factory_event="egress_refused",'
             'factory_outcome="refused_not_routable",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5",'
-            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
+            'factory_repo="o/r",factory_issue="5"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -31,8 +30,7 @@ SAMPLES = {
         "series": [
             'factory_security_events_total{factory_event="key_proxy_refused",'
             'factory_outcome="refused_bad_token",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5",'
-            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
+            'factory_repo="o/r",factory_issue="5"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -41,8 +39,7 @@ SAMPLES = {
         "series": [
             'factory_security_events_total{factory_event="output_rejected",'
             'factory_outcome="factory_marker",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5",'
-            'factory_trace_id="4bf92f3577b34da6a3ce929d0e0e4736"}',
+            'factory_repo="o/r",factory_issue="5"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -64,7 +61,7 @@ SAMPLES = {
     },
     "ForemanDeadRunReaped": {
         "series": [
-            'factory_runs_reaped_total{factory_agent_role="implementer",factory_repo="o/r"}',
+            'factory_runs_reaped_total{factory_agent_role="implementer",factory_repo="o/r",factory_issue="5"}',
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -72,29 +69,27 @@ SAMPLES = {
 }
 
 # The labels each alert's series must carry once the rule has fired. These are written here, not
-# copied from the rule: a rule that drops, renames or adds a label fails the test. A security
-# alert aggregates away its event and outcome; an aggregate alert keeps only the role and repo.
+# copied from the rule: a rule that drops, renames or adds a label fails the test. A security alert
+# aggregates away its event and outcome but keeps the issue; the reaped-run alert keeps the issue too;
+# an aggregate alert keeps only the role and repo. No alert keeps a trace id.
 EXPECTED_LABELS = {
     "ForemanEgressNotRoutable": {
         "severity": "critical",
         "factory_agent_role": "implementer",
         "factory_repo": "o/r",
         "factory_issue": "5",
-        "factory_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
     },
     "ForemanProxyBadToken": {
         "severity": "critical",
         "factory_agent_role": "implementer",
         "factory_repo": "o/r",
         "factory_issue": "5",
-        "factory_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
     },
     "ForemanOutputFactoryMarker": {
         "severity": "critical",
         "factory_agent_role": "implementer",
         "factory_repo": "o/r",
         "factory_issue": "5",
-        "factory_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
     },
     "ForemanAgentRoleFailureRate": {
         "severity": "warning",
@@ -110,6 +105,7 @@ EXPECTED_LABELS = {
         "severity": "warning",
         "factory_agent_role": "implementer",
         "factory_repo": "o/r",
+        "factory_issue": "5",
     },
 }
 
@@ -118,7 +114,6 @@ SAMPLE_LABELS = {
     "factory_agent_role": "implementer",
     "factory_repo": "o/r",
     "factory_issue": "5",
-    "factory_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
 }
 
 PLACEHOLDER = re.compile(r"\{\{\s*\$labels\.(\w+)\s*\}\}")

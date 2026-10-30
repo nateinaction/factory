@@ -136,17 +136,18 @@ memory the stack may use is `factory_telemetry_memory_budget_mib`.
 Prometheus evaluates the alert rules in `roles/telemetry/templates/alerts.yaml.j2`: egress refused a
 non-public address, a request to either proxy without the run token, an output file carrying a factory
 marker, an agent role's failure rate, the daily model cost and a dead run reaped by a poll. The
-per-event alerts name the agent role, repository and issue and link straight to the trace that raised
-them; the aggregate alerts name the agent role and repository and link to a search for their offending
+per-issue alerts name the agent role, repository and issue and link to a search for the role's traces;
+the aggregate alerts name the agent role and repository and link to a search for their offending
 traces and to the repository's failed issues. Every threshold, window and the cost budget is a
 `factory_alerts_*` setting in `group_vars/factory.yml`. The rules fire into Prometheus's own list at
 `http://127.0.0.1:9090/alerts` on the server; no Alertmanager is configured, so they are read there
 or in Grafana rather than pushed.
 
-The issue reaches a per-event alert as a label on the security-event metric only. That is a deliberate
-exception to "an issue number is a span attribute, never a metric label": a Prometheus rule can
-template only labels, and the alert has to name the issue it needs a human to look at. Every other
-metric keeps the issue out.
+The issue reaches a per-issue alert as a label on the security-event and reaped-run metrics, the two
+low-volume signals that need a human. That is a deliberate exception to "an issue number is a span
+attribute, never a metric label": a Prometheus rule can template only labels, and the alert has to
+name the issue it needs a human to look at. Every other metric keeps the issue out, and no metric
+carries a trace id; an alert links to a trace search instead.
 
 Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
 host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk

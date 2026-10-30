@@ -285,13 +285,12 @@ factory_collector_allowed_attributes:
   - status.code
   - service.version
   - host.name
-  # A run's dimensions. factory.issue and factory.trace_id are the one exception to "an issue is never
-  # a metric label": the security-event metric carries them so a per-event alert can name the issue
-  # and link straight to the trace that raised it (#132). Every other metric keeps the issue out.
+  # A run's dimensions. factory.issue is an exception to "an issue is never a metric label": the
+  # security-event and reaped-run metrics carry it so their alerts can name the issue a human needs to
+  # look at (#132). Every other metric keeps the issue out, and no metric carries a trace id.
   - factory.agent_role
   - factory.repo
   - factory.issue
-  - factory.trace_id
   - factory.outcome
   - factory.state
   - factory.failure_kind
@@ -390,11 +389,11 @@ factory_telemetry_memory_max_mib:
   loki: 192
   grafana: 160
 # Alerts: the signals that need a human. The rules live in the telemetry role; every threshold, window
-# and the cost budget is set here, never written into a rule. A per-event alert names the agent role,
-# repository and issue from its metric's labels and links straight to the trace that raised it: the
-# security-event metric is the one that carries the issue and trace id (see
+# and the cost budget is set here, never written into a rule. A per-issue alert names the agent role,
+# repository and issue from its metric's labels and links to a search for the role's traces: the
+# security-event and reaped-run metrics are the ones that carry the issue (see
 # factory_collector_allowed_attributes). An aggregate alert names the agent role and repository and
-# links to a search for their offending traces and their failed issues.
+# links to a search for their offending traces and their failed issues. No metric carries a trace id.
 # Where an alert's trace link points: the tailnet HTTPS address Grafana is served at.
 factory_alerts_grafana_url: "https://{{ factory_telemetry_host }}:{{ factory_telemetry_grafana_port }}"
 # How far back the security alerts look for a refused request or a rejected output.
