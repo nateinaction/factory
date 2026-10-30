@@ -272,7 +272,7 @@ type job struct {
 // model's one GitHub credential is a read-only token of its own App's, scoped to the repository.
 // external names the paths outside the clone the model may reach, and db is its state database.
 func (r run) loadJob(ctx context.Context, env runEnv, external []string, db string) (job, error) {
-	model, err := opencode.Env(env.baseURL, env.token, db, external, r.spec.agent)
+	model, err := opencode.Env(r.role, env.baseURL, env.token, db, external, r.spec.agent)
 	if err != nil {
 		return job{}, err
 	}

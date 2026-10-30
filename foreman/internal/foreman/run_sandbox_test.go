@@ -109,6 +109,11 @@ var _ = Describe("the sandbox", func() {
 				Permission struct {
 					ExternalDirectory map[string]string `json:"external_directory"`
 				} `json:"permission"`
+				Agent map[string]struct {
+					Permission struct {
+						ExternalDirectory map[string]string `json:"external_directory"`
+					} `json:"permission"`
+				} `json:"agent"`
 			}
 			Expect(json.Unmarshal([]byte(c.Env["OPENCODE_CONFIG_CONTENT"]), &config)).To(Succeed())
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue("*", "deny"),
@@ -120,6 +125,12 @@ var _ = Describe("the sandbox", func() {
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch+"/*", "allow"))
 			Expect(config.Permission.ExternalDirectory).To(
 				HaveKeyWithValue(retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer), "allow"))
+			// An agent's own permissions come after the global ones and end in `*: deny`, so the allows
+			// that matter are the agent's: without them the model cannot write its output file.
+			agent := config.Agent["implementer"].Permission.ExternalDirectory
+			Expect(agent).To(HaveKeyWithValue("*", "deny"))
+			Expect(agent).To(HaveKeyWithValue(scratch+"/*", "allow"))
+			Expect(agent).To(HaveKeyWithValue(runDir+"/*", "allow"))
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherRun))
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherScratch))
 		}

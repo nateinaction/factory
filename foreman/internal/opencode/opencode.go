@@ -336,7 +336,9 @@ func Failure(s Stream, runErr error) (FailureKind, bool) {
 // run may touch outside its clone. The rest keeps repository config and external skills out and
 // state private. opencode sends token as its provider key, which both proxies require; the
 // OpenRouter key is never here: the key proxy holds it.
-func Env(baseURL, token, stateDB string, external []string, a config.AgentConfig) (map[string]string, error) {
+func Env(
+	role workflow.Role, baseURL, token, stateDB string, external []string, a config.AgentConfig,
+) (map[string]string, error) {
 	inline, err := json.Marshal(map[string]any{
 		"compaction": map[string]bool{"auto": a.Compaction},
 		"provider": map[string]any{
@@ -347,6 +349,11 @@ func Env(baseURL, token, stateDB string, external []string, a config.AgentConfig
 			}},
 		},
 		"permission": map[string]any{"external_directory": externalDirectory(external)},
+		// An agent's own permissions are evaluated after the global ones, last match winning, and end
+		// in `*: deny`: the allows must be the agent's own, or the model cannot reach its output file.
+		"agent": map[string]any{string(role): map[string]any{
+			"permission": map[string]any{"external_directory": externalDirectory(external)},
+		}},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode opencode config: %w", err)
