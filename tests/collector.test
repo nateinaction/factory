@@ -104,6 +104,11 @@ types = [op["type"] for op in r["operators"]]
 assert types == ["json_parser", "trace_parser", "move"], types
 assert "filelog/foreman" in c["service"]["pipelines"]["logs"]["receivers"]
 '
+check "the JSON parser drops a line it cannot parse instead of shipping it raw" conf '
+op = c["receivers"]["filelog/foreman"]["operators"][0]
+assert op["type"] == "json_parser", op
+assert op["on_error"] == "drop", op
+'
 check "the filelog receiver resumes from disk after a restart" conf '
 storage = c["extensions"]["file_storage/offsets"]
 assert storage["directory"] == v["factory_collector_state_dir"] + "/offsets", storage
