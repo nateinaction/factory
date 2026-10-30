@@ -37,7 +37,7 @@ func NewTally() *Tally {
 
 // Refuse counts one refused request and emits its security event, at most within the tally's log
 // limit. The host is the event's whole payload: no header or token can reach it.
-func (t *Tally) Refuse(log *slog.Logger, event string, outcome Outcome, host string) {
+func (t *Tally) Refuse(log *slog.Logger, event Event, outcome Outcome, host string) {
 	t.mu.Lock()
 	t.counts[outcome]++
 	emit := t.take(outcome)

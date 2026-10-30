@@ -300,7 +300,7 @@ func (d Deps) egress(
 	if start == nil {
 		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
 			// The proxy's security events carry the run they belong to.
-			log := security.Scope(d.log(), string(role), ref.Repo.String(), ref.Number)
+			log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
 			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log)
 		}
@@ -333,7 +333,7 @@ func (d Deps) proxy(
 ) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
-		log := security.Scope(d.log(), string(role), ref.Repo.String(), ref.Number)
+		log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
 		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log)
 	}
@@ -410,11 +410,8 @@ func emitStepCap(
 		return
 	}
 
-	security.Emit(
-		security.Scope(d.log(), string(role), repo.String(), number),
-		security.EventRunCapped, security.RunStepCap, "",
-	)
-	alerts.securityEvent(ctx, role, repo, number, security.EventRunCapped, security.RunStepCap)
+	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventRunCapped,
+		security.RunStepCap, "")
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -544,11 +541,7 @@ func rejectOutput(
 	// values, so there is no bridge to fall through.
 	outcome := security.Outcome(rejected.Problem)
 
-	security.Emit(
-		security.Scope(d.log(), string(role), repo.String(), number),
-		security.EventOutputRejected, outcome, "",
-	)
-	alerts.securityEvent(ctx, role, repo, number, security.EventOutputRejected, outcome)
+	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventOutputRejected, outcome, "")
 
 	lines := []string{
 		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",

@@ -481,7 +481,7 @@ func failDeadRun(
 
 	_, err = d.client(token).Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 	if err == nil {
-		inst.alerts.runReaped(ctx, role, repo, issue.Number)
+		inst.alerts.runReaped(ctx, securityRun(role, repo, issue.Number))
 	}
 
 	return true, err

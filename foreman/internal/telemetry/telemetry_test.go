@@ -267,7 +267,7 @@ var _ = Describe("SpanLogger", func() {
 		log := telemetry.SpanLogger(slog.New(slog.NewJSONHandler(&out, nil)), ctx)
 		log.Warn("ordinary diagnostic", "issue", 5)
 		security.Emit(
-			security.Scope(log, "implementer", "o/r", 5),
+			security.Scope(log, security.Run{Role: "implementer", Repository: "o/r", Issue: 5}),
 			security.EventOutputRejected, security.RefusedByPolicy, "example.test",
 		)
 

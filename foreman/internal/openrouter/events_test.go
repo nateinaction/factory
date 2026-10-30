@@ -71,7 +71,8 @@ var _ = Describe("the OpenRouter proxy's security events", func() {
 
 		var logged logBuffer
 
-		log := security.Scope(slog.New(slog.NewJSONHandler(&logged, nil)), "Implementer", "o/r", 7)
+		log := security.Scope(slog.New(slog.NewJSONHandler(&logged, nil)),
+			security.Run{Role: "Implementer", Repository: "o/r", Issue: 7})
 
 		p, err := startAt(GinkgoT().Context(), testKey, testToken, Loopback, up.URL, log)
 		Expect(err).NotTo(HaveOccurred())
@@ -118,7 +119,8 @@ var _ = Describe("the OpenRouter proxy's security events", func() {
 
 		var logged logBuffer
 
-		log := security.Scope(slog.New(slog.NewJSONHandler(&logged, nil)), "Implementer", "o/r", 7)
+		log := security.Scope(slog.New(slog.NewJSONHandler(&logged, nil)),
+			security.Run{Role: "Implementer", Repository: "o/r", Issue: 7})
 
 		p, err := startAt(GinkgoT().Context(), testKey, testToken, Loopback, up.URL, log)
 		Expect(err).NotTo(HaveOccurred())
