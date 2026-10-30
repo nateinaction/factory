@@ -142,28 +142,26 @@ func (a alertInstruments) runReaped(ctx context.Context, run security.Run) {
 	))
 }
 
-// recordAlerts records what the alert rules read for one finished run: its outcome and cost, and
-// every request its two proxies refused, by event and outcome. The alerts instruments are the run's
-// own, built once when the run started. The run's issue rides on each security event, so its alert
-// names it directly; no trace id is a label.
-func (r run) recordAlerts(
-	ctx context.Context, st opencode.RunStats, usage opencode.Usage,
-	egress, key map[security.Outcome]int,
-) {
+// refusalTally is the run's one refusal tally. Both proxies raise their refusals through it, so each
+// one is counted, measured and logged by the same call, as it happens. The run's issue rides on each
+// measurement, so its alert names it directly; no trace id is a label.
+func (r run) refusalTally() *security.Tally {
+	run := securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number)
 	alerts := r.alerts
 
+	return security.NewTally(func(ctx context.Context, event security.Event, outcome security.Outcome) {
+		alerts.securityEvents(ctx, run, event, outcome, 1)
+	})
+}
+
+// recordAlerts records what the alert rules read for one finished run: its outcome and cost. The
+// refusals its proxies raised are already counted, as they happened. The alerts instruments are the
+// run's own, built once when the run started.
+func (r run) recordAlerts(ctx context.Context, st opencode.RunStats, usage opencode.Usage) {
 	run := securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number)
 
-	alerts.runOutcome(ctx, run, st.Outcome)
-	alerts.runCost(ctx, run, r.spec.agent.Model, usage.Cost)
-
-	for outcome, n := range egress {
-		alerts.securityEvents(ctx, run, security.EventEgressRefused, outcome, int64(n))
-	}
-
-	for outcome, n := range key {
-		alerts.securityEvents(ctx, run, security.EventKeyProxyRefused, outcome, int64(n))
-	}
+	r.alerts.runOutcome(ctx, run, st.Outcome)
+	r.alerts.runCost(ctx, run, r.spec.agent.Model, usage.Cost)
 }
 
 // issuesInState records how many open issues one repository has in a factory state. It is a gauge, so

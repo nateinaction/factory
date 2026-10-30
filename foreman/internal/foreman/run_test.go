@@ -15,6 +15,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -405,7 +406,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails closed when the proxy cannot bind", func() {
-			h.deps.Proxy = func(string, string, string) (Forwarder, error) {
+			h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) {
 				return nil, errors.New("bind openrouter proxy: address already in use")
 			}
 

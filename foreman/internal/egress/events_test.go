@@ -30,7 +30,7 @@ func loggedProxy(n sandbox.Network, apiURL string, g gateway) (*Proxy, *logBuffe
 	logger := slog.New(slog.NewJSONHandler(&logged, nil)).
 		With("agent_role", "Developer", "repository", "o/r", "issue", 7)
 
-	p, err := startProxy(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", logger, g)
+	p, err := startProxy(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", logger, g, nil)
 	Expect(err).NotTo(HaveOccurred())
 	DeferCleanup(p.Close)
 

@@ -284,7 +284,7 @@ var _ = Describe("acceptance: opencode run under srt", func() {
 		DeferCleanup(provider.Close)
 
 		proxy, err := egress.StartWithLogger(
-			GinkgoT().Context(), openNetwork(), provider.URL+"/api/v1", acceptanceToken, egress.Loopback, nil)
+			GinkgoT().Context(), openNetwork(), provider.URL+"/api/v1", acceptanceToken, egress.Loopback, nil, nil)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(proxy.Close)
 

@@ -241,11 +241,11 @@ func committerIdentity() []string {
 
 // bindProxy starts the run's OpenRouter proxy inside its stage span. A proxy that cannot bind fails
 // the run: the model has no other way to reach OpenRouter.
-func (r run) bindProxy(ctx context.Context, key, token string) (Forwarder, error) {
+func (r run) bindProxy(ctx context.Context, key, token string, refusals *security.Tally) (Forwarder, error) {
 	_, span := r.spans().start(ctx, telemetry.SpanProxyBind)
 	defer span.End()
 
-	p, err := r.d.proxy(ctx, r.role, r.spec.ref, key, token)
+	p, err := r.d.proxy(ctx, r.role, r.spec.ref, key, token, refusals)
 	if err != nil {
 		markFailureOf(span, err)
 	}
@@ -265,10 +265,9 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	// failure anywhere below leaves nothing behind.
 	defer func() { err = errors.Join(err, files.remove()) }()
 
-	// The domains and the refusals each proxy counted are the run's, read in the defer below.
+	// The domains the egress proxy allowed and refused are the run's, read in the defer below. Each
+	// proxy counts its refusals as they happen, through the run's one tally.
 	var domains, refused []string
-
-	var egressRefusals, keyRefusals map[security.Outcome]int
 
 	// The run's one usage record is left even when the run failed, once the proxies have added what
 	// they read: that merge happens in the defer below, which runs first. Status reads the record,
@@ -278,7 +277,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	defer func() {
 		st := r.stats(result, err, r.d.now().Sub(started))
 		r.annotateRun(ctx, st, result.usage)
-		r.recordAlerts(ctx, st, result.usage, egressRefusals, keyRefusals)
+		r.recordAlerts(ctx, st, result.usage)
 		r.d.recordUsage(opencode.NewUsageReport(r.role, r.spec.ref, r.d.Host, r.spec.agent, result.usage, st).
 			WithDomains(domains, refused))
 	}()
@@ -298,7 +297,6 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	defer func() {
 		result.usage = result.usage.Use(reported(px.key.Usage()))
 		domains, refused = px.egress.Domains(), px.egress.Refused()
-		egressRefusals, keyRefusals = px.egress.Refusals(), px.key.Refusals()
 		err = errors.Join(err, px.egress.Close(), px.key.Close())
 	}()
 
@@ -339,12 +337,16 @@ func (r run) startProxies(ctx context.Context, network sandbox.Network) (proxies
 		return proxies{}, err
 	}
 
-	key, err := r.bindProxy(ctx, sec.openrouterKey, token)
+	// Both proxies raise their refusals through the run's one tally, so the run has one count, one log
+	// limit and one measurement of everything they turned away.
+	refusals := r.refusalTally()
+
+	key, err := r.bindProxy(ctx, sec.openrouterKey, token, refusals)
 	if err != nil {
 		return proxies{}, err
 	}
 
-	e, err := r.d.egress(ctx, r.role, r.spec.ref, network, key.URL(), token)
+	e, err := r.d.egress(ctx, r.role, r.spec.ref, network, key.URL(), token, refusals)
 	if err != nil {
 		return proxies{}, errors.Join(err, key.Close())
 	}

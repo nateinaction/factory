@@ -295,18 +295,21 @@ func (r run) loadJob(ctx context.Context, env runEnv, external []string, db stri
 // an unsandboxed fallback.
 func (d Deps) egress(
 	ctx context.Context, role workflow.Role, ref workflow.IssueRef, policy sandbox.Network, apiURL, token string,
+	refusals *security.Tally,
 ) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
-		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
+		start = func(
+			ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+		) (EgressProxy, error) {
 			// The proxy's security events carry the run they belong to.
 			log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
-			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log)
+			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log, refusals)
 		}
 	}
 
-	return start(ctx, policy, apiURL, token)
+	return start(ctx, policy, apiURL, token, refusals)
 }
 
 // proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
@@ -329,16 +332,16 @@ func proxyPort(addr string) int {
 // fails the run: the model has no other way to reach OpenRouter. Its security events carry the run
 // they belong to.
 func (d Deps) proxy(
-	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string,
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string, refusals *security.Tally,
 ) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
 		log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
-		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log)
+		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log, refusals)
 	}
 
-	return start(key, token, openrouter.Loopback)
+	return start(key, token, openrouter.Loopback, refusals)
 }
 
 // tokenBytes is the entropy of the per-run proxy token.

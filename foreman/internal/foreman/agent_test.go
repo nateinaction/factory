@@ -20,6 +20,7 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -337,7 +338,7 @@ var _ = Describe("the opencode adapter", func() {
 					Input: &input, Output: &output, Cached: &cached, Cost: &cost,
 				},
 			}
-			h.deps.Proxy = func(key, _, _ string) (Forwarder, error) {
+			h.deps.Proxy = func(key, _, _ string, _ *security.Tally) (Forwarder, error) {
 				proxy.key = key
 
 				return proxy, nil
@@ -346,7 +347,9 @@ var _ = Describe("the opencode adapter", func() {
 				url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"},
 				refused: []string{"blocked.example"},
 			}
-			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
+			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string, _ *security.Tally) (EgressProxy, error) {
+				return egress, nil
+			}
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
 			lines := h.usageLines()

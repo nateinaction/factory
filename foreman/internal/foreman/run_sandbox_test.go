@@ -15,6 +15,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -227,8 +228,8 @@ var _ = Describe("the sandbox", func() {
 
 	It("fails closed when the egress proxy cannot bind", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) {
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(context.Context, sandbox.Network, string, string, *security.Tally) (EgressProxy, error) {
 			return nil, errors.New("bind egress proxy: address already in use")
 		}
 
@@ -251,8 +252,12 @@ var _ = Describe("the sandbox", func() {
 	It("fails closed when the egress proxy's address cannot be parsed", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
 		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "not an address"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(
+			context.Context, sandbox.Network, string, string, *security.Tally,
+		) (EgressProxy, error) {
+			return e, nil
+		}
 
 		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).To(HaveOccurred())
@@ -265,8 +270,12 @@ var _ = Describe("the sandbox", func() {
 	It("stops both proxies and removes the run's directories however the run ends", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
 		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(
+			context.Context, sandbox.Network, string, string, *security.Tally,
+		) (EgressProxy, error) {
+			return e, nil
+		}
 		h.answerOpencode(errStream("ContextOverflowError", 0))
 
 		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
@@ -284,7 +293,7 @@ var _ = Describe("the sandbox", func() {
 		fake := &fakeEgress{
 			url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9", domains: []string{"api.example.com"},
 		}
-		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _, _ string) (EgressProxy, error) {
+		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _, _ string, _ *security.Tally) (EgressProxy, error) {
 			fake.policy = policy
 
 			return fake, nil
