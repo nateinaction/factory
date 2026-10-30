@@ -324,6 +324,18 @@ func LogHandler(inner slog.Handler) slog.Handler {
 	return spanHandler{inner}
 }
 
+// SpanLogger returns log with the active span's trace_id and span_id attached, so records that carry
+// no context, as most of foreman's do, still name the run's trace. Outside a real span, as before a
+// run starts, it returns log unchanged.
+func SpanLogger(log *slog.Logger, ctx context.Context) *slog.Logger {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return log
+	}
+
+	return log.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+}
+
 // spanHandler adds the active span's ids to each record.
 type spanHandler struct{ slog.Handler }
 
