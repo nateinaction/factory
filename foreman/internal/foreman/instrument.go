@@ -58,7 +58,7 @@ func newAlertInstruments(d Deps) alertInstruments {
 
 	return alertInstruments{
 		security: telemetry.Int64Counter(m, telemetry.MetricSecurityEvents,
-			"Security events by agent role, repository, issue, event, outcome and trace."),
+			"Security events by agent role, repository, issue, event and outcome."),
 		outcomes: telemetry.Int64Counter(m, telemetry.MetricRunOutcomes,
 			"Finished runs by agent role, repository and outcome."),
 		cost: telemetry.Float64Counter(m, telemetry.MetricRunCost,

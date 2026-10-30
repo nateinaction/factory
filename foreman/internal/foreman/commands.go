@@ -1300,7 +1300,6 @@ func runAsFactory(
 	ceiling := cfg.Agents[string(role)].Deadline() + cfg.RetroBudget(role).Deadline() + supervisorGitRuns*GitTimeout
 
 	// The factory half records the same transition markers, so both halves must name one run.
-	// The factory half records the same transition markers, so both halves must name one run.
 	// sudo's env_reset drops the environment, so the sudoers rule keeps each variable by name. The
 	// OTEL_* export variables go too: they are telemetry, never a setting, so a caller cannot use
 	// them to point the factory half at another configuration.
