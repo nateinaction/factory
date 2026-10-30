@@ -46,8 +46,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, host_name) (rate(traces_span_metrics_duration_bucket{span_name=\"$run_span\"}[$__rate_interval])))",
-          "legendFormat": "p95 ${__field.labels.host_name}",
+          "expr": "histogram_quantile(0.95, sum by (le, host_name) (rate(traces_span_metrics_duration_milliseconds_bucket{span_name=\"$run_span\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{ '{{host_name}}' }}",
           "range": true,
           "refId": "A"
         }
@@ -115,7 +115,7 @@
           },
           "editorMode": "code",
           "expr": "max by (host_name) (factory_host_temperature_celsius)",
-          "legendFormat": "${__field.labels.host_name}",
+          "legendFormat": "{{ '{{host_name}}' }}",
           "range": true,
           "refId": "A"
         }
@@ -179,7 +179,7 @@
           },
           "editorMode": "code",
           "expr": "max by (host_name, factory_host_health_kind) (factory_host_throttled{factory_host_health_state=\"now\"})",
-          "legendFormat": "${__field.labels.host_name} ${__field.labels.factory_host_health_kind}",
+          "legendFormat": "{{ '{{host_name}}' }} {{ '{{factory_host_health_kind}}' }}",
           "range": true,
           "refId": "A"
         }
@@ -247,7 +247,7 @@
           },
           "editorMode": "code",
           "expr": "100 * (1 - sum by (host_name) (node_memory_MemAvailable_bytes) / sum by (host_name) (node_memory_MemTotal_bytes))",
-          "legendFormat": "${__field.labels.host_name}",
+          "legendFormat": "{{ '{{host_name}}' }}",
           "range": true,
           "refId": "A"
         }
@@ -315,7 +315,7 @@
           },
           "editorMode": "code",
           "expr": "100 * (1 - sum by (host_name) (node_filesystem_avail_bytes{factory_host_health_mountpoint=\"/\"}) / sum by (host_name) (node_filesystem_size_bytes{factory_host_health_mountpoint=\"/\"}))",
-          "legendFormat": "${__field.labels.host_name}",
+          "legendFormat": "{{ '{{host_name}}' }}",
           "range": true,
           "refId": "A"
         }

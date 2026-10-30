@@ -129,7 +129,7 @@ check "the reporter runs every 30 seconds" bash -c "
 check "the dashboard shows run duration per worker host" conf '
 exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
 run = next(expr for title, expr in exprs.items() if "Run duration" in title)
-assert "traces_span_metrics_duration_bucket" in run, run
+assert "traces_span_metrics_duration_milliseconds_bucket" in run, run
 assert "host_name" in run, run
 assert "span_name" in run, run
 '
@@ -151,6 +151,12 @@ memory = next(expr for title, expr in exprs.items() if "memory" in title.lower()
 disk = next(expr for title, expr in exprs.items() if "disk" in title.lower())
 assert "node_memory_MemAvailable_bytes" in memory and "host_name" in memory, memory
 assert "node_filesystem_avail_bytes" in disk and "host_name" in disk, disk
+'
+check "every legend names its series with a Prometheus placeholder, which Grafana fills from the labels" conf '
+for p in dash["panels"]:
+    legend = p["targets"][0]["legendFormat"]
+    assert "{{host_name}}" in legend, (p["title"], legend)
+    assert "__field" not in legend, (p["title"], legend)
 '
 check "prometheus promotes each host's name to a metric label" conf '
 assert "host.name" in prom["otlp"]["promote_resource_attributes"], prom

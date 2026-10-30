@@ -423,7 +423,7 @@ factory_alerts_cost_window: 24h
 factory_alerts_daily_cost_budget_usd: 5
 # A foreman run's root span name (telemetry.RootSpanName("run")). The spanmetrics connector turns
 # every span into traces_span_metrics_duration (in Prometheus,
-# traces_span_metrics_duration_bucket); the dashboard's run-duration panel keeps only this name, so
+# traces_span_metrics_duration_milliseconds_bucket); the dashboard's run-duration panel keeps only this name, so
 # it reports the run, not its stages. An operator can override it in the dashboard without a
 # redeploy.
 factory_telemetry_run_span: foreman.run
