@@ -461,8 +461,12 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 	return "", nil
 }
 
-// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH.
-const devEnvJSON = `{"variables":{"PATH":"/nix/store/toolchain/bin"}}`
+// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH, among variables
+// of the other types nix reports (a plain variable and an array, whose value is not a string).
+const devEnvJSON = `{"variables":{` +
+	`"PATH":{"type":"exported","value":"/nix/store/toolchain/bin"},` +
+	`"BASH":{"type":"var","value":"/nix/store/bash/bin/bash"},` +
+	`"buildInputs":{"type":"array","value":["/nix/store/a","/nix/store/b"]}}}`
 
 // tokenHelper answers github-app-token: an App lists and mints only where it is installed.
 func (h *harness) tokenHelper(c proc.Cmd) (string, error) {

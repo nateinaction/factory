@@ -15,7 +15,32 @@ import (
 // devEnv is the part of `nix print-dev-env --json` foreman reads: the shell variables, of which PATH
 // names the resolved toolchain's store paths.
 type devEnv struct {
-	Variables map[string]string `json:"variables"`
+	Variables map[string]devVar `json:"variables"`
+}
+
+// devVar is one variable nix reports: its type and its value, which is a string for a variable and a
+// list for an array. Only PATH is read, so the value stays raw until then.
+type devVar struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
+}
+
+// pathVar is the variable that names the resolved toolchain.
+const pathVar = "PATH"
+
+// path is the PATH the environment reports; it is an error when there is none, or it is not a string.
+func (e devEnv) path() (string, error) {
+	raw := e.Variables[pathVar].Value
+	if len(raw) == 0 {
+		return "", nil
+	}
+
+	var path string
+	if err := json.Unmarshal(raw, &path); err != nil {
+		return "", fmt.Errorf("read %s: %w", pathVar, err)
+	}
+
+	return path, nil
 }
 
 // toolchain resolves the repository's dev environment outside the sandbox, from the flake on the
@@ -94,11 +119,16 @@ func (d Deps) evaluateDevEnv(ctx context.Context, repo workflow.Repo, f sandboxF
 		return "", fmt.Errorf("parse the default branch's dev environment: %w", err)
 	}
 
-	if env.Variables["PATH"] == "" {
+	path, err := env.path()
+	if err != nil {
+		return "", fmt.Errorf("parse the default branch's dev environment: %w", err)
+	}
+
+	if path == "" {
 		return "", fmt.Errorf("the default branch's flake resolved no PATH for %s", repo)
 	}
 
-	return env.Variables["PATH"], nil
+	return path, nil
 }
 
 // nixEnv is the environment of the dev-environment resolution: the run's private HOME and XDG
