@@ -43,9 +43,10 @@ const (
 	AttrAgentRole = "factory.agent_role"
 	// AttrRepo is the repository a span, event or measurement belongs to.
 	AttrRepo = "factory.repo"
-	// AttrIssue is the issue number a span or event belongs to. It is not a metric label, with one
-	// deliberate exception: a security event's metric carries it so the per-event alert can name the
-	// issue it needs a human to look at (see instrument.go's securityEvents and #132).
+	// AttrIssue is the issue number a span or event belongs to. It is not a metric label, with two
+	// deliberate exceptions: a security event's metric and a reaped run's metric carry it, so their
+	// alerts can name the issue a human needs to look at (see instrument.go's securityEvents and
+	// runReaped, and #132). No other metric carries it.
 	AttrIssue = "factory.issue"
 	// AttrState is the factory handoff state an issue is in.
 	AttrState = "factory.state"
@@ -82,9 +83,6 @@ const (
 	// AttrRunID is the dagu run id one run's spans belong to, which ties a run's spans to its log.
 	// `status` finds a run's trace from its TRACEPARENT, not from this attribute.
 	AttrRunID = "factory.run_id"
-	// AttrTraceID is the W3C trace id a security event was raised under. Only the security-event
-	// metric carries it, so a per-event alert can link to the trace that raised it.
-	AttrTraceID = "factory.trace_id"
 )
 
 // Poll span names. Enqueue is separate from its repository span so a run can continue its trace.
@@ -111,21 +109,24 @@ const (
 
 // Metric names.
 const (
-	// MetricPollIssues counts open issues in each factory state, per repository.
+	// MetricPollIssues is the number of open issues in each factory state, per repository. It is a
+	// gauge, so a state that has emptied reports zero.
 	MetricPollIssues = "factory.poll.issues"
 	// MetricPollClaims counts the issues a poll claimed, per agent role and repository.
 	MetricPollClaims = "factory.poll.claims"
 	// MetricPollCapacity is the run capacity left for an agent role after the poll's claims.
 	MetricPollCapacity = "factory.poll.capacity_left"
-	// MetricSecurityEvents counts the security events of each agent role and repository, by event and
-	// outcome. It is the metric an alert reads; the event's issue stays a span attribute.
+	// MetricSecurityEvents counts the security events of each agent role and repository, by issue,
+	// event and outcome. It is the metric an alert reads, and the issue is a label so the alert can
+	// name it; no trace id is.
 	MetricSecurityEvents = "factory.security.events"
 	// MetricRunOutcomes counts finished runs by agent role, repository and outcome. A failed run's
 	// share of the total is the agent role's failure rate.
 	MetricRunOutcomes = "factory.run.outcomes"
 	// MetricRunCost is what model calls cost, in US dollars, by agent role, repository and model.
 	MetricRunCost = "factory.run.cost"
-	// MetricRunsReaped counts dead runs a poll called failed.
+	// MetricRunsReaped counts dead runs a poll called failed, by agent role, repository and issue.
+	// Like a security event, it carries the issue so its alert can name it; no trace id is.
 	MetricRunsReaped = "factory.runs.reaped"
 )
 

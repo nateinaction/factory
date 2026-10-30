@@ -67,13 +67,17 @@
   loop:
     - { src: tempo.yaml.j2, dest: /etc/tempo/tempo.yaml, handler: tempo }
     - { src: loki.yaml.j2, dest: /etc/loki/loki.yaml, handler: loki }
-    - { src: grafana.ini.j2, dest: /etc/grafana/grafana.ini, handler: grafana }
     - { src: datasources.yaml.j2, dest: /etc/grafana/provisioning/datasources/factory.yaml, handler: grafana }
     - { src: dashboards.yaml.j2, dest: /etc/grafana/provisioning/dashboards/factory.yaml, handler: grafana }
     - { src: host-health.json.j2, dest: /etc/grafana/dashboards/host-health.json, handler: grafana }
   loop_control:
     label: "{{ item.dest }}"
   notify: "Restart {{ item.handler }}"
+
+# Grafana's config holds its admin password, so it has its own task: root-only, and the password
+# guard that fails the play closed when it is unset.
+- name: Configure Grafana
+  ansible.builtin.include_tasks: grafana.yml
 
 - name: Install the systemd units
   ansible.builtin.template:

@@ -178,8 +178,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (host_name, kind) (factory_host_throttled{state=\"now\"})",
-          "legendFormat": "${__field.labels.host_name} ${__field.labels.kind}",
+          "expr": "max by (host_name, factory_host_health_kind) (factory_host_throttled{factory_host_health_state=\"now\"})",
+          "legendFormat": "${__field.labels.host_name} ${__field.labels.factory_host_health_kind}",
           "range": true,
           "refId": "A"
         }
@@ -314,7 +314,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "100 * (1 - sum by (host_name) (node_filesystem_avail_bytes{mountpoint=\"/\"}) / sum by (host_name) (node_filesystem_size_bytes{mountpoint=\"/\"}))",
+          "expr": "100 * (1 - sum by (host_name) (node_filesystem_avail_bytes{factory_host_health_mountpoint=\"/\"}) / sum by (host_name) (node_filesystem_size_bytes{factory_host_health_mountpoint=\"/\"}))",
           "legendFormat": "${__field.labels.host_name}",
           "range": true,
           "refId": "A"

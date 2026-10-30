@@ -9,6 +9,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+export TELEMETRY_GO="$root/foreman/internal/telemetry/telemetry.go"
 
 failures=0
 check() {
@@ -46,6 +47,19 @@ want = {
 }
 assert {r["alert"] for r in rules} == want, {r["alert"] for r in rules}
 '
+# --- every rule selects on a label the emitted series carry ---
+check "each alert selects only labels foreman emits" rules '
+import os, re
+go = open(os.environ["TELEMETRY_GO"]).read()
+emitted = {m.replace(".", "_") for m in re.findall(r"^\s*Attr\w+\s*=\s*\"(factory\.[^\"]+)\"", go, re.M)}
+# AttrModel takes its key from the pinned GenAI conventions, not from a literal here.
+if "semconv.GenAIRequestModelKey" in go:
+    emitted.add("gen_ai_request_model")
+for r in rules:
+    for selector in re.findall(r"\{([^{}]*)\}", r["expr"]):
+        for label in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)", selector):
+            assert label in emitted, (r["alert"], label, sorted(emitted))
+'
 check "each alert fires from its synthetic event" bash -c "
   python3 -I '$root/tests/alerts_promtool.py' '$out/rules.json' '$out/promtool.json' &&
   promtool test rules '$out/promtool.json'"
@@ -57,34 +71,28 @@ for r in rules:
     assert "{{ $labels.factory_agent_role }}" in text, r["alert"]
     assert "{{ $labels.factory_repo }}" in text, r["alert"]
 '
-check "each security alert names the issue it was raised on" rules '
-security = {"ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker"}
+check "each per-issue alert names the issue it was raised on" rules '
+per_issue = {"ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker",
+             "ForemanDeadRunReaped"}
 for r in rules:
-    if r["alert"] not in security:
+    if r["alert"] not in per_issue:
         continue
     assert "#{{ $labels.factory_issue }}" in r["annotations"]["summary"], r["alert"]
     assert r["annotations"]["issue"].endswith("/issues/{{ $labels.factory_issue }}"), r["alert"]
 '
-check "each security alert links to the exact trace that raised it" rules '
-security = {"ForemanEgressNotRoutable", "ForemanProxyBadToken", "ForemanOutputFactoryMarker"}
+check "each alert links to the role and repository's traces" rules '
 for r in rules:
-    if r["alert"] not in security:
-        continue
-    trace = r["annotations"]["trace"]
-    assert trace.startswith(v["factory_alerts_grafana_url"] + "/explore?left="), r["alert"]
-    assert "traceId" in trace and "{{ $labels.factory_trace_id }}" in trace, r["alert"]
-'
-check "each aggregate alert links to the role and repository's traces" rules '
-aggregate = {"ForemanAgentRoleFailureRate", "ForemanDailyModelCost", "ForemanDeadRunReaped"}
-for r in rules:
-    if r["alert"] not in aggregate:
-        continue
     trace = r["annotations"]["trace"]
     assert trace.startswith(v["factory_alerts_grafana_url"] + "/explore?left="), r["alert"]
     assert "span.factory.agent_role" in trace and "span.factory.repo" in trace, r["alert"]
 '
+check "no alert reads a trace id label, because no metric carries one" rules '
+for r in rules:
+    assert "factory_trace_id" not in r["expr"], r["alert"]
+    assert "factory_trace_id" not in " ".join(r["annotations"].values()), r["alert"]
+'
 check "each aggregate alert links to the repository's failed issues" rules '
-aggregate = {"ForemanAgentRoleFailureRate", "ForemanDailyModelCost", "ForemanDeadRunReaped"}
+aggregate = {"ForemanAgentRoleFailureRate", "ForemanDailyModelCost"}
 for r in rules:
     if r["alert"] in aggregate:
         assert r["annotations"]["issue"] == \

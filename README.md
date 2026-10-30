@@ -14,7 +14,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the factory's own forked skills (`roles/agent/files/skills/`, each naming the upstream path and ref it was forked from; nothing is cloned or pinned upstream at run time), and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `host_health` | `node_exporter` on every host, loopback only, for memory and filesystem use, plus a timer that writes the SoC temperature and the firmware's throttling bits (`vcgencmd get_throttled`) to its textfile collector. Each host's `collector` scrapes both and forwards them |
-| `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It tails the factory DAGs' run logs so foreman's diagnostics and security events reach Loki with their trace ids, keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards traces, metrics and diagnostics to the telemetry backend (`factory_collector_backend_host`). It reads dagu's 0600 run logs with one read-only capability and runs unprivileged otherwise. The egress proxy refuses loopback, so a sandboxed run cannot reach it |
+| `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It tails the factory DAGs' run logs so foreman's diagnostics and security events reach Loki with their trace ids, drops a line it cannot parse as JSON rather than shipping it raw, keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards traces, metrics and diagnostics to the telemetry backend (`factory_collector_backend_host`). It reads dagu's 0600 run logs with one read-only capability and runs unprivileged otherwise. The egress proxy refuses loopback, so a sandboxed run cannot reach it |
 | `telemetry` | the telemetry backend on the dagu server, from nixpkgs: Prometheus (OTLP metrics), Tempo (traces), Loki (diagnostics) and Grafana in front. Every service binds loopback and `tailscale serve` exposes it to the tailnet only; every store is bounded by age or size; see ADR 0002 |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
@@ -120,9 +120,11 @@ Grafana is at `https://<server>.<tailnet>.ts.net:3000` (`factory_telemetry_grafa
 dagu UI it is reachable by anyone on the tailnet, and so are the three ingest ports the other hosts'
 collectors push to (Tempo 14317, Prometheus 9090, Loki 3100); restrict all of them with tailscale
 ACLs. Grafana's admin login comes from `factory_telemetry_grafana_admin_user` and
-`factory_telemetry_grafana_admin_password`, which the play writes into `grafana.ini`; the group_vars
-default documents the login as `admin` / `admin`, so override the password (or put it in an
-ansible-vault file) before provisioning and change it in Grafana afterwards.
+`factory_telemetry_grafana_admin_password`. The password has no default: `cp
+secrets/telemetry.example.yml secrets/telemetry.yml`, fill it in (encrypt it with `ansible-vault
+encrypt` if you like), and pass it with `-e @secrets/telemetry.yml`; the play fails closed when it is
+unset. The play writes it into `grafana.ini`, which only root may read, and it can be changed in
+Grafana afterwards.
 
 To follow a run, open Explore with the Tempo datasource and search by the run's trace id. The trace
 links to the run's diagnostics (Loki) and metrics (Prometheus); in Loki, `{} | trace_id="<id>"`
@@ -134,17 +136,18 @@ memory the stack may use is `factory_telemetry_memory_budget_mib`.
 Prometheus evaluates the alert rules in `roles/telemetry/templates/alerts.yaml.j2`: egress refused a
 non-public address, a request to either proxy without the run token, an output file carrying a factory
 marker, an agent role's failure rate, the daily model cost and a dead run reaped by a poll. The
-per-event alerts name the agent role, repository and issue and link straight to the trace that raised
-them; the aggregate alerts name the agent role and repository and link to a search for their offending
+per-issue alerts name the agent role, repository and issue and link to a search for the role's traces;
+the aggregate alerts name the agent role and repository and link to a search for their offending
 traces and to the repository's failed issues. Every threshold, window and the cost budget is a
 `factory_alerts_*` setting in `group_vars/factory.yml`. The rules fire into Prometheus's own list at
 `http://127.0.0.1:9090/alerts` on the server; no Alertmanager is configured, so they are read there
 or in Grafana rather than pushed.
 
-The issue reaches a per-event alert as a label on the security-event metric only. That is a deliberate
-exception to "an issue number is a span attribute, never a metric label": a Prometheus rule can
-template only labels, and the alert has to name the issue it needs a human to look at. Every other
-metric keeps the issue out.
+The issue reaches a per-issue alert as a label on the security-event and reaped-run metrics, the two
+low-volume signals that need a human. That is a deliberate exception to "an issue number is a span
+attribute, never a metric label": a Prometheus rule can template only labels, and the alert has to
+name the issue it needs a human to look at. Every other metric keeps the issue out, and no metric
+carries a trace id; an alert links to a trace search instead.
 
 Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
 host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk
@@ -245,7 +248,11 @@ Things to know:
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
   output, never diagnostics. The model's transcript (private repository code,
   issue text) is logged only at `debug`, with every secret the run holds redacted;
-  at the default level the run log carries no transcript.
+  at the default level the run log carries no transcript. The model process's standard error is a
+  debug-only sink too: each line is redacted and logged at `debug` as an attribute of foreman's own
+  record, never written raw to the diagnostic stream, so a sandboxed tool can neither forge a
+  record's level, message and trace id nor leak text the redaction missed. Each host's collector also
+  drops any line on dagu's stderr that is not a JSON record rather than shipping it as raw text.
 - Each run leaves its usage record out of band, at `<work root>/usage/<run id>.json` on the host
   that ran it: tokens, cost, duration, attempts and outcome. On the dagu server the Ansible role
   writes the telemetry backend into the config (`telemetry_url`, pointing at that host's Tempo), so
