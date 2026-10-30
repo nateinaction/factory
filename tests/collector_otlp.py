@@ -23,6 +23,27 @@ import urllib.request
 TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 SPAN_ID = "00f067aa0ba902b7"
 
+# The security events a run's stderr carries. Every field of each must reach the sink, so one query
+# on the record's body returns all of them with the run and host they name.
+SECURITY_EVENTS = [
+    {
+        "event": "output_rejected",
+        "outcome": "factory_marker",
+        "host": "blocked.example",
+        "agent_role": "implementer",
+        "repository": "o/r",
+        "issue": 5,
+    },
+    {
+        "event": "egress_refused",
+        "outcome": "refused_not_routable",
+        "host": "metadata.example",
+        "agent_role": "implementer",
+        "repository": "o/r",
+        "issue": 5,
+    },
+]
+
 
 def free_port():
     """Return a port nothing is listening on."""
@@ -86,6 +107,11 @@ def span_payload(now):
                                     attr("factory.repo", "o/r"),
                                     attr("factory.issue", 5),
                                     attr("factory.run_id", "run-old"),
+                                    # What a poll and a process report about themselves.
+                                    attr("factory.skip_reason", "capacity_full"),
+                                    attr("factory.attempt", 2),
+                                    attr("factory.verb", "start"),
+                                    attr("factory.exit_code", 1),
                                     # Never allowlisted: neither the key nor its value may leave.
                                     attr("not.allowed.attr", "secret-span-value"),
                                 ],
@@ -292,20 +318,21 @@ service:
         # A run's stderr as dagu writes it, appended after the receiver started (start_at: end).
         time.sleep(1)
         with open(run_err, "a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "time": "2026-01-01T00:00:00.123456789Z",
-                        "level": "INFO",
-                        "msg": "security event",
-                        "event": "output_rejected",
-                        "trace_id": TRACE_ID,
-                        "span_id": SPAN_ID,
-                        "not.allowed.filelog": "secret-filelog-value",
-                    }
+            for event in SECURITY_EVENTS:
+                f.write(
+                    json.dumps(
+                        {
+                            "time": "2026-01-01T00:00:00.123456789Z",
+                            "level": "WARN",
+                            "msg": "security event",
+                            **event,
+                            "trace_id": TRACE_ID,
+                            "span_id": SPAN_ID,
+                            "not.allowed.filelog": "secret-filelog-value",
+                        }
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
             # A line that is not a JSON record, as a tool writing to fd 2 could leave behind: it must
             # be dropped rather than shipped as raw text to Loki.
             f.write("private raw tool output\n")
@@ -317,8 +344,13 @@ service:
             "factory.state",
             "factory.host_health.kind",
             "factory.host_health.state",
+            "factory.skip_reason",
+            "factory.attempt",
+            "factory.verb",
+            "factory.exit_code",
             "hello diagnostic",
             "security event",
+            "egress_refused",
         ]
         deadline = time.time() + 40
         while time.time() < deadline:
@@ -369,6 +401,50 @@ service:
         sys.stderr.write("the collector shipped a line it could not parse as JSON\n")
         sys.stderr.write(out)
         return 1
+
+    # A poll's skip reason and a process's verb, exit code and attempt are what #126 and #122 read,
+    # so each must survive the allowlist on the span that carries it.
+    run_attributes = [
+        "factory.skip_reason: Str(capacity_full)",
+        "factory.attempt: Int(2)",
+        "factory.verb: Str(start)",
+        "factory.exit_code: Int(1)",
+    ]
+    lost = [marker for marker in run_attributes if marker not in out]
+    if lost:
+        sys.stderr.write("the collector dropped a run attribute: " + repr(lost) + "\n")
+        sys.stderr.write(out)
+        return 1
+
+    # Every security event ships with the whole record. They share one body, so one query returns all
+    # of them; the record itself names the event, outcome, host and run it belongs to.
+    records = out.split("Body: Str(security event)")[1:]
+    shipped = {
+        event["event"]: record
+        for record in records
+        for event in SECURITY_EVENTS
+        if "event: Str(" + event["event"] + ")" in record
+    }
+    if set(shipped) != {event["event"] for event in SECURITY_EVENTS}:
+        sys.stderr.write("not every security event reached the sink: " + repr(sorted(shipped)) + "\n")
+        sys.stderr.write(out)
+        return 1
+
+    for event in SECURITY_EVENTS:
+        fields = [
+            "outcome: Str(" + event["outcome"] + ")",
+            "host: Str(" + event["host"] + ")",
+            "agent_role: Str(" + event["agent_role"] + ")",
+            "repository: Str(" + event["repository"] + ")",
+            "issue: Double(" + str(event["issue"]) + ")",
+        ]
+        missing = [field for field in fields if field not in shipped[event["event"]]]
+        if missing:
+            sys.stderr.write(
+                "the collector dropped a security event field: " + repr(missing) + "\n"
+            )
+            sys.stderr.write(out)
+            return 1
 
     # The filelog record's trace id survives as the record's trace context and as an attribute Loki's
     # derived field matches, so a trace can be followed to its diagnostics.
