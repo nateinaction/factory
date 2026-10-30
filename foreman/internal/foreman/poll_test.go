@@ -136,6 +136,59 @@ var _ = Describe("Poll", func() {
 		})
 	})
 
+	Describe("reading comments", func() {
+		It("reads the comments of a repository's issues at the same time, so a long queue does not add up", func() {
+			first := h.createAs("o", nil, "First")
+			second := h.createAs("o", nil, "Second")
+			h.comment(first, "o", "please work on this")
+			h.comment(second, "o", "please work on this")
+
+			// Each issue's first comment read waits for the other's. A poll that reads one issue's
+			// comments after another's never lets the second arrive, and the wait gives up.
+			var (
+				mu      sync.Mutex
+				arrived = map[int]bool{}
+				both    = make(chan struct{})
+				gaveUp  bool
+			)
+
+			meet := func(number int) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					arrived[number] = true
+
+					if len(arrived) == 2 {
+						select {
+						case <-both:
+						default:
+							close(both)
+						}
+					}
+					mu.Unlock()
+
+					select {
+					case <-both:
+					case <-time.After(3 * time.Second):
+						mu.Lock()
+						gaveUp = true
+						mu.Unlock()
+					}
+
+					h.gh.Forward(w, r)
+				}
+			}
+			h.gh.Handle(fmt.Sprintf("GET /repos/o/r/issues/%d/comments", first), meet(first))
+			h.gh.Handle(fmt.Sprintf("GET /repos/o/r/issues/%d/comments", second), meet(second))
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			Expect(gaveUp).To(BeFalse(), "the second issue's comments were not read while the first's were pending")
+		})
+	})
+
 	Describe("routing a new issue", func() {
 		DescribeTable("puts a ticket in its first queue",
 			func(labels []string, want string) {

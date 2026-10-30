@@ -214,12 +214,14 @@ func retroLog(
 
 	threads := map[int]promotedThread{}
 
-	for _, issue := range issues {
-		if issue.IsPullRequest || issue.Comments == 0 {
-			continue
-		}
+	// The log spans every issue the repository has, so its reads overlap rather than add up.
+	logged := slices.DeleteFunc(slices.Clone(issues), func(issue workflow.Issue) bool {
+		return issue.IsPullRequest || issue.Comments == 0
+	})
+	reads := readComments(ctx, c, repo, logged)
 
-		comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
+	for i, issue := range logged {
+		comments, err := reads[i].items, reads[i].err
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
 		}

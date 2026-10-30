@@ -406,18 +406,52 @@ func prepareRepo(
 
 	measureIssues(ctx, inst, repo, issues)
 
-	for _, issue := range issues {
-		if issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused) {
-			continue
-		}
+	work := slices.DeleteFunc(slices.Clone(issues), func(issue workflow.Issue) bool {
+		return issue.IsPullRequest || workflow.HasLabel(issue, workflow.LabelPaused)
+	})
+	reads := readComments(ctx, c, repo, work)
 
-		if err := settleIssue(ctx, d, cfg, c, perms, inst, repo, issue); err != nil {
+	for i, issue := range work {
+		if err := settleIssue(ctx, d, cfg, c, perms, inst, repo, issue, reads[i]); err != nil {
 			// One unreadable issue fails closed for that issue; the poll carries on.
 			d.log().Warn("skipping an issue the poll cannot read", "repo", repo, "issue", issue.Number, "error", err)
 		}
 	}
 
 	return nil
+}
+
+// commentReads is how many issues' comments one repository's poll reads at once.
+const commentReads = 8
+
+// commentRead is what reading one issue's comments gave: the comments, or why they could not be read.
+type commentRead struct {
+	items []workflow.Item
+	err   error
+}
+
+// readComments reads the comments of every issue, a few at a time. The reads change nothing, so they
+// can overlap, and the result is in the order of issues. The settling that follows stays one issue
+// after another, since each claim changes what the next may take.
+func readComments(ctx context.Context, c github.Client, repo workflow.Repo, issues []workflow.Issue) []commentRead {
+	reads := make([]commentRead, len(issues))
+	slots := make(chan struct{}, commentReads)
+
+	var wg sync.WaitGroup
+
+	for i, issue := range issues {
+		slots <- struct{}{}
+
+		wg.Go(func() {
+			defer func() { <-slots }()
+
+			reads[i].items, reads[i].err = issueComments(ctx, c, repo, issue)
+		})
+	}
+
+	wg.Wait()
+
+	return reads
 }
 
 // measureIssues records how many open issues the repository has in each factory state, including zero
@@ -451,14 +485,14 @@ func measureIssues(ctx context.Context, inst pollInstruments, repo workflow.Repo
 // settleIssue calls a dead run failed, then repairs, wakes or routes the issue.
 func settleIssue(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
-	inst pollInstruments, repo workflow.Repo, issue workflow.Issue,
+	inst pollInstruments, repo workflow.Repo, issue workflow.Issue, read commentRead,
 ) error {
 	dead, err := failDeadRun(ctx, d, cfg, c, inst, repo, issue)
 	if err != nil || dead {
 		return err
 	}
 
-	return prepareIssue(ctx, d, c, perms, repo, issue)
+	return prepareIssue(ctx, d, c, perms, repo, issue, read)
 }
 
 // failDeadRun moves an issue whose running label outlived its agent role's deadline plus the dead-run
@@ -526,8 +560,9 @@ func failDeadRun(
 // prepareIssue repairs, wakes and routes one issue. A read failure is returned, so the issue is left alone.
 func prepareIssue(
 	ctx context.Context, d Deps, c github.Client, perms permissions, repo workflow.Repo, issue workflow.Issue,
+	read commentRead,
 ) error {
-	comments, err := issueComments(ctx, c, repo, issue)
+	comments, err := read.items, read.err
 	if err != nil {
 		return err
 	}
