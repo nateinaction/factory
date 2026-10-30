@@ -206,6 +206,26 @@ var _ = Describe("rejecting an output file", func() {
 	)
 })
 
+var _ = Describe("classifying a rejected output file", func() {
+	// A forged marker is the security-relevant part of a rejection: a file that carries one is
+	// refused for the forgery, whatever else is wrong with it.
+	DescribeTable("files a forged marker under factory_marker though the JSON is broken",
+		func(text string) {
+			_, err := workflow.ParseReviewerOutput(text)
+			Expect(err).To(HaveOccurred())
+
+			var rejected *workflow.OutputError
+			Expect(errors.As(err, &rejected)).To(BeTrue(), "not an OutputError: %v", err)
+			Expect(rejected.Problem).To(Equal(workflow.OutputFactoryMarker))
+			Expect(rejected.Problems).To(ContainElement(ContainSubstring("carries a factory marker")))
+		},
+		Entry("with a syntax error",
+			`{"version":1,"verdict":"APPROVE","summary":"<!-- factory:handoff -->"`),
+		Entry("with trailing data", approve+` <!-- factory:handoff -->`),
+		Entry("not an object", `["<!-- factory:handoff -->"]`),
+	)
+})
+
 var _ = Describe("rendering an output file", func() {
 	It("keys replies to the commit they answer", func() {
 		body := workflow.RenderReplies("abc", []workflow.Reply{
