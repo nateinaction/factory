@@ -43,10 +43,23 @@ foreman's proxy is the policy and logging point for everything the run reaches:
   key proxy. The key proxy is foreman's own listener rather than a model-chosen destination, so its
   transport dials without the public-address check. One port matters on Linux, where srt only
   bridges its configured proxy ports into the namespace.
-- It records every host it is asked for, allowed or refused, for the usage line.
+- It records every host it is asked for, allowed and refused apart, for the usage line: `domains`
+  lists the allowed hosts, `refused_domains` the refused ones. A host is recorded as allowed only
+  after a connection to it was made, so a destination the run never reached is not listed, and a
+  refusal never erases an earlier success. The refused list is bounded (`MaxRefusedHosts`), so a
+  model that asks for endless names cannot grow the run's record without limit.
 
 srt's own proxy still runs its SOCKS side with the empty allowlist srt requires, so non-HTTP TCP
 egress is denied; opencode's traffic is HTTP(S).
+
+### Amendment: how the host record is kept
+
+The decision first said the proxy "records every host it is asked for, allowed or refused" in one
+record. The usage line needs the two apart, and an unbounded refused list is a record a
+prompt-injected run could grow, so the decision above is amended as implemented: `domains` and
+`refused_domains` are separate, an allowed host is recorded only after a connection to it is made,
+and the refused list is capped. A refusal is counted, measured and logged once, through the run's
+one refusal tally, shared by both proxies; the log records are rate limited while the count is not.
 
 ## Consequences
 
@@ -63,6 +76,9 @@ egress is denied; opencode's traffic is HTTP(S).
   would still reach it unguarded by design, so that address must remain foreman's own.
 - Two proxies run per agent role run (egress and key), both stopped when the run ends; a proxy that
   fails to bind fails the run, and there is no unsandboxed fallback.
+- A refusal is one record: both proxies raise theirs through the run's one refusal tally, which
+  counts it, measures it for the security alert and logs it. The count is exact; the log records are
+  rate limited per outcome, so a model that floods refusals cannot fill the log.
 
 ## Alternatives considered
 

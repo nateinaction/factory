@@ -75,8 +75,9 @@ func (g gateway) dialContext(ctx context.Context, network, address string) (net.
 	return g.dialDecided(ctx, network, address, nil)
 }
 
-// dialDecided is dialContext with decided told the host once the destination passes its checks, before
-// any connection is made. A refusal never calls decided, so it cannot undo an earlier record.
+// dialDecided is dialContext with decided told the host once a connection to it is made: a host the
+// run never reached is not a host it contacted. A refusal happens in the lookup, before any dial, so it
+// never calls decided and cannot undo an earlier record.
 func (g gateway) dialDecided(
 	ctx context.Context, network, address string, decided func(host string),
 ) (net.Conn, error) {
@@ -90,11 +91,16 @@ func (g gateway) dialDecided(
 		return nil, err
 	}
 
+	conn, err := g.reach(ctx, network, host, port, addrs)
+	if err != nil {
+		return nil, err
+	}
+
 	if decided != nil {
 		decided(host)
 	}
 
-	return g.reach(ctx, network, host, port, addrs)
+	return conn, nil
 }
 
 // reach dials one of the addresses lookup returned, trying each in turn.

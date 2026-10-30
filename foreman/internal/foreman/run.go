@@ -171,8 +171,6 @@ type session struct {
 	gitArgv  []string
 	// spans opens the run's stage spans, each carrying the run's attributes.
 	spans stageSpans
-	// alerts are the run's instruments, so a stage of the run records through the same set.
-	alerts alertInstruments
 	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
@@ -212,7 +210,7 @@ func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
 // environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
 // run outside the sandbox; identity adds the committer a run needs.
-func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans, alerts alertInstruments) session {
+func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans) session {
 	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
 
 	return session{
@@ -222,7 +220,6 @@ func newSession(d Deps, j job, workdir string, identity []string, spans stageSpa
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
 		spans:    spans,
-		alerts:   alerts,
 		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
@@ -295,18 +292,21 @@ func (r run) loadJob(ctx context.Context, env runEnv, external []string, db stri
 // an unsandboxed fallback.
 func (d Deps) egress(
 	ctx context.Context, role workflow.Role, ref workflow.IssueRef, policy sandbox.Network, apiURL, token string,
+	refusals *security.Tally,
 ) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
-		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
+		start = func(
+			ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+		) (EgressProxy, error) {
 			// The proxy's security events carry the run they belong to.
 			log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
-			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log)
+			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log, refusals)
 		}
 	}
 
-	return start(ctx, policy, apiURL, token)
+	return start(ctx, policy, apiURL, token, refusals)
 }
 
 // proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
@@ -329,16 +329,16 @@ func proxyPort(addr string) int {
 // fails the run: the model has no other way to reach OpenRouter. Its security events carry the run
 // they belong to.
 func (d Deps) proxy(
-	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string,
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string, refusals *security.Tally,
 ) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
 		log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
 
-		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log)
+		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log, refusals)
 	}
 
-	return start(key, token, openrouter.Loopback)
+	return start(key, token, openrouter.Loopback, refusals)
 }
 
 // tokenBytes is the entropy of the per-run proxy token.
@@ -403,15 +403,13 @@ func startCode(err error, code int) int {
 // emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
 // and is never retried, so the run is worth recording on its own. It records through the run's own
 // instruments, built when the run started.
-func emitStepCap(
-	ctx context.Context, d Deps, alerts alertInstruments, role workflow.Role, repo workflow.Repo, number int, err error,
-) {
+func (r run) emitStepCap(ctx context.Context, err error) {
 	if opencode.KindOf(err) != opencode.FailStepCap {
 		return
 	}
 
-	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventRunCapped,
-		security.RunStepCap, "")
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventRunCapped, security.RunStepCap, "")
 }
 
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
@@ -527,10 +525,7 @@ func outputProblem(file string, err error) error {
 // rejectOutput posts every problem with a rejected output file in one comment, emits the rejection's
 // security event, then returns the failure the run reports. Nothing in the file is applied: the issue
 // goes to failed instead.
-func rejectOutput(
-	ctx context.Context, d Deps, alerts alertInstruments, c github.Client, repo workflow.Repo, number int,
-	role workflow.Role, err error,
-) error {
+func (r run) rejectOutput(ctx context.Context, c github.Client, err error) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
 		return err
@@ -541,10 +536,11 @@ func rejectOutput(
 	// values, so there is no bridge to fall through.
 	outcome := security.Outcome(rejected.Problem)
 
-	alerts.securityEvent(ctx, d.log(), securityRun(role, repo, number), security.EventOutputRejected, outcome, "")
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventOutputRejected, outcome, "")
 
 	lines := []string{
-		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
+		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", r.role), "",
 		fmt.Sprintf("File: `%s`", rejected.File), "",
 	}
 	for _, problem := range rejected.Problems {
@@ -552,7 +548,9 @@ func rejectOutput(
 	}
 
 	text := workflow.Truncate(strings.Join(lines, "\n"), workflow.CommentLimitChars)
-	if postErr := c.Comment(ctx, workflow.IssueRef{Repo: repo, Number: number}, text); postErr != nil {
+
+	ref := workflow.IssueRef{Repo: r.spec.ref.Repo, Number: r.spec.ref.Number}
+	if postErr := c.Comment(ctx, ref, text); postErr != nil {
 		// Both failures matter: the file was bad and the report never reached the issue.
 		return errors.Join(err, postErr)
 	}
@@ -1004,22 +1002,6 @@ func (s session) checkoutForReview(ctx context.Context, repo workflow.Repo, bran
 	return s.head(ctx)
 }
 
-// postVerdictTraced posts the verdict inside the publishing stage's review span.
-func postVerdictTraced(
-	ctx context.Context, d Deps, c github.Client, repo workflow.Repo, pr int, sha string,
-	out workflow.ReviewerOutput, issue workflow.Issue, limit int, spans stageSpans,
-) (int, error) {
-	ctx, span := spans.start(ctx, telemetry.SpanPublishReview)
-	defer span.End()
-
-	code, err := postVerdict(ctx, d, c, repo, pr, sha, out, issue, limit)
-	if err != nil {
-		markFailureOf(span, err)
-	}
-
-	return code, err
-}
-
 // postVerdict posts the verdict once per reviewed commit and returns the code `start` routes by. The
 // verdict leaves only through the output file, so nothing else can decide it.
 func postVerdict(
@@ -1055,7 +1037,7 @@ func postVerdict(
 		}
 
 		if reviewer == "" {
-			d.log().Warn("no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
+			d.log().WarnContext(ctx, "no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
 				"pr", pr, "author", issue.Author)
 
 			return workflow.ReviewClean, nil
@@ -1103,7 +1085,7 @@ func mergeReviewer(
 		}
 
 		if workflow.WriterPermission(permission) {
-			d.log().Info("asking the latest human writer to review and merge", "repo", repo,
+			d.log().InfoContext(ctx, "asking the latest human writer to review and merge", "repo", repo,
 				"issue", issue.Number, "reviewer", login)
 
 			return login, nil

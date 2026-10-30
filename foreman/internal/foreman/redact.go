@@ -1,6 +1,7 @@
 package foreman
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,7 +49,8 @@ func newRedactWriter(dst io.Writer, secrets []string) *redactWriter {
 	return &redactWriter{dst: dst, secrets: secrets, tail: tail}
 }
 
-// Write buffers p and writes out its complete lines.
+// Write buffers p and writes out its complete lines. A failing destination has still taken every
+// byte of p into the buffer, so Write reports len(p) with the error: a caller must not write p again.
 func (w *redactWriter) Write(p []byte) (int, error) {
 	w.pending += string(p)
 
@@ -57,7 +59,7 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 		w.pending = w.pending[i+1:]
 
 		if err := w.emit(redact(line, w.secrets)); err != nil {
-			return 0, err
+			return len(p), err
 		}
 	}
 
@@ -67,7 +69,7 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 		w.pending = clean[len(clean)-keep:]
 
 		if err := w.emit(clean[:len(clean)-keep]); err != nil {
-			return 0, err
+			return len(p), err
 		}
 	}
 
@@ -77,15 +79,17 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 // debugSink is the model process's standard error destination. It logs each line at debug level as
 // one attribute of a record foreman writes, so a line can never name its own level, message or trace
 // id. It is a debug-only sink: the line stays on the host unless debug logging is explicitly turned
-// on, and even then the collector's allowlist drops the text attribute.
+// on, and even then the collector's allowlist drops the text attribute. ctx is the span the model
+// runs in, so each line names the attempt it came from.
 type debugSink struct {
 	log *slog.Logger
+	ctx context.Context
 }
 
 // Write logs each line in p at debug level.
 func (s debugSink) Write(p []byte) (int, error) {
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(p), "\n"), "\n") {
-		s.log.Debug("agent stderr", "text", line)
+		s.log.DebugContext(s.ctx, "agent stderr", "text", line)
 	}
 
 	return len(p), nil

@@ -52,16 +52,20 @@ type Proxy struct {
 // StartWithLogger binds a proxy holding key on addr, forwarding only to OpenRouter's API. The proxy
 // answers only a request carrying token, the random value minted for this run, so no other local
 // caller can spend the key. addr must be a loopback address. A bind or parse failure is an error: the
-// run has no other way to reach a model. A request without the run token is refused and emits one
-// security event (internal/security); logger nil discards those diagnostics.
-func StartWithLogger(ctx context.Context, key, token, addr string, logger *slog.Logger) (*Proxy, error) {
-	return startAt(ctx, key, token, addr, Upstream, logger)
+// run has no other way to reach a model. A request without the run token is refused and raised as one
+// security event (internal/security); logger nil discards those diagnostics. refusals is the run's one
+// tally, shared with the egress proxy, so both count and measure a refusal the same way; nil counts
+// without a metric.
+func StartWithLogger(
+	ctx context.Context, key, token, addr string, logger *slog.Logger, refusals *security.Tally,
+) (*Proxy, error) {
+	return startAt(ctx, key, token, addr, Upstream, logger, refusals)
 }
 
 // startAt is StartWithLogger with the destination named. Only StartWithLogger's OpenRouter
 // destination is trusted; specs name a stand-in so none reaches the network.
 func startAt(
-	ctx context.Context, key, token, addr, upstream string, logger *slog.Logger,
+	ctx context.Context, key, token, addr, upstream string, logger *slog.Logger, refusals *security.Tally,
 ) (*Proxy, error) {
 	if token == "" {
 		return nil, errors.New("openrouter proxy: a per-run token is required")
@@ -87,7 +91,7 @@ func startAt(
 
 	p := &Proxy{
 		key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest, log: logger,
-		refusals: security.NewTally(),
+		refusals: security.TallyOr(refusals),
 	}
 	// The transport ignores the proxy environment variables, so the key can never be sent anywhere
 	// but OpenRouter.
@@ -141,7 +145,8 @@ func (p *Proxy) Usage() Usage {
 	return p.usage
 }
 
-// Refusals counts every refused request by outcome, which the alert rules read.
+// Refusals counts every refused request by outcome. It reads the run's tally, which this proxy shares
+// with the egress proxy and which measured each refusal as it happened.
 func (p *Proxy) Refusals() map[security.Outcome]int {
 	return p.refusals.Counts()
 }
@@ -166,7 +171,8 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// A call to the key proxy without the run token is a security event: it is what a model that
 		// tries to spend the key outside its run looks like. The event carries the destination and
 		// outcome, never the token or a header.
-		p.refusals.Refuse(p.log, security.EventKeyProxyRefused, security.RefusedBadToken, p.upstream.Hostname())
+		p.refusals.Refuse(r.Context(), p.log, security.EventKeyProxyRefused, security.RefusedBadToken,
+			p.upstream.Hostname())
 		http.Error(w, "openrouter proxy: run token required", http.StatusUnauthorized)
 
 		return

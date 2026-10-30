@@ -82,7 +82,7 @@ func policy(allowed ...string) sandbox.Network {
 func start(n sandbox.Network, apiURL string) *Proxy {
 	GinkgoHelper()
 
-	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", nil)
+	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", nil, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	return p
@@ -156,7 +156,7 @@ func (f resolverFunc) LookupNetIP(ctx context.Context, network, host string) ([]
 func startWith(n sandbox.Network, g gateway) *Proxy {
 	GinkgoHelper()
 
-	p, err := startProxy(GinkgoT().Context(), n, "", testToken, "127.0.0.1:0", nil, g)
+	p, err := startProxy(GinkgoT().Context(), n, "", testToken, "127.0.0.1:0", nil, g, nil)
 	Expect(err).NotTo(HaveOccurred())
 	DeferCleanup(p.Close)
 
@@ -464,7 +464,7 @@ var _ = Describe("Proxy", func() {
 	})
 
 	It("refuses to start without a run token", func() {
-		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "", "127.0.0.1:0", nil)
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "", "127.0.0.1:0", nil, nil)
 		Expect(err).To(MatchError(ContainSubstring("token")))
 	})
 
@@ -573,7 +573,7 @@ var _ = Describe("Proxy", func() {
 
 		logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0", logger)
+		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0", logger, nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(p.Close)
@@ -594,7 +594,7 @@ var _ = Describe("Proxy", func() {
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
-		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "0.0.0.0:0", nil)
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "0.0.0.0:0", nil, nil)
 		Expect(err).To(MatchError(ContainSubstring("loopback")))
 	})
 
@@ -609,7 +609,7 @@ var _ = Describe("Proxy", func() {
 
 		p, err := StartWithLogger(
 			GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0",
-			slog.New(slog.NewTextHandler(&logged, nil)),
+			slog.New(slog.NewTextHandler(&logged, nil)), nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -840,6 +840,24 @@ var _ = Describe("Proxy", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			Expect(p.Domains()).To(ContainElement("flip.example"))
 			Expect(p.Refused()).To(ContainElement("flip.example"))
+		})
+
+		It("records a host only once a connection to it is made", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					return nil, errors.New("test dial: connection refused")
+				},
+			})
+
+			resp, conn := connect(p.Address(), "unreachable.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+			Expect(p.Domains()).NotTo(ContainElement("unreachable.example"),
+				"a host the run never reached is recorded as allowed")
+			Expect(p.Refused()).To(BeEmpty(), "a dial failure is not a refusal")
 		})
 
 		It("bounds the refused hosts it remembers", func() {

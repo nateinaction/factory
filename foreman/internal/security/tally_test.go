@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"time"
@@ -12,11 +13,12 @@ import (
 
 var _ = Describe("Tally", func() {
 	It("counts every refusal by outcome and hands out a copy", func() {
-		tally := NewTally()
+		tally := NewTally(nil)
+		log := slog.New(slog.DiscardHandler)
 
-		tally.Refuse(slog.New(slog.DiscardHandler), EventEgressRefused, RefusedByPolicy, "blocked.example")
-		tally.Refuse(slog.New(slog.DiscardHandler), EventEgressRefused, RefusedByPolicy, "other.example")
-		tally.Refuse(slog.New(slog.DiscardHandler), EventEgressRefused, RefusedNotRoutable, "10.1.2.3")
+		tally.Refuse(context.Background(), log, EventEgressRefused, RefusedByPolicy, "blocked.example")
+		tally.Refuse(context.Background(), log, EventEgressRefused, RefusedByPolicy, "other.example")
+		tally.Refuse(context.Background(), log, EventEgressRefused, RefusedNotRoutable, "10.1.2.3")
 
 		counts := tally.Counts()
 		Expect(counts).To(Equal(map[Outcome]int{RefusedByPolicy: 2, RefusedNotRoutable: 1}))
@@ -32,13 +34,13 @@ var _ = Describe("Tally", func() {
 		var logged bytes.Buffer
 
 		log := slog.New(slog.NewJSONHandler(&logged, nil))
-		tally := NewTally()
+		tally := NewTally(nil)
 		tally.now = func() time.Time { return now }
 
 		events := func() int { return strings.Count(logged.String(), Message) }
 
 		refuse := func(outcome Outcome) {
-			tally.Refuse(log, EventEgressRefused, outcome, "blocked.example")
+			tally.Refuse(context.Background(), log, EventEgressRefused, outcome, "blocked.example")
 		}
 
 		for range 100 {
@@ -67,5 +69,34 @@ var _ = Describe("Tally", func() {
 		// One outcome's flood leaves another outcome's first event alone.
 		refuse(RefusedTunnelLimit)
 		Expect(events()).To(Equal(RefusalLogBurst*2 + 2))
+	})
+
+	It("counts every refusal in the run's metric, even the ones its log limit drops", func() {
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		var logged bytes.Buffer
+
+		type measurement struct {
+			event   Event
+			outcome Outcome
+		}
+
+		var measured []measurement
+
+		tally := NewTally(func(_ context.Context, event Event, outcome Outcome) {
+			measured = append(measured, measurement{event: event, outcome: outcome})
+		})
+		tally.now = func() time.Time { return now }
+
+		log := slog.New(slog.NewJSONHandler(&logged, nil))
+
+		for range RefusalLogBurst * 3 {
+			tally.Refuse(context.Background(), log, EventEgressRefused, RefusedByPolicy, "blocked.example")
+		}
+
+		Expect(measured).To(HaveLen(RefusalLogBurst*3), "the log limit dropped a count from the metric")
+		Expect(measured[0]).To(Equal(measurement{event: EventEgressRefused, outcome: RefusedByPolicy}))
+		Expect(strings.Count(logged.String(), Message)).To(Equal(RefusalLogBurst),
+			"the metric path logged past the limit")
 	})
 })

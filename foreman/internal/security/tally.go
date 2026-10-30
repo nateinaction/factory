@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"log/slog"
 	"maps"
 	"sync"
@@ -17,31 +18,55 @@ const (
 	RefusalLogRefill = time.Second
 )
 
-// Tally counts refusals by outcome and emits their security events. Both proxies keep one, so a refusal
-// is counted and reported one way however it arrived.
+// CounterFunc records one refusal in the run's security metric. The tally calls it for every refusal,
+// whatever the log limit drops, so the metric stays exact.
+type CounterFunc func(ctx context.Context, event Event, outcome Outcome)
+
+// Tally counts refusals by outcome, emits their security events and records each one in the run's
+// metric. Both proxies keep one, so a refusal is counted and reported one way however it arrived.
 type Tally struct {
 	mu       sync.Mutex
 	counts   map[Outcome]int
 	budget   map[Outcome]int
 	refilled map[Outcome]time.Time
 	now      func() time.Time
+	// counter records a refusal in the run's metric; nil records no metric, as a spec that ignores
+	// telemetry does.
+	counter CounterFunc
 }
 
-// NewTally returns an empty tally.
-func NewTally() *Tally {
+// NewTally returns an empty tally. counter records each refusal in the run's metric; nil counts
+// without measuring.
+func NewTally(counter CounterFunc) *Tally {
 	return &Tally{
 		counts: map[Outcome]int{}, budget: map[Outcome]int{}, refilled: map[Outcome]time.Time{},
-		now: time.Now,
+		now: time.Now, counter: counter,
 	}
 }
 
-// Refuse counts one refused request and emits its security event, at most within the tally's log
-// limit. The host is the event's whole payload: no header or token can reach it.
-func (t *Tally) Refuse(log *slog.Logger, event Event, outcome Outcome, host string) {
+// TallyOr returns t, or a tally that counts refusals and records no metric, when t is nil.
+func TallyOr(t *Tally) *Tally {
+	if t != nil {
+		return t
+	}
+
+	return NewTally(nil)
+}
+
+// Refuse counts one refused request, records it in the run's metric and emits its security event, at
+// most within the tally's log limit. Counting and measuring never drop a refusal; only the log record
+// is limited. The host is the event's whole payload: no header or token can reach it.
+func (t *Tally) Refuse(
+	ctx context.Context, log *slog.Logger, event Event, outcome Outcome, host string,
+) {
 	t.mu.Lock()
 	t.counts[outcome]++
 	emit := t.take(outcome)
 	t.mu.Unlock()
+
+	if t.counter != nil {
+		t.counter(ctx, event, outcome)
+	}
 
 	if emit {
 		Emit(log, event, outcome, host)

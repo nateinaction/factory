@@ -59,7 +59,8 @@ func (s session) retroEpilogue(
 
 	usage, err := s.tracedRetro(ctx, j.c, repo, number, role, sessionID, key, budget)
 	if err != nil {
-		emitStepCap(ctx, s.d, s.alerts, role, repo, number, err)
+		// A dropped retro is not a failed run: the run has already settled, so its cap raises no
+		// security event and the diagnostic is all it leaves.
 		s.d.log().Warn("retro failed", "repo", repo, "issue", number, "agent_role", role, "error", err)
 	}
 

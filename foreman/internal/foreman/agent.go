@@ -139,7 +139,7 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	// Every byte the model process writes reaches a log through here: stdout through the
 	// "agent output" record, stderr through the debug sink. Nothing the model writes reaches the
 	// diagnostic stream raw, so a sandboxed tool cannot forge a record or leak unredacted text.
-	stderr := newRedactWriter(debugSink{s.d.log()}, s.secrets)
+	stderr := newRedactWriter(debugSink{log: s.d.log(), ctx: ctx}, s.secrets)
 
 	out, err := s.d.Runner.Run(ctx, proc.Cmd{
 		Argv: argv, Dir: s.workdir, Env: s.agentEnv, ReplaceEnv: true, Timeout: timeout, Capture: true,
@@ -148,7 +148,7 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	err = errors.Join(err, stderr.flush())
 
 	if out != "" {
-		s.d.log().Debug("agent output", "text", redact(out, s.secrets))
+		s.d.log().DebugContext(ctx, "agent output", "text", redact(out, s.secrets))
 	}
 
 	stream, parseErr := opencode.ParseStream(out)

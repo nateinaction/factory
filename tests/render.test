@@ -25,7 +25,7 @@ check() {
 for role in planner researcher implementer reviewer curator; do
   dag="$out/factory-$role.yaml"
   check "$role DAG calls foreman start with its role" \
-    grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE} \${params.TRACEPARENT}" "$dag"
+    grep -Fq "/usr/local/bin/foreman start $role \"\${params.REPO}\" \"\${params.ISSUE}\" \"\${params.TRACEPARENT}\"" "$dag"
   check "$role DAG declares REPO" grep -Eq 'name: REPO' "$dag"
   check "$role DAG declares ISSUE" grep -Eq 'name: ISSUE' "$dag"
   check "$role DAG declares TRACEPARENT" grep -Eq 'name: TRACEPARENT' "$dag"

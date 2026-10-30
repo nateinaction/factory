@@ -110,7 +110,9 @@ The adapter therefore gives srt one loopback port and delegates the decision to
   outbound traffic and routes HTTP(S) through that port.
 - The egress proxy enforces the agent role's allowlist (empty means open), refuses anything else, and
   records every host it is asked for for the usage line: `domains` lists the allowed hosts and
-  `refused_domains` the refused ones, apart. Each refused request also emits a security event (below).
+  `refused_domains` the refused ones, apart. A host is listed as allowed only once a connection to
+  it was made, and a refusal never erases an earlier success. Each refused request is counted and,
+  within a rate limit, raised as a security event (below).
 - It also refuses a destination whose address is not publicly routable, whatever the allowlist
   says: loopback, private space, shared space (`100.64.0.0/10`, which is where a tailnet lives),
   link-local addresses including `169.254.169.254`, `0.0.0.0/8`, multicast and unspecified
@@ -150,8 +152,13 @@ tickets reuse this shape.
 | `repository` | the run's repository, `owner/name`                                               |
 | `issue`      | the run's issue number                                                           |
 
-The egress proxy emits one for every request it does not allow, on the `CONNECT`, plain-HTTP and API
-paths. An allowed request emits none.
+The egress proxy raises one for each request it does not allow, on the `CONNECT`, plain-HTTP and API
+paths; an allowed request raises none. Every refusal is counted, but the event records are rate
+limited: one outcome may write 5 records back to back, then one more per second. A model that floods
+refusals therefore cannot fill the log, while the count — and the `factory_security_events_total`
+measurement built from it — stays exact. Both proxies raise their refusals through the run's one
+tally, so the limit is shared between them. The refused hosts the usage line carries are capped at
+256 (`MaxRefusedHosts`) for the same reason.
 
 | `event`                    | `outcome`                | What it records                                                        |
 | -------------------------- | ------------------------ | ---------------------------------------------------------------------- |
@@ -169,7 +176,9 @@ paths. An allowed request emits none.
 
 A rejected output still posts its comment and applies nothing, a non-writer's command is still
 minimized with no action, an unreadable permission still fails closed, and a step cap still fails the
-run: the event only records what already happened. The event carries only these fields: never the run
+run: the event only records what already happened. A **retro** that reaches its own step cap (or its
+deadline) is dropped instead: the run has already settled, so it emits no event, and the only trace
+is the `retro failed` diagnostic. The event carries only these fields: never the run
 token, the key, a request header, or the model's file text.
 
 

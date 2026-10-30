@@ -58,8 +58,6 @@ type Forwarder interface {
 	URL() string
 	// Usage is what the forwarded responses reported.
 	Usage() openrouter.Usage
-	// Refusals counts the requests the proxy refused, by outcome.
-	Refusals() map[security.Outcome]int
 	// Close stops the proxy.
 	Close() error
 }
@@ -74,8 +72,6 @@ type EgressProxy interface {
 	Domains() []string
 	// Refused is every host the proxy refused, listed apart from the allowed ones.
 	Refused() []string
-	// Refusals counts the requests the proxy refused, by outcome.
-	Refusals() map[security.Outcome]int
 	// Close stops the proxy.
 	Close() error
 }
@@ -106,10 +102,14 @@ type Deps struct {
 	Token func() (string, error)
 	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
 	Now func() time.Time
-	// Proxy starts the run's OpenRouter proxy on addr; nil starts the real one.
-	Proxy func(key, token, addr string) (Forwarder, error)
-	// Egress starts the run's egress proxy; nil starts the real one.
-	Egress func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error)
+	// Proxy starts the run's OpenRouter proxy on addr, raising its refusals through refusals; nil starts
+	// the real one.
+	Proxy func(key, token, addr string, refusals *security.Tally) (Forwarder, error)
+	// Egress starts the run's egress proxy, raising its refusals through refusals; nil starts the real
+	// one.
+	Egress func(
+		ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+	) (EgressProxy, error)
 }
 
 // client returns a GitHub client for token.

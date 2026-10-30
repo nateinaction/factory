@@ -26,7 +26,7 @@ const testKey = "sk-or-test"
 
 // startTest binds a proxy over a stand-in upstream, with no security event logger.
 func startTest(token, addr, upstream string) (*Proxy, error) {
-	return startAt(context.Background(), testKey, token, addr, upstream, nil)
+	return startAt(context.Background(), testKey, token, addr, upstream, nil, nil)
 }
 
 // upstreamCall is one request an upstream test server received.

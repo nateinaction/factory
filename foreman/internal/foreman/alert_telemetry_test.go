@@ -65,8 +65,11 @@ var _ = Describe("alert telemetry", func() {
 		repo, err := workflow.ParseRepo("o/r")
 		Expect(err).NotTo(HaveOccurred())
 
-		emitStepCap(context.Background(), deps, newAlertInstruments(deps), workflow.Implementer, repo, 5,
-			&opencode.ModelError{Kind: opencode.FailStepCap, Attempts: 1})
+		r := run{
+			d: deps, role: workflow.Implementer,
+			spec: runSpec{ref: workflow.IssueRef{Repo: repo, Number: 5}}, alerts: newAlertInstruments(deps),
+		}
+		r.emitStepCap(context.Background(), &opencode.ModelError{Kind: opencode.FailStepCap, Attempts: 1})
 
 		points := metricPoints(collect(), telemetry.MetricSecurityEvents)
 		Expect(points).To(HaveLen(1))
@@ -193,17 +196,24 @@ var _ = Describe("run alert telemetry", func() {
 	It("records the run's outcome and cost, and every request its proxies refused", func() {
 		cost := 0.5
 
-		proxy := &fakeProxy{
-			url: "http://127.0.0.1:9/api/v1", usage: openrouter.Usage{Cost: &cost},
-			refusals: map[security.Outcome]int{security.RefusedBadToken: 2},
-		}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return proxy, nil }
+		proxy := &fakeProxy{url: "http://127.0.0.1:9/api/v1", usage: openrouter.Usage{Cost: &cost}}
+		// The key proxy raises its refusals through the run's tally, the way the real one does.
+		h.deps.Proxy = func(_, _, _ string, refusals *security.Tally) (Forwarder, error) {
+			for range 2 {
+				refusals.Refuse(context.Background(), h.deps.Log, security.EventKeyProxyRefused,
+					security.RefusedBadToken, "openrouter.ai")
+			}
 
-		egressProxy := &fakeEgress{
-			url: proxy.url, address: "127.0.0.1:9",
-			refusals: map[security.Outcome]int{security.RefusedNotRoutable: 1},
+			return proxy, nil
 		}
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) {
+
+		egressProxy := &fakeEgress{url: proxy.url, address: "127.0.0.1:9"}
+		h.deps.Egress = func(
+			_ context.Context, _ sandbox.Network, _, _ string, refusals *security.Tally,
+		) (EgressProxy, error) {
+			refusals.Refuse(context.Background(), h.deps.Log, security.EventEgressRefused,
+				security.RefusedNotRoutable, "10.1.2.3")
+
 			return egressProxy, nil
 		}
 
@@ -230,6 +240,9 @@ var _ = Describe("run alert telemetry", func() {
 		)
 		Expect(ok).To(BeTrue())
 		Expect(badToken.Value).To(Equal(int64(2)))
+
+		// The one call that counted each refusal also logged it, exactly once.
+		Expect(h.securityEvents()).To(HaveLen(3), "a refusal was logged twice or not at all")
 
 		outcomes := metricPoints(rm, telemetry.MetricRunOutcomes)
 		Expect(outcomes).To(HaveLen(1))

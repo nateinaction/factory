@@ -9,6 +9,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -144,7 +145,14 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 				return rejected(ctx, rc, err, sha)
 			}
 
-			code, err := postVerdictTraced(ctx, rc.d, rc.j.c, repo, pr.Number, sha, out, rc.j.issue, rc.spec.limit, rc.spans())
+			ctx, span := rc.spans().start(ctx, telemetry.SpanPublishReview)
+
+			code, err := postVerdict(ctx, rc.d, rc.j.c, repo, pr.Number, sha, out, rc.j.issue, rc.spec.limit)
+			if err != nil {
+				markFailureOf(span, err)
+			}
+
+			span.End()
 
 			return outcome{code: code, retroKey: sha, err: err}
 		},

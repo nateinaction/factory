@@ -15,6 +15,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -363,11 +364,7 @@ var _ = Describe("Run", func() {
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
 			Expect(h.retroComments()).To(BeEmpty())
-			Expect(h.securityEvents()).To(ConsistOf(And(
-				HaveKeyWithValue("event", "run_capped"),
-				HaveKeyWithValue("outcome", "step_cap"),
-				HaveKeyWithValue("issue", "5"),
-			)))
+			Expect(h.securityEvents()).To(BeEmpty(), "a dropped retro was reported as a failed run")
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {
@@ -405,7 +402,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails closed when the proxy cannot bind", func() {
-			h.deps.Proxy = func(string, string, string) (Forwarder, error) {
+			h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) {
 				return nil, errors.New("bind openrouter proxy: address already in use")
 			}
 

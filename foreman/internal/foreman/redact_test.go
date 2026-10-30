@@ -2,11 +2,18 @@ package foreman
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
 
 // errWriter is a destination that refuses every write.
@@ -67,22 +74,50 @@ var _ = Describe("redaction", func() {
 		Expect(redact("unchanged", []string{""})).To(Equal("unchanged"))
 	})
 
-	It("returns the destination's write error for a complete line", func() {
-		sentinel := errors.New("destination is full")
-		w := newRedactWriter(errWriter{err: sentinel}, []string{secret})
+	It("logs the model's stderr inside the span the attempt runs in", func() {
+		tp := sdktrace.NewTracerProvider()
 
-		n, err := w.Write([]byte("a line with " + secret + "\n"))
-		Expect(err).To(MatchError(sentinel))
-		Expect(n).To(BeZero())
+		var out bytes.Buffer
+
+		rootCtx, root := tp.Tracer("t").Start(context.Background(), "root")
+		defer root.End()
+
+		log := telemetry.SpanLogger(
+			slog.New(telemetry.LogHandler(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+			rootCtx,
+		)
+
+		attemptCtx, attempt := tp.Tracer("t").Start(rootCtx, "attempt")
+		defer attempt.End()
+
+		_, err := debugSink{log: log, ctx: attemptCtx}.Write([]byte("a line from the model\n"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var record map[string]any
+		Expect(json.Unmarshal(out.Bytes(), &record)).To(Succeed())
+		Expect(record).To(HaveKeyWithValue("msg", "agent stderr"))
+		Expect(record).To(HaveKeyWithValue("span_id", attempt.SpanContext().SpanID().String()),
+			"the model's stderr named the root span, not the attempt it ran in")
 	})
 
-	It("returns the destination's write error for a full buffer", func() {
+	It("returns the destination's write error for a complete line, with every byte consumed", func() {
 		sentinel := errors.New("destination is full")
 		w := newRedactWriter(errWriter{err: sentinel}, []string{secret})
+		p := []byte("a line with " + secret + "\n")
 
-		n, err := w.Write([]byte(secret + strings.Repeat("b", maxPending)))
+		n, err := w.Write(p)
 		Expect(err).To(MatchError(sentinel))
-		Expect(n).To(BeZero())
+		Expect(n).To(Equal(len(p)), "the writer buffered p, so a caller must not write it again")
+	})
+
+	It("returns the destination's write error for a full buffer, with every byte consumed", func() {
+		sentinel := errors.New("destination is full")
+		w := newRedactWriter(errWriter{err: sentinel}, []string{secret})
+		p := []byte(secret + strings.Repeat("b", maxPending))
+
+		n, err := w.Write(p)
+		Expect(err).To(MatchError(sentinel))
+		Expect(n).To(Equal(len(p)), "the writer buffered p, so a caller must not write it again")
 	})
 
 	It("returns the destination's write error when flushing the last line", func() {
