@@ -364,11 +364,7 @@ var _ = Describe("Run", func() {
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
 			Expect(h.retroComments()).To(BeEmpty())
-			Expect(h.securityEvents()).To(ConsistOf(And(
-				HaveKeyWithValue("event", "run_capped"),
-				HaveKeyWithValue("outcome", "step_cap"),
-				HaveKeyWithValue("issue", "5"),
-			)))
+			Expect(h.securityEvents()).To(BeEmpty(), "a dropped retro was reported as a failed run")
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {
