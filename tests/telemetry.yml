@@ -1,6 +1,7 @@
 ---
 # Renders the telemetry role's configs into $RENDER_DIR with the real group_vars, so
-# tests/telemetry.test can assert on them without a host.
+# tests/telemetry.test can assert on them without a host. Grafana's config is rendered by the role's
+# own task, so the test also sees its password guard and the mode it installs.
 - name: Render the telemetry backend config
   hosts: localhost
   connection: local
@@ -10,6 +11,17 @@
   vars:
     render_dir: "{{ lookup('env', 'RENDER_DIR') }}"
   tasks:
+    # First, so an unset admin password fails the play before anything is written. The path, owner
+    # and group point into the temporary tree, as the current user; the mode stays the role's own.
+    - name: Render Grafana's config through the role's task
+      ansible.builtin.include_role:
+        name: telemetry
+        tasks_from: grafana
+      vars:
+        telemetry_grafana_config_path: "{{ render_dir }}/grafana.ini"
+        telemetry_grafana_config_owner: "{{ lookup('env', 'RENDER_OWNER') }}"
+        telemetry_grafana_config_group: "{{ lookup('env', 'RENDER_GROUP') }}"
+
     - name: Render each template
       ansible.builtin.template:
         src: "../roles/telemetry/templates/{{ item }}.j2"
@@ -23,7 +35,6 @@
         - grafana.service
         - tempo.yaml
         - loki.yaml
-        - grafana.ini
         - datasources.yaml
 
     - name: Read the YAML back
@@ -48,3 +59,8 @@
           factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port }}"
           factory_telemetry_grafana_admin_user: "{{ factory_telemetry_grafana_admin_user }}"
           factory_telemetry_grafana_admin_password: "{{ factory_telemetry_grafana_admin_password }}"
+
+    # The role notifies a Grafana restart from its config task, and this test has no systemd to
+    # restart. Ending the play here leaves the handler unrun; every assertion is already done.
+    - name: End the play before handlers
+      ansible.builtin.meta: end_play
