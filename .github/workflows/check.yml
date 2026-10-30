@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks reads the whole history.
+          fetch-depth: 0
       - uses: cachix/install-nix-action@v31
       # The sandbox acceptance specs run the real srt (bubblewrap). Ubuntu 24.04 runners restrict
       # unprivileged user namespaces, which makes bwrap fail setting up loopback.
@@ -17,6 +20,9 @@ jobs:
       # The same hooks the git hook runs, from .pre-commit-config.yaml.
       - name: pre-commit
         run: nix develop --command pre-commit run --all-files
+      # The history, where the pre-commit hook scans only what a commit stages.
+      - name: gitleaks
+        run: nix develop --command gitleaks git --redact --no-banner .
       # Needs the vulnerability database, so it runs in CI rather than the hook.
       - name: govulncheck
         working-directory: foreman

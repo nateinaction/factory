@@ -56,6 +56,7 @@
             # the package's `cli` output; `out` carries the server binary the host installs.
             pkgs.prometheus.cli
             pkgs.go_1_27
+            pkgs.gitleaks
             pkgs.golangci-lint
             pkgs.govulncheck
             # The sandbox backend every model run is wrapped in; also runs the acceptance test.

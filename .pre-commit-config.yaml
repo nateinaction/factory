@@ -7,6 +7,15 @@
 repos:
   - repo: local
     hooks:
+      # Scans what is staged for a commit, so a secret is stopped before it reaches history; CI scans
+      # the history too. It runs on every commit, not only when a Go or YAML file changes.
+      - id: gitleaks
+        name: gitleaks
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: go-fix
         name: go fix
         entry: bash -c 'cd foreman && go fix ./...'
