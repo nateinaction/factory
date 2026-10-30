@@ -74,7 +74,7 @@ func run() int {
 	}
 
 	sudo := underSudo(os.Getenv("SUDO_UID"), os.Getuid(), os.Geteuid())
-	code := executeTraced(ctx, d.Tracer, logger, root, os.Args[1:], sudo, d.RunID)
+	code := executeTraced(ctx, d, root, os.Args[1:], sudo)
 
 	// Flush after the exit code is settled; the flush is bounded and never changes the code.
 	tel.Shutdown(ctx)
@@ -84,11 +84,13 @@ func run() int {
 
 // executeTraced runs one command line under the process's one root span, named for its verb, and
 // returns the exit code. The span ends only after the failure is logged, so that record carries its ids.
-func executeTraced(
-	ctx context.Context, tracer trace.Tracer, logger *slog.Logger, root *cobra.Command, args []string,
-	sudo bool, runID string,
-) int {
+func executeTraced(ctx context.Context, d *foreman.Deps, root *cobra.Command, args []string, sudo bool) int {
 	verb := verbOf(root, args)
+
+	logger := d.Log
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 
 	// A run continues the trace its DAG parameter or environment carries. A missing context starts a
 	// new trace; a malformed one is ignored with a diagnostic, never an error.
@@ -99,12 +101,16 @@ func executeTraced(
 
 	attrs := []attribute.KeyValue{attribute.String(telemetry.AttrVerb, verb)}
 	// The run id ties every process of one dagu run together; `status` finds a run's trace by it.
-	if runID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrRunID, runID))
+	if d.RunID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrRunID, d.RunID))
 	}
 
-	ctx, span := tracer.Start(ctx, telemetry.RootSpanName(verb), trace.WithAttributes(attrs...))
+	ctx, span := telemetry.TracerOr(d.Tracer).Start(ctx, telemetry.RootSpanName(verb), trace.WithAttributes(attrs...))
 	defer span.End()
+
+	// The run's ids go on every diagnostic a command writes, not only the ones logged with a context:
+	// the plain calls are most of foreman's, and security.Emit is one of them.
+	d.Log = telemetry.SpanLogger(logger, ctx)
 
 	cmd, err := executeCommand(ctx, root, args, sudo)
 	code := exit(ctx, logger, cmd, err)
