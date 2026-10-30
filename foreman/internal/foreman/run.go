@@ -449,15 +449,22 @@ func rework(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]work
 	return thread, ci, err
 }
 
-// guidance reads every comment since the marker that woke the issue, from the issue and its pull
-// request, oldest first. An issue that was not woken reads nothing.
+// guidance reads every comment since the marker that woke the issue, oldest first. A research ticket
+// has no pull request, and the Researcher's App has no Pull requests permission to look for one. An
+// issue that was not woken reads nothing.
 func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, error) {
 	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 
-	return issueThread(ctx, c, ref, comments)
+	thread := slices.Clone(comments)
+
+	slices.SortStableFunc(thread, func(a, b workflow.Item) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return workflow.Guidance(thread, ref.Repo.Owner()), nil
 }
 
 // issueThread is the guidance the issue's comments carry: the open pull request's comments join them,

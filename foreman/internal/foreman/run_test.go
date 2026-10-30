@@ -958,6 +958,17 @@ var _ = Describe("Run", func() {
 			h.researchTicket()
 		})
 
+		It("reads the ticket's comments though the Researcher's App cannot read pull requests", func() {
+			// The Researcher has no Pull requests permission: GitHub answers its pull request reads with 403.
+			h.gh.Status("GET /repos/o/r/pulls", http.StatusForbidden)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
+
+			Expect(run(workflow.Researcher)).To(BeZero())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ContainElement(
+				ContainSubstring(workflow.ResearchMarker("research/emulate"))))
+		})
+
 		It("commits the findings, pushes research/<name>, posts the resolution and appends the decision", func() {
 			h.roleWrites(workflow.Researcher, 5, researcherRun)
 			h.roleWritesRetro(workflow.Researcher, validRetro)
