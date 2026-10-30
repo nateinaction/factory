@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -41,6 +42,7 @@ var _ = Describe("the root span", func() {
 		h = newCLIHarness()
 		recorder = tracetest.NewSpanRecorder()
 		tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)).Tracer("t")
+		h.deps.Tracer = tracer
 	})
 
 	It("is one span named for the verb, carrying the exit code, with the ids on diagnostics", func() {
@@ -51,7 +53,7 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		code := executeTraced(context.Background(), tracer, h.logger, root, []string{"poll", "--config", path}, false, "")
+		code := executeTraced(context.Background(), h.deps, root, []string{"poll", "--config", path}, false)
 		Expect(code).To(BeZero())
 
 		spans := recorder.Ended()
@@ -59,6 +61,41 @@ var _ = Describe("the root span", func() {
 		Expect(spans[0].Name()).To(Equal("foreman.poll"))
 		Expect(spans[0].Attributes()).To(ContainElement(attribute.Int(telemetry.AttrExitCode, 0)))
 		Expect(spans[0].Status().Code).To(Equal(codes.Unset))
+	})
+
+	It("puts the ids on a plain diagnostic, not only a context-aware one", func() {
+		path := h.writeConfig(strings.Replace(validConfig, `"review_round_limit":3`,
+			`"review_round_limit":3,"unhosted_roles":["planner"]`, 1))
+		h.deps.Log = slog.New(telemetry.LogHandler(slog.NewJSONHandler(&h.logs, nil)))
+
+		root, err := newRootCommand(h.deps, config.SettingsViper(h.home))
+		Expect(err).NotTo(HaveOccurred())
+
+		root.SetOut(&h.out)
+		root.SetErr(&h.errOut)
+
+		Expect(executeTraced(context.Background(), h.deps, root, []string{"poll", "--config", path}, false)).To(BeZero())
+
+		spans := recorder.Ended()
+		Expect(spans).To(HaveLen(1))
+
+		warned := false
+
+		for line := range strings.SplitSeq(strings.TrimSpace(h.logs.String()), "\n") {
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(line), &record)).To(Succeed())
+
+			if record["msg"] != "no worker host takes this agent role; its issues stay queued" {
+				continue
+			}
+
+			warned = true
+
+			Expect(record).To(HaveKeyWithValue("trace_id", spans[0].SpanContext().TraceID().String()))
+			Expect(record).To(HaveKeyWithValue("span_id", spans[0].SpanContext().SpanID().String()))
+		}
+
+		Expect(warned).To(BeTrue(), "the poll warned about the unhosted agent role")
 	})
 
 	// testTraceParent is a well-formed W3C trace context a DAG parameter or the environment can carry.
@@ -73,8 +110,8 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"start", "implementer", "o/r", "5", testTraceParent}, false, "")
+		executeTraced(context.Background(), h.deps, root,
+			[]string{"start", "implementer", "o/r", "5", testTraceParent}, false)
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -93,8 +130,8 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"run", "implementer", "o/r", "5"}, false, "")
+		executeTraced(context.Background(), h.deps, root,
+			[]string{"run", "implementer", "o/r", "5"}, false)
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -111,8 +148,8 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		executeTraced(context.Background(), tracer, h.logger, root,
-			[]string{"start", "implementer", "o/r", "5", "not-a-traceparent"}, false, "")
+		executeTraced(context.Background(), h.deps, root,
+			[]string{"start", "implementer", "o/r", "5", "not-a-traceparent"}, false)
 
 		spans := recorder.Ended()
 		Expect(spans).To(HaveLen(1), "the command has no root span")
@@ -127,9 +164,9 @@ var _ = Describe("the root span", func() {
 		root.SetOut(&h.out)
 		root.SetErr(&h.errOut)
 
-		logger := slog.New(telemetry.LogHandler(slog.NewJSONHandler(&h.logs, nil)))
-		code := executeTraced(context.Background(), tracer, logger, root,
-			[]string{"poll", "--config", "/nonexistent"}, false, "")
+		h.deps.Log = slog.New(telemetry.LogHandler(slog.NewJSONHandler(&h.logs, nil)))
+		code := executeTraced(context.Background(), h.deps, root,
+			[]string{"poll", "--config", "/nonexistent"}, false)
 		Expect(code).To(Equal(1))
 
 		spans := recorder.Ended()

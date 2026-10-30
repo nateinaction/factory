@@ -17,8 +17,23 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
+
+// decodeRecords decodes every JSON line a logger wrote.
+func decodeRecords(raw []byte) []map[string]any {
+	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+	out := make([]map[string]any, 0, len(lines))
+
+	for _, line := range lines {
+		var m map[string]any
+		Expect(json.Unmarshal(line, &m)).To(Succeed())
+		out = append(out, m)
+	}
+
+	return out
+}
 
 // clearEnv blanks every OTEL_* variable the specs depend on, so the machine's own do not leak in.
 func clearEnv() {
@@ -172,10 +187,14 @@ var _ = Describe("trace context propagation", func() {
 })
 
 var _ = Describe("LogHandler", func() {
+	logger := func(out *bytes.Buffer) *slog.Logger {
+		return slog.New(telemetry.LogHandler(slog.NewJSONHandler(out, nil)))
+	}
+
 	record := func(ctx context.Context) map[string]any {
 		var out bytes.Buffer
 
-		slog.New(telemetry.LogHandler(slog.NewJSONHandler(&out, nil))).ErrorContext(ctx, "boom")
+		logger(&out).ErrorContext(ctx, "boom")
 
 		var m map[string]any
 		Expect(json.Unmarshal(out.Bytes(), &m)).To(Succeed())
@@ -196,6 +215,78 @@ var _ = Describe("LogHandler", func() {
 
 	It("adds nothing outside a span", func() {
 		m := record(context.Background())
+		Expect(m).NotTo(HaveKey("trace_id"))
+		Expect(m).NotTo(HaveKey("span_id"))
+	})
+
+	It("keeps the ids on a logger derived with attributes", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		ctx, span := tp.Tracer("t").Start(context.Background(), "s")
+		defer span.End()
+
+		var out bytes.Buffer
+
+		logger(&out).With("issue", 5).WarnContext(ctx, "boom")
+
+		m := decodeRecords(out.Bytes())[0]
+		Expect(m).To(HaveKeyWithValue("issue", BeNumerically("==", 5)))
+		Expect(m).To(HaveKeyWithValue("trace_id", span.SpanContext().TraceID().String()))
+		Expect(m).To(HaveKeyWithValue("span_id", span.SpanContext().SpanID().String()))
+	})
+
+	It("keeps the ids and the group on a grouped logger", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		ctx, span := tp.Tracer("t").Start(context.Background(), "s")
+		defer span.End()
+
+		var out bytes.Buffer
+
+		logger(&out).WithGroup("run").WarnContext(ctx, "boom")
+
+		m := decodeRecords(out.Bytes())[0]
+		Expect(m).To(HaveKey("run"))
+
+		group, ok := m["run"].(map[string]any)
+		Expect(ok).To(BeTrue(), "the group holds an object")
+		Expect(group).To(HaveKeyWithValue("trace_id", span.SpanContext().TraceID().String()))
+		Expect(group).To(HaveKeyWithValue("span_id", span.SpanContext().SpanID().String()))
+	})
+})
+
+var _ = Describe("SpanLogger", func() {
+	It("adds the active span's ids to an ordinary diagnostic and a security event", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		ctx, span := tp.Tracer("t").Start(context.Background(), "s")
+		defer span.End()
+
+		var out bytes.Buffer
+
+		log := telemetry.SpanLogger(slog.New(slog.NewJSONHandler(&out, nil)), ctx)
+		log.Warn("ordinary diagnostic", "issue", 5)
+		security.Emit(
+			security.Scope(log, "implementer", "o/r", 5),
+			security.EventOutputRejected, security.RefusedByPolicy, "example.test",
+		)
+
+		records := decodeRecords(out.Bytes())
+		Expect(records).To(HaveLen(2))
+
+		for _, m := range records {
+			Expect(m).To(HaveKeyWithValue("trace_id", span.SpanContext().TraceID().String()))
+			Expect(m).To(HaveKeyWithValue("span_id", span.SpanContext().SpanID().String()))
+		}
+	})
+
+	It("leaves the logger alone outside a span", func() {
+		var out bytes.Buffer
+
+		log := telemetry.SpanLogger(slog.New(slog.NewJSONHandler(&out, nil)), context.Background())
+		log.Warn("boom")
+
+		m := decodeRecords(out.Bytes())[0]
 		Expect(m).NotTo(HaveKey("trace_id"))
 		Expect(m).NotTo(HaveKey("span_id"))
 	})
