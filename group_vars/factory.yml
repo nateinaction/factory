@@ -274,7 +274,12 @@ factory_foreman_otlp_endpoint: >-
 factory_foreman_otel_service_name: foreman
 # The host whose telemetry backend this collector forwards to (traces, metrics and logs, each to its
 # own port). Empty means no backend: the collector keeps receiving and deriving metrics, and exports nothing.
-factory_collector_backend_host: "{{ factory_telemetry_host if factory_telemetry | bool else '' }}"
+# The server's own name resolves to 127.0.1.1 on Debian, where the backend does not listen, so its
+# collector uses the loopback the backend binds; the other hosts reach it by name over the tailnet.
+factory_collector_backend_host: >-
+  {{ '' if not (factory_telemetry | bool)
+     else factory_telemetry_host_loopback if inventory_hostname == factory_telemetry_host
+     else factory_telemetry_host }}
 # Attributes (span, resource, metric and log record) that may leave the host. Everything else is
 # redacted, so a new attribute is dropped until someone adds it here. The first group is spanmetrics'
 # own dimensions and the standard resource attributes.
