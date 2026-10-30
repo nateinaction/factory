@@ -355,6 +355,11 @@ factory_telemetry_tempo_http_port: 3200
 factory_telemetry_tempo_grpc_port: 9097
 factory_telemetry_loki_port: 3100 # OTLP logs at /otlp/v1/logs
 factory_telemetry_loki_grpc_port: 9096
+# The server's Tempo HTTP API, which `foreman status` reads a worker run's usage from. Only the
+# server sets it: a worker's local usage record already describes the runs it executed. Empty means
+# `status` reads only the local record.
+factory_foreman_telemetry_url: >-
+  {{ ('http://' ~ factory_telemetry_host_loopback ~ ':' ~ factory_telemetry_tempo_http_port) if (factory_telemetry | bool and dagu_mode == 'server') else '' }}
 factory_telemetry_grafana_port: 3000 # tailnet HTTPS port; Grafana's login is its own
 # Grafana's admin login. The user has a default; the password deliberately has none, so that it is
 # never in the repository: set factory_telemetry_grafana_admin_password in an ansible-vault file (or
