@@ -1,0 +1,6 @@
+---
+# Where Grafana's config is written. It holds the admin password, so it is root-only. A test renders
+# it into a temporary tree, owned by the user running the test.
+telemetry_grafana_config_path: /etc/grafana/grafana.ini
+telemetry_grafana_config_owner: root
+telemetry_grafana_config_group: root

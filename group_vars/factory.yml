@@ -356,11 +356,11 @@ factory_telemetry_tempo_grpc_port: 9097
 factory_telemetry_loki_port: 3100 # OTLP logs at /otlp/v1/logs
 factory_telemetry_loki_grpc_port: 9096
 factory_telemetry_grafana_port: 3000 # tailnet HTTPS port; Grafana's login is its own
-# Grafana's admin login. The play writes these into grafana.ini, so there is no reliance on Grafana's
-# own admin/admin default: override the password in group_vars or an ansible-vault file, and change it
-# in Grafana after the first provisioning. The README says the same.
+# Grafana's admin login. The user has a default; the password deliberately has none, so that it is
+# never in the repository: set factory_telemetry_grafana_admin_password in an ansible-vault file (or
+# with -e) and the play fails closed when it is unset. The play writes it into grafana.ini, which only
+# root may read, and it can be changed in Grafana after the first provisioning. The README says the same.
 factory_telemetry_grafana_admin_user: admin
-factory_telemetry_grafana_admin_password: admin # CHANGE THIS before provisioning
 # Every store is bounded, so the Pi's disk cannot fill. Tempo has no size cap, so it is bounded by age.
 factory_telemetry_prometheus_retention_time: 15d
 factory_telemetry_prometheus_retention_size: 2GB

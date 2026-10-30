@@ -7,7 +7,7 @@ set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
-export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg" RENDER_OWNER="$(id -un)" RENDER_GROUP="$(id -gn)"
 
 failures=0
 check() {
@@ -15,6 +15,9 @@ check() {
   shift
   if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
 }
+
+# mode <path> <expected>: the octal permission bits.
+mode() { [ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1")" = "$2" ]; }
 
 # conf <python>: runs the assertions with the parsed configs and the group_vars `v` in scope.
 conf() {
@@ -26,7 +29,9 @@ exec(sys.argv[2])
 ' "$out/config.json" "$1"
 }
 
-if ! ansible-playbook "$root/tests/telemetry.yml" >"$out/.log" 2>&1; then
+admin_password="test-admin-password"
+if ! ansible-playbook "$root/tests/telemetry.yml" \
+  -e "factory_telemetry_grafana_admin_password=$admin_password" >"$out/.log" 2>&1; then
   cat "$out/.log" >&2
   echo "FAIL render playbook" >&2
   exit 1
@@ -51,13 +56,33 @@ check "prometheus listens on loopback only" \
 check "prometheus loads its alert rules from a template" bash -c "
   grep -Fq -- 'rule_files:' '$out/prometheus.yaml' &&
   grep -Fq -- '/etc/prometheus/alerts.yaml' '$out/prometheus.yaml'"
-check "grafana's admin login comes from group_vars, not its built-in default" python3 -I -c '
+check "grafana's admin login is the one the play is given" python3 -I -c '
 import json, sys
 v = json.load(open(sys.argv[1]))["v"]
 text = open(sys.argv[2]).read()
 assert "admin_user = " + v["factory_telemetry_grafana_admin_user"] in text, text
 assert "admin_password = " + v["factory_telemetry_grafana_admin_password"] in text, text
 ' "$out/config.json" "$out/grafana.ini"
+check "grafana reads its root-only config as a systemd credential" bash -c "
+  grep -Fxq 'LoadCredential=grafana.ini:/etc/grafana/grafana.ini' '$out/grafana.service' &&
+  grep -Fq -- '--config=%d/grafana.ini' '$out/grafana.service'"
+
+# --- Grafana's admin password has no default, and its config is root-only ---
+check "group_vars sets no grafana admin password default" \
+  bash -c "! grep -Eq '^factory_telemetry_grafana_admin_password:' '$root/group_vars/factory.yml'"
+check "grafana.ini is not readable by group or world" mode "$out/grafana.ini" 600
+
+# Without the extra var the play is given no password, and must fail closed before writing anything.
+mkdir -p "$out/no-password"
+if RENDER_DIR="$out/no-password" ansible-playbook "$root/tests/telemetry.yml" >"$out/no-password.log" 2>&1; then
+  echo "FAIL an unset grafana admin password was accepted" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   an unset grafana admin password fails the play"
+fi
+check "the failure names the password variable" \
+  grep -Fq 'factory_telemetry_grafana_admin_password is unset' "$out/no-password.log"
+check "nothing is written without a password" bash -c '[ -z "$(ls -A "$1")" ]' _ "$out/no-password"
 check "prometheus accepts OTLP and stores exemplars" bash -c "
   grep -Fq -- '--web.enable-otlp-receiver' '$out/prometheus.service' &&
   grep -Fq -- 'exemplar-storage' '$out/prometheus.service'"

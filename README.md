@@ -120,9 +120,11 @@ Grafana is at `https://<server>.<tailnet>.ts.net:3000` (`factory_telemetry_grafa
 dagu UI it is reachable by anyone on the tailnet, and so are the three ingest ports the other hosts'
 collectors push to (Tempo 14317, Prometheus 9090, Loki 3100); restrict all of them with tailscale
 ACLs. Grafana's admin login comes from `factory_telemetry_grafana_admin_user` and
-`factory_telemetry_grafana_admin_password`, which the play writes into `grafana.ini`; the group_vars
-default documents the login as `admin` / `admin`, so override the password (or put it in an
-ansible-vault file) before provisioning and change it in Grafana afterwards.
+`factory_telemetry_grafana_admin_password`. The password has no default: `cp
+secrets/telemetry.example.yml secrets/telemetry.yml`, fill it in (encrypt it with `ansible-vault
+encrypt` if you like), and pass it with `-e @secrets/telemetry.yml`; the play fails closed when it is
+unset. The play writes it into `grafana.ini`, which only root may read, and it can be changed in
+Grafana afterwards.
 
 To follow a run, open Explore with the Tempo datasource and search by the run's trace id. The trace
 links to the run's diagnostics (Loki) and metrics (Prometheus); in Loki, `{} | trace_id="<id>"`
