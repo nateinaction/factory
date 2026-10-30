@@ -1058,7 +1058,7 @@ func postVerdict(
 		}
 
 		if reviewer == "" {
-			d.log().Warn("no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
+			d.log().WarnContext(ctx, "no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
 				"pr", pr, "author", issue.Author)
 
 			return workflow.ReviewClean, nil
@@ -1106,7 +1106,7 @@ func mergeReviewer(
 		}
 
 		if workflow.WriterPermission(permission) {
-			d.log().Info("asking the latest human writer to review and merge", "repo", repo,
+			d.log().InfoContext(ctx, "asking the latest human writer to review and merge", "repo", repo,
 				"issue", issue.Number, "reviewer", login)
 
 			return login, nil

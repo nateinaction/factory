@@ -2,11 +2,18 @@ package foreman
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
 
 // errWriter is a destination that refuses every write.
@@ -65,6 +72,32 @@ var _ = Describe("redaction", func() {
 	It("skips an empty secret, so an unset GH_TOKEN cannot match everywhere", func() {
 		Expect(redact("gh token is fine", []string{"", "fine"})).To(Equal("gh token is " + redacted))
 		Expect(redact("unchanged", []string{""})).To(Equal("unchanged"))
+	})
+
+	It("logs the model's stderr inside the span the attempt runs in", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		var out bytes.Buffer
+
+		rootCtx, root := tp.Tracer("t").Start(context.Background(), "root")
+		defer root.End()
+
+		log := telemetry.SpanLogger(
+			slog.New(telemetry.LogHandler(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+			rootCtx,
+		)
+
+		attemptCtx, attempt := tp.Tracer("t").Start(rootCtx, "attempt")
+		defer attempt.End()
+
+		_, err := debugSink{log: log, ctx: attemptCtx}.Write([]byte("a line from the model\n"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var record map[string]any
+		Expect(json.Unmarshal(out.Bytes(), &record)).To(Succeed())
+		Expect(record).To(HaveKeyWithValue("msg", "agent stderr"))
+		Expect(record).To(HaveKeyWithValue("span_id", attempt.SpanContext().SpanID().String()),
+			"the model's stderr named the root span, not the attempt it ran in")
 	})
 
 	It("returns the destination's write error for a complete line, with every byte consumed", func() {

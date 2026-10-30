@@ -323,39 +323,58 @@ func (t *Telemetry) Shutdown(ctx context.Context) {
 // LogHandler wraps inner so a record logged with a context inside a span carries the span's trace_id
 // and span_id.
 func LogHandler(inner slog.Handler) slog.Handler {
-	return spanHandler{inner}
+	return spanHandler{Handler: inner}
 }
 
-// SpanLogger returns log with the active span's trace_id and span_id attached, so records that carry
-// no context, as most of foreman's do, still name the run's trace. Outside a real span, as before a
-// run starts, it returns log unchanged.
+// SpanLogger returns log scoped to the span active in ctx. The ids are added at log time, once: a
+// record logged with a context carries that context's span, so a diagnostic inside a child span names
+// the child, and a record that carries none, as most of foreman's do, carries ctx's span. Outside a
+// real span, as before a run starts, it returns log unchanged.
 func SpanLogger(log *slog.Logger, ctx context.Context) *slog.Logger {
 	sc := trace.SpanContextFromContext(ctx)
 	if !sc.IsValid() {
 		return log
 	}
 
-	return log.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	handler, ok := log.Handler().(spanHandler)
+	if !ok {
+		handler = spanHandler{Handler: log.Handler()}
+	}
+
+	handler.fallback = sc
+
+	return slog.New(handler)
 }
 
-// spanHandler adds the active span's ids to each record.
-type spanHandler struct{ slog.Handler }
+// spanHandler adds the span's ids to each record: the record's own context span when it has one, and
+// the fallback span the logger was scoped to otherwise.
+type spanHandler struct {
+	slog.Handler
+	// fallback is the span a record with no span in its context belongs to, zero when the logger names
+	// none.
+	fallback trace.SpanContext
+}
 
-// Handle adds trace_id and span_id when ctx holds a valid span, then passes the record on.
+// Handle adds trace_id and span_id when the record has a valid span, then passes the record on.
 func (h spanHandler) Handle(ctx context.Context, r slog.Record) error {
-	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		sc = h.fallback
+	}
+
+	if sc.IsValid() {
 		r.AddAttrs(slog.String("trace_id", sc.TraceID().String()), slog.String("span_id", sc.SpanID().String()))
 	}
 
 	return h.Handler.Handle(ctx, r) //nolint:wrapcheck // a handler's error is its own
 }
 
-// WithAttrs keeps the wrapper around the derived handler.
+// WithAttrs keeps the wrapper, and the fallback, around the derived handler.
 func (h spanHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return spanHandler{h.Handler.WithAttrs(attrs)}
+	return spanHandler{Handler: h.Handler.WithAttrs(attrs), fallback: h.fallback}
 }
 
-// WithGroup keeps the wrapper around the derived handler.
+// WithGroup keeps the wrapper, and the fallback, around the derived handler.
 func (h spanHandler) WithGroup(name string) slog.Handler {
-	return spanHandler{h.Handler.WithGroup(name)}
+	return spanHandler{Handler: h.Handler.WithGroup(name), fallback: h.fallback}
 }

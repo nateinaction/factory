@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -289,6 +290,38 @@ var _ = Describe("SpanLogger", func() {
 		m := decodeRecords(out.Bytes())[0]
 		Expect(m).NotTo(HaveKey("trace_id"))
 		Expect(m).NotTo(HaveKey("span_id"))
+	})
+
+	It("gives a record inside a child span the child's ids, once, and a plain record the root's", func() {
+		tp := sdktrace.NewTracerProvider()
+
+		var out bytes.Buffer
+
+		handler := slog.NewJSONHandler(&out, nil)
+
+		rootCtx, root := tp.Tracer("t").Start(context.Background(), "root")
+		defer root.End()
+
+		log := telemetry.SpanLogger(slog.New(telemetry.LogHandler(handler)), rootCtx)
+
+		childCtx, child := tp.Tracer("t").Start(rootCtx, "child")
+		defer child.End()
+
+		log.WarnContext(childCtx, "inside the child")
+		log.Warn("inside no span of its own")
+
+		records := decodeRecords(out.Bytes())
+		Expect(records).To(HaveLen(2))
+
+		Expect(records[0]).To(HaveKeyWithValue("span_id", child.SpanContext().SpanID().String()),
+			"a record inside a child span named the root span")
+		Expect(records[1]).To(HaveKeyWithValue("span_id", root.SpanContext().SpanID().String()),
+			"a plain record lost the run's root span")
+
+		Expect(strings.Count(out.String(), `"span_id"`)).To(Equal(2),
+			"a record carried the ids twice")
+		Expect(strings.Count(out.String(), `"trace_id"`)).To(Equal(2),
+			"a record carried the ids twice")
 	})
 })
 
