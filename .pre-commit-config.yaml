@@ -28,6 +28,15 @@ repos:
         files: ^foreman/.*\.go$
         pass_filenames: false
 
+      # golangci-lint's unused sees one package at a time. deadcode follows calls from main and the
+      # tests across packages, and exits 0 even when it finds something, so any output fails the hook.
+      - id: deadcode
+        name: deadcode
+        entry: bash -c 'cd foreman && out=$(go tool deadcode -test ./...) && [ -z "$out" ] || { echo "$out"; exit 1; }'
+        language: system
+        files: ^foreman/(go\.mod|go\.sum|.*\.go)$
+        pass_filenames: false
+
       - id: go-test
         name: go test (ginkgo)
         entry: bash -c 'cd foreman && go tool ginkgo -r --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'

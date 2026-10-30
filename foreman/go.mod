@@ -47,6 +47,7 @@ require (
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
@@ -55,4 +56,7 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-tool github.com/onsi/ginkgo/v2/ginkgo
+tool (
+	github.com/onsi/ginkgo/v2/ginkgo
+	golang.org/x/tools/cmd/deadcode
+)
