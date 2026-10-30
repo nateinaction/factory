@@ -26,7 +26,7 @@ groups:
         expr: >-
           sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
             increase(factory_security_events_total{
-              event="egress_refused", outcome="refused_not_routable"}[{{ factory_alerts_security_window }}])
+              factory_event="egress_refused", factory_outcome="refused_not_routable"}[{{ factory_alerts_security_window }}])
           ) > 0
         labels:
           severity: critical
@@ -43,7 +43,7 @@ groups:
         expr: >-
           sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
             increase(factory_security_events_total{
-              event=~"egress_refused|key_proxy_refused", outcome="refused_bad_token"}[{{ factory_alerts_security_window }}])
+              factory_event=~"egress_refused|key_proxy_refused", factory_outcome="refused_bad_token"}[{{ factory_alerts_security_window }}])
           ) > 0
         labels:
           severity: critical
@@ -60,7 +60,7 @@ groups:
         expr: >-
           sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
             increase(factory_security_events_total{
-              event="output_rejected", outcome="factory_marker"}[{{ factory_alerts_security_window }}])
+              factory_event="output_rejected", factory_outcome="factory_marker"}[{{ factory_alerts_security_window }}])
           ) > 0
         labels:
           severity: critical
@@ -79,7 +79,7 @@ groups:
         expr: >-
           (
             sum by (factory_agent_role, factory_repo) (
-              increase(factory_run_outcomes_total{outcome="failed"}[{{ factory_alerts_failure_rate_window }}])
+              increase(factory_run_outcomes_total{factory_outcome="failed"}[{{ factory_alerts_failure_rate_window }}])
             )
             /
             sum by (factory_agent_role, factory_repo) (
