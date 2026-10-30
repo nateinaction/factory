@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -47,7 +46,7 @@ type Proxy struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	usage     Usage
-	refusals  map[security.Outcome]int
+	refusals  *security.Tally
 }
 
 // StartWithLogger binds a proxy holding key on addr, forwarding only to OpenRouter's API. The proxy
@@ -88,7 +87,7 @@ func startAt(
 
 	p := &Proxy{
 		key: key, token: token, url: "http://" + ln.Addr().String() + APIPrefix, upstream: dest, log: logger,
-		refusals: map[security.Outcome]int{},
+		refusals: security.NewTally(),
 	}
 	// The transport ignores the proxy environment variables, so the key can never be sent anywhere
 	// but OpenRouter.
@@ -144,13 +143,7 @@ func (p *Proxy) Usage() Usage {
 
 // Refusals counts every refused request by outcome, which the alert rules read.
 func (p *Proxy) Refusals() map[security.Outcome]int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	out := make(map[security.Outcome]int, len(p.refusals))
-	maps.Copy(out, p.refusals)
-
-	return out
+	return p.refusals.Counts()
 }
 
 // Close stops the proxy, ending the listener and any request still in flight. It is safe to call
@@ -173,10 +166,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// A call to the key proxy without the run token is a security event: it is what a model that
 		// tries to spend the key outside its run looks like. The event carries the destination and
 		// outcome, never the token or a header.
-		security.Emit(p.log, security.EventKeyProxyRefused, security.RefusedBadToken, p.upstream.Hostname())
-		p.mu.Lock()
-		p.refusals[security.RefusedBadToken]++
-		p.mu.Unlock()
+		p.refusals.Refuse(p.log, security.EventKeyProxyRefused, security.RefusedBadToken, p.upstream.Hostname())
 		http.Error(w, "openrouter proxy: run token required", http.StatusUnauthorized)
 
 		return

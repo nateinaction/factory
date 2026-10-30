@@ -72,6 +72,14 @@ func publiclyRoutable(addr netip.Addr) bool {
 // publicly routable, and dials an address it resolved. Dialing the checked address is what keeps a
 // second DNS answer from pointing the connection somewhere the check never saw.
 func (g gateway) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return g.dialDecided(ctx, network, address, nil)
+}
+
+// dialDecided is dialContext with decided told the host once the destination passes its checks, before
+// any connection is made. A refusal never calls decided, so it cannot undo an earlier record.
+func (g gateway) dialDecided(
+	ctx context.Context, network, address string, decided func(host string),
+) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, fmt.Errorf("egress proxy: destination %q: %w", address, err)
@@ -82,6 +90,17 @@ func (g gateway) dialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
+	if decided != nil {
+		decided(host)
+	}
+
+	return g.reach(ctx, network, host, port, addrs)
+}
+
+// reach dials one of the addresses lookup returned, trying each in turn.
+func (g gateway) reach(
+	ctx context.Context, network, host, port string, addrs []netip.Addr,
+) (net.Conn, error) {
 	var dialErr error
 
 	for _, addr := range addrs {

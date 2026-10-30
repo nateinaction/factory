@@ -199,6 +199,24 @@ var _ = Describe("security events", func() {
 		Expect(logged.String()).NotTo(ContainSubstring(headerSecret))
 	})
 
+	It("rate limits a flood of refusals while counting every one", func() {
+		p, logged := loggedProxy(policy("api.example.com"), "", publicGateway)
+
+		const refusals = 50
+
+		for range refusals {
+			resp, conn := connect(p.Address(), "blocked.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		}
+
+		Expect(securityEvents(logged)).To(HaveLen(security.RefusalLogBurst),
+			"a refusal flood reached the log without a limit")
+		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedByPolicy: refusals}))
+	})
+
 	It("emits no event for an allowed request", func() {
 		echo, stop := echoServer()
 		DeferCleanup(stop)
