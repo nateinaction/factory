@@ -308,6 +308,9 @@ service:
                 )
                 + "\n"
             )
+            # A line that is not a JSON record, as a tool writing to fd 2 could leave behind: it must
+            # be dropped rather than shipped as raw text to Loki.
+            f.write("private raw tool output\n")
 
         # The role's batch timeout is 5s, so give the exports well over one batch interval.
         wanted = [
@@ -361,6 +364,11 @@ service:
     leaked = [marker for marker in dropped if marker in out]
     if leaked:
         sys.stderr.write("the collector let a non-allowlisted attribute through: " + repr(leaked) + "\n")
+        sys.stderr.write(out)
+        return 1
+
+    if "private raw tool output" in out:
+        sys.stderr.write("the collector shipped a line it could not parse as JSON\n")
         sys.stderr.write(out)
         return 1
 

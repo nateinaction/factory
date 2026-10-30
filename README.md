@@ -14,7 +14,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | `agent` | the issue-to-PR agent: `foreman` (built on the controller with Go), pinned opencode, the factory's own forked skills (`roles/agent/files/skills/`, each naming the upstream path and ref it was forked from; nothing is cloned or pinned upstream at run time), and the `factory-*` DAGs (see below) |
 | `poe_fan` | PoE HAT fan trip points raised to 75-79 °C so it only runs as a safety net (applies at next reboot) |
 | `host_health` | `node_exporter` on every host, loopback only, for memory and filesystem use, plus a timer that writes the SoC temperature and the firmware's throttling bits (`vcgencmd get_throttled`) to its textfile collector. Each host's `collector` scrapes both and forwards them |
-| `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It tails the factory DAGs' run logs so foreman's diagnostics and security events reach Loki with their trace ids, keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards traces, metrics and diagnostics to the telemetry backend (`factory_collector_backend_host`). It reads dagu's 0600 run logs with one read-only capability and runs unprivileged otherwise. The egress proxy refuses loopback, so a sandboxed run cannot reach it |
+| `collector` | the OpenTelemetry Collector (contrib, from nixpkgs) on every host, listening on loopback only (OTLP 4317/4318) for foreman's telemetry. It tails the factory DAGs' run logs so foreman's diagnostics and security events reach Loki with their trace ids, drops a line it cannot parse as JSON rather than shipping it raw, keeps only allowlisted attributes (`factory_collector_allowed_attributes`), derives run counts and durations from spans, buffers within a fixed size while the backend is unreachable, and forwards traces, metrics and diagnostics to the telemetry backend (`factory_collector_backend_host`). It reads dagu's 0600 run logs with one read-only capability and runs unprivileged otherwise. The egress proxy refuses loopback, so a sandboxed run cannot reach it |
 | `telemetry` | the telemetry backend on the dagu server, from nixpkgs: Prometheus (OTLP metrics), Tempo (traces), Loki (diagnostics) and Grafana in front. Every service binds loopback and `tailscale serve` exposes it to the tailnet only; every store is bounded by age or size; see ADR 0002 |
 | `github_app` | a GitHub App credential readable only by `dagu`, plus a git credential helper that mints short-lived installation tokens |
 
@@ -245,7 +245,11 @@ Things to know:
   `warn`, `error`); unset or unknown means `info`. Stdout carries only program
   output, never diagnostics. The model's transcript (private repository code,
   issue text) is logged only at `debug`, with every secret the run holds redacted;
-  at the default level the run log carries no transcript.
+  at the default level the run log carries no transcript. The model process's standard error is a
+  debug-only sink too: each line is redacted and logged at `debug` as an attribute of foreman's own
+  record, never written raw to the diagnostic stream, so a sandboxed tool can neither forge a
+  record's level, message and trace id nor leak text the redaction missed. Each host's collector also
+  drops any line on dagu's stderr that is not a JSON record rather than shipping it as raw text.
 - Each run leaves its usage record out of band, at `<work root>/usage/<run id>.json` on the host
   that ran it: tokens, cost, duration, attempts and outcome. `foreman status` prefers the run's root
   span in the telemetry backend when one is configured (`foreman status --telemetry-url

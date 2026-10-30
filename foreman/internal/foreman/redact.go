@@ -3,6 +3,7 @@ package foreman
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 )
 
@@ -68,6 +69,23 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 		if err := w.emit(clean[:len(clean)-keep]); err != nil {
 			return 0, err
 		}
+	}
+
+	return len(p), nil
+}
+
+// debugSink is the model process's standard error destination. It logs each line at debug level as
+// one attribute of a record foreman writes, so a line can never name its own level, message or trace
+// id. It is a debug-only sink: the line stays on the host unless debug logging is explicitly turned
+// on, and even then the collector's allowlist drops the text attribute.
+type debugSink struct {
+	log *slog.Logger
+}
+
+// Write logs each line in p at debug level.
+func (s debugSink) Write(p []byte) (int, error) {
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(p), "\n"), "\n") {
+		s.log.Debug("agent stderr", "text", line)
 	}
 
 	return len(p), nil
