@@ -216,6 +216,26 @@ var _ = Describe("waking on a comment", func() {
 		Expect(h.runner.find("enqueue")).To(BeEmpty())
 	})
 
+	It("leaves a done issue where it is when no App that can read pull requests is installed", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelDone: {{"number": 1}}})
+		transition(workflow.Transition{
+			Role: workflow.Reviewer, RunID: "old", From: workflow.Reviewing, To: workflow.Done,
+		})
+
+		pr, err := emulator.CreatePR(context.Background(), "o/r", workflow.BranchName(1), "Add x", "Do x")
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(pr.Number, "o", "please also handle the empty case")
+
+		h.installed = map[workflow.Role][]string{workflow.Planner: {"o/r"}}
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Planner))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelDone))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
 	It("leaves a waiting issue where it is when the waking token cannot be minted", func() {
 		h.queue(map[string][]map[string]any{workflow.LabelWaiting: {{"number": 1}}})
 		transition(workflow.Transition{

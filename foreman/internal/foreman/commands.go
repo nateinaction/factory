@@ -581,7 +581,7 @@ func wakeIssue(
 		return false, nil
 	}
 
-	thread, ok, err := wakeThread(ctx, c, repo, issue, comments, latest)
+	thread, ok, err := wakeThread(ctx, d, repo, issue, comments, latest)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -624,17 +624,30 @@ func wakeIssue(
 	return true, nil
 }
 
+// prReaders are the agent roles whose Apps can read pull requests, in the order wakeThread tries them.
+// The Planner, Researcher and Curator have no Pull requests permission, so the polling App may be unable
+// to list a branch's pull request; these two own the states a done issue passes through.
+func prReaders() []workflow.Role {
+	return []workflow.Role{workflow.Implementer, workflow.Reviewer}
+}
+
 // wakeThread is the thread a wake is judged on: the pull request's comments for a done issue, the
-// issue's own otherwise. ok is false when a done issue has no open pull request to comment on.
+// issue's own otherwise. ok is false when a done issue has no open pull request to comment on, or when
+// no App that can read pull requests can mint a token: the issue is left for the next poll.
 func wakeThread(
-	ctx context.Context, c github.Client, repo workflow.Repo, issue workflow.Issue,
+	ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue,
 	comments []workflow.Item, latest workflow.Marker,
 ) ([]workflow.Item, bool, error) {
 	if latest.To != workflow.Done {
 		return comments, true, nil
 	}
 
-	pr, err := c.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
+	reader, ok := prReader(ctx, d, repo, issue)
+	if !ok {
+		return nil, false, nil
+	}
+
+	pr, err := reader.ExistingPR(ctx, repo, workflow.BranchName(issue.Number))
 	if err != nil {
 		return nil, false, err
 	}
@@ -643,9 +656,30 @@ func wakeThread(
 		return nil, false, nil
 	}
 
-	thread, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
+	thread, err := reader.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: pr.Number})
 
 	return thread, err == nil, err
+}
+
+// prReader is a client whose App can read the repository's pull requests: the first of prReaders that
+// mints. Each failed mint is logged; ok is false when none does.
+func prReader(ctx context.Context, d Deps, repo workflow.Repo, issue workflow.Issue) (github.Client, bool) {
+	for _, role := range prReaders() {
+		token, err := d.mint(ctx, role, repo, writableToken)
+		if err != nil {
+			d.log().Warn("cannot mint a token to read the pull request; trying the next agent role",
+				"agent_role", role, "repo", repo, "issue", issue.Number, "error", err)
+
+			continue
+		}
+
+		return d.client(token), true
+	}
+
+	d.log().Warn("no agent role that can read pull requests is installed; leaving the done issue where it is",
+		"repo", repo, "issue", issue.Number)
+
+	return github.Client{}, false
 }
 
 // written reports whether a writer commented after the latest marker.

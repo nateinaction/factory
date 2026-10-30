@@ -69,6 +69,10 @@ live in this repo.
    | Reviewer | write | write | write |
    | Curator | none | none | write |
 
+   A comment on a `factory:done` issue's pull request wakes the issue, and the poll reads
+   that pull request with the Implementer's token, or the Reviewer's if the Implementer
+   can't mint. A repository with neither installed leaves its done issues where they are.
+
    Every App also has Metadata read; the Implementer and Reviewer have Checks,
    Actions and Commit statuses read, and no other App has them. The Curator
    works only from issues and comments, so it has no Contents: its runs clone
