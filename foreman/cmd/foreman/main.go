@@ -100,7 +100,8 @@ func executeTraced(ctx context.Context, d *foreman.Deps, root *cobra.Command, ar
 	}
 
 	attrs := []attribute.KeyValue{attribute.String(telemetry.AttrVerb, verb)}
-	// The run id ties every process of one dagu run together; `status` finds a run's trace by it.
+	// The run id ties every process of one dagu run together in a trace; `status` finds the run's
+	// trace from its TRACEPARENT parameter instead.
 	if d.RunID != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrRunID, d.RunID))
 	}

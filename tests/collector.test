@@ -79,6 +79,15 @@ assert {"factory.issue", "factory.state", "factory.failure_kind", "factory.run_i
         "factory.peak_context", "factory.cost", "gen_ai.request.model",
         "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"} <= allowed, allowed
 '
+check "the allowlist keeps a poll's skip reason and a process's verb and exit code" conf '
+allowed = set(v["factory_collector_allowed_attributes"])
+assert {"factory.skip_reason", "factory.attempt",
+        "factory.verb", "factory.exit_code"} <= allowed, allowed
+'
+check "the allowlist keeps every field of a security event's record" conf '
+allowed = set(v["factory_collector_allowed_attributes"])
+assert {"event", "outcome", "host", "agent_role", "repository", "issue"} <= allowed, allowed
+'
 check "the allowlist does not admit generic host health keys" conf '
 allowed = set(v["factory_collector_allowed_attributes"])
 assert not ({"kind", "state", "mountpoint", "fstype", "device"} & allowed), allowed

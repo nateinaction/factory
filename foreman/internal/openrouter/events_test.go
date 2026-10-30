@@ -111,4 +111,35 @@ var _ = Describe("the OpenRouter proxy's security events", func() {
 		Expect(logged.String()).NotTo(ContainSubstring("another-run-token"))
 		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedBadToken: 1}))
 	})
+
+	It("rate limits a flood of refusals while counting every one", func() {
+		up := newUpstream(nil)
+		DeferCleanup(up.Close)
+
+		var logged logBuffer
+
+		log := security.Scope(slog.New(slog.NewJSONHandler(&logged, nil)), "Implementer", "o/r", 7)
+
+		p, err := startAt(GinkgoT().Context(), testKey, testToken, Loopback, up.URL, log)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(p.Close)
+
+		const refusals = 50
+
+		for range refusals {
+			req, err := http.NewRequestWithContext(GinkgoT().Context(), http.MethodGet, p.URL()+"/models", nil)
+			Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Authorization", "Bearer another-run-token")
+
+			resp, err := proxyClient().Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.Body.Close()).To(Succeed())
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		}
+
+		Expect(securityEvents(&logged)).To(HaveLen(security.RefusalLogBurst),
+			"a refusal flood reached the log without a limit")
+		Expect(p.Refusals()).To(Equal(map[security.Outcome]int{security.RefusedBadToken: refusals}))
+		Expect(up.calls).To(BeEmpty())
+	})
 })

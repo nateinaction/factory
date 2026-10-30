@@ -275,9 +275,9 @@ factory_foreman_otel_service_name: foreman
 # The host whose telemetry backend this collector forwards to (traces, metrics and logs, each to its
 # own port). Empty means no backend: the collector keeps receiving and deriving metrics, and exports nothing.
 factory_collector_backend_host: "{{ factory_telemetry_host if factory_telemetry | bool else '' }}"
-# Attributes (span, resource and metric) that may leave the host. Everything else is redacted, so a
-# new attribute is dropped until someone adds it here. The first group is spanmetrics' own dimensions
-# and the standard resource attributes.
+# Attributes (span, resource, metric and log record) that may leave the host. Everything else is
+# redacted, so a new attribute is dropped until someone adds it here. The first group is spanmetrics'
+# own dimensions and the standard resource attributes.
 factory_collector_allowed_attributes:
   - service.name
   - span.name
@@ -285,19 +285,23 @@ factory_collector_allowed_attributes:
   - status.code
   - service.version
   - host.name
-  # A run's dimensions. factory.issue and factory.trace_id are the one exception to "an issue is never
-  # a metric label": the security-event metric carries them so a per-event alert can name the issue
-  # and link straight to the trace that raised it (#132). Every other metric keeps the issue out.
+  # A run's dimensions. factory.issue is an exception to "an issue is never a metric label": the
+  # security-event and reaped-run metrics carry it so their alerts can name the issue a human needs to
+  # look at (#132). Every other metric keeps the issue out, and no metric carries a trace id.
   - factory.agent_role
   - factory.repo
   - factory.issue
-  - factory.trace_id
   - factory.outcome
   - factory.state
   - factory.failure_kind
   - factory.event
   - factory.worker_host
   - factory.run_id
+  # What a poll left a queue alone for, and what a process ran and exited with.
+  - factory.skip_reason
+  - factory.attempt
+  - factory.verb
+  - factory.exit_code
   # The run's root span carries its usage, which `foreman status` reads from the backend when one is
   # configured. Where a GenAI convention names a figure, its key is used.
   - factory.attempts
@@ -307,6 +311,15 @@ factory_collector_allowed_attributes:
   - gen_ai.usage.input_tokens
   - gen_ai.usage.output_tokens
   - gen_ai.usage.cache_read.input_tokens
+  # Security events are log records with their own bare keys (security.Scope and security.Emit),
+  # not the factory.* attributes of a span or metric. Every one of them must reach Loki, so a single
+  # query on the record's body returns each event with the host and run it names.
+  - event
+  - outcome
+  - host
+  - agent_role
+  - repository
+  - issue
   # Foreman's diagnostics carry the trace's ids as log attributes as well as the record's own trace
   # context, so Loki's derived field finds them from a Grafana log line.
   - trace_id
@@ -356,6 +369,11 @@ factory_telemetry_tempo_http_port: 3200
 factory_telemetry_tempo_grpc_port: 9097
 factory_telemetry_loki_port: 3100 # OTLP logs at /otlp/v1/logs
 factory_telemetry_loki_grpc_port: 9096
+# The server's Tempo HTTP API, which `foreman status` reads a worker run's usage from. Only the
+# server sets it: a worker's local usage record already describes the runs it executed. Empty means
+# `status` reads only the local record.
+factory_foreman_telemetry_url: >-
+  {{ ('http://' ~ factory_telemetry_host_loopback ~ ':' ~ factory_telemetry_tempo_http_port) if (factory_telemetry | bool and dagu_mode == 'server') else '' }}
 factory_telemetry_grafana_port: 3000 # tailnet HTTPS port; Grafana's login is its own
 # Grafana's admin login. The user has a default; the password deliberately has none, so that it is
 # never in the repository: set factory_telemetry_grafana_admin_password in an ansible-vault file (or
@@ -376,11 +394,11 @@ factory_telemetry_memory_max_mib:
   loki: 192
   grafana: 160
 # Alerts: the signals that need a human. The rules live in the telemetry role; every threshold, window
-# and the cost budget is set here, never written into a rule. A per-event alert names the agent role,
-# repository and issue from its metric's labels and links straight to the trace that raised it: the
-# security-event metric is the one that carries the issue and trace id (see
+# and the cost budget is set here, never written into a rule. A per-issue alert names the agent role,
+# repository and issue from its metric's labels and links to a search for the role's traces: the
+# security-event and reaped-run metrics are the ones that carry the issue (see
 # factory_collector_allowed_attributes). An aggregate alert names the agent role and repository and
-# links to a search for their offending traces and their failed issues.
+# links to a search for their offending traces and their failed issues. No metric carries a trace id.
 # Where an alert's trace link points: the tailnet HTTPS address Grafana is served at.
 factory_alerts_grafana_url: "https://{{ factory_telemetry_host }}:{{ factory_telemetry_grafana_port }}"
 # How far back the security alerts look for a refused request or a rejected output.

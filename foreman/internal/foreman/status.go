@@ -1,6 +1,7 @@
 package foreman
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -134,10 +135,11 @@ func runIssue(run dagu.Run) int {
 
 // Status is `foreman status`: a read-only report of active runs, the queues, agent roles with no
 // host, and recent usage. It reads dagu's state, the configuration's deadlines for each agent role,
-// and the usage a run leaves behind. With a telemetry backend configured it reads the run's root span,
-// which is the only record a server can see for a run on another host; without one, or for a run the
-// backend has not seen, it reads the local record under this host's work root. It never reads a run's
-// stdout, so a line there cannot forge a usage figure. It talks to nothing else.
+// and the usage a run leaves behind. With a telemetry backend configured it reads the root span of
+// the trace the run's TRACEPARENT names, which is the only record a server can see for a run on
+// another host; without one, or for a run the backend has not seen, it reads the local record under
+// this host's work root. It never reads a run's stdout, so a line there cannot forge a usage figure.
+// It talks to nothing else.
 func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	runs, err := readHistory(ctx, d)
 	if err != nil {
@@ -181,10 +183,13 @@ func recentUsage(ctx context.Context, d Deps, cfg config.Config, runs []factoryR
 	return firstRecords(records, UsageRecordLimit)
 }
 
-// usageFor reads one run's usage, preferring the backend's copy of the run's root span.
+// usageFor reads one run's usage, preferring the backend's copy of the run's root span. The
+// host's setting wins over the Ansible-written config, so a flag or environment variable can point
+// one invocation at another backend.
 func usageFor(ctx context.Context, d Deps, cfg config.Config, run factoryRun) (usageRecord, bool) {
-	if d.Settings.TelemetryURL != "" {
-		if record, ok := traceUsage(ctx, d, cfg, run); ok {
+	backendURL := cmp.Or(d.Settings.TelemetryURL, cfg.TelemetryURL)
+	if backendURL != "" {
+		if record, ok := traceUsage(ctx, d, cfg, run, backendURL); ok {
 			return record, true
 		}
 	}

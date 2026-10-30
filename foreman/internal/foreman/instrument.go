@@ -18,7 +18,7 @@ import (
 // never fails or delays the poll. The alert instruments are built once here too, so a poll that reaps
 // a dead run records it with the same instruments the rest of the poll holds.
 type pollInstruments struct {
-	issues   metric.Int64Counter
+	issues   metric.Int64Gauge
 	claims   metric.Int64Counter
 	capacity metric.Int64Gauge
 	alerts   alertInstruments
@@ -30,7 +30,7 @@ func newPollInstruments(d Deps) pollInstruments {
 	m := d.meter()
 
 	return pollInstruments{
-		issues: telemetry.Int64Counter(m, telemetry.MetricPollIssues,
+		issues: telemetry.Int64Gauge(m, telemetry.MetricPollIssues,
 			"Open issues in each factory state, per repository."),
 		claims: telemetry.Int64Counter(m, telemetry.MetricPollClaims,
 			"Issues a poll claimed, per agent role and repository."),
@@ -41,9 +41,9 @@ func newPollInstruments(d Deps) pollInstruments {
 }
 
 // alertInstruments are the measurements the alert rules read. Every instrument is safe on a no-op
-// meter, so recording one never fails or delays a run. A per-event measurement carries the issue and
-// the trace that raised it, so its alert can name the issue and link straight to the trace; an
-// aggregate measurement carries only the agent role and repository.
+// meter, so recording one never fails or delays a run. A per-event measurement carries the issue, so
+// its alert can name it; an aggregate measurement carries only the agent role and repository. No
+// measurement carries a trace id.
 type alertInstruments struct {
 	security metric.Int64Counter
 	outcomes metric.Int64Counter
@@ -75,9 +75,10 @@ func (a alertInstruments) securityEvent(
 }
 
 // securityEvents records n refused requests of one event and outcome, raised by one run. The issue
-// and the trace id are labels on purpose: #132's acceptance criterion is that a per-event alert names
-// the issue and links to the trace that raised it, and a Prometheus rule can template only labels.
-// Every other metric keeps the issue out: see telemetry.AttrIssue.
+// is a label on purpose: #132's acceptance criterion is that a per-event alert names the issue it
+// needs a human to look at, and a Prometheus rule can template only labels. This metric and the
+// reaped-run metric are the only two that carry it, and no metric carries a trace id: see
+// telemetry.AttrIssue.
 func (a alertInstruments) securityEvents(
 	ctx context.Context, role workflow.Role, repo workflow.Repo, issue int, event string,
 	outcome security.Outcome, n int64,
@@ -94,10 +95,6 @@ func (a alertInstruments) securityEvents(
 	}
 	if issue > 0 {
 		attrs = append(attrs, attribute.Int(telemetry.AttrIssue, issue))
-	}
-
-	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-		attrs = append(attrs, attribute.String(telemetry.AttrTraceID, sc.TraceID().String()))
 	}
 
 	a.security.Add(ctx, n, metric.WithAttributes(attrs...))
@@ -129,18 +126,20 @@ func (a alertInstruments) runCost(
 	))
 }
 
-// runReaped records one dead run a poll called failed.
-func (a alertInstruments) runReaped(ctx context.Context, role workflow.Role, repo workflow.Repo) {
+// runReaped records one dead run a poll called failed. The issue is a label, as it is on a security
+// event, so the dead-run alert can name the issue it moved to failed; no trace id is.
+func (a alertInstruments) runReaped(ctx context.Context, role workflow.Role, repo workflow.Repo, issue int) {
 	a.reaped.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(telemetry.AttrAgentRole, string(role)),
 		attribute.String(telemetry.AttrRepo, repo.String()),
+		attribute.Int(telemetry.AttrIssue, issue),
 	))
 }
 
 // recordAlerts records what the alert rules read for one finished run: its outcome and cost, and
 // every request its two proxies refused, by event and outcome. The alerts instruments are the run's
-// own, built once when the run started. The run's issue and trace ride on each security event, so its
-// alert reaches both directly.
+// own, built once when the run started. The run's issue rides on each security event, so its alert
+// names it directly; no trace id is a label.
 func (r run) recordAlerts(
 	ctx context.Context, st opencode.RunStats, usage opencode.Usage,
 	egress, key map[security.Outcome]int,
@@ -163,16 +162,13 @@ func (r run) recordAlerts(
 	}
 }
 
-// issuesInState records how many open issues one repository has in a factory state. Issue numbers,
-// SHAs and domains are never labels: the dimensions are the repository, the state and the role that
-// owns it.
+// issuesInState records how many open issues one repository has in a factory state. It is a gauge, so
+// it records zero when a state has emptied rather than keeping the count the state last had. Issue
+// numbers, SHAs and domains are never labels: the dimensions are the repository, the state and the
+// role that owns it.
 func (i pollInstruments) issuesInState(
 	ctx context.Context, repo workflow.Repo, state workflow.State, role workflow.Role, count int64,
 ) {
-	if count == 0 {
-		return
-	}
-
 	attrs := []attribute.KeyValue{
 		attribute.String(telemetry.AttrRepo, repo.String()),
 		attribute.String(telemetry.AttrState, string(state)),
@@ -181,7 +177,7 @@ func (i pollInstruments) issuesInState(
 		attrs = append(attrs, attribute.String(telemetry.AttrAgentRole, string(role)))
 	}
 
-	i.issues.Add(ctx, count, metric.WithAttributes(attrs...))
+	i.issues.Record(ctx, count, metric.WithAttributes(attrs...))
 }
 
 // claim records one issue claimed for an agent role in a repository.

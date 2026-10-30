@@ -136,17 +136,18 @@ memory the stack may use is `factory_telemetry_memory_budget_mib`.
 Prometheus evaluates the alert rules in `roles/telemetry/templates/alerts.yaml.j2`: egress refused a
 non-public address, a request to either proxy without the run token, an output file carrying a factory
 marker, an agent role's failure rate, the daily model cost and a dead run reaped by a poll. The
-per-event alerts name the agent role, repository and issue and link straight to the trace that raised
-them; the aggregate alerts name the agent role and repository and link to a search for their offending
+per-issue alerts name the agent role, repository and issue and link to a search for the role's traces;
+the aggregate alerts name the agent role and repository and link to a search for their offending
 traces and to the repository's failed issues. Every threshold, window and the cost budget is a
 `factory_alerts_*` setting in `group_vars/factory.yml`. The rules fire into Prometheus's own list at
 `http://127.0.0.1:9090/alerts` on the server; no Alertmanager is configured, so they are read there
 or in Grafana rather than pushed.
 
-The issue reaches a per-event alert as a label on the security-event metric only. That is a deliberate
-exception to "an issue number is a span attribute, never a metric label": a Prometheus rule can
-template only labels, and the alert has to name the issue it needs a human to look at. Every other
-metric keeps the issue out.
+The issue reaches a per-issue alert as a label on the security-event and reaped-run metrics, the two
+low-volume signals that need a human. That is a deliberate exception to "an issue number is a span
+attribute, never a metric label": a Prometheus rule can template only labels, and the alert has to
+name the issue it needs a human to look at. Every other metric keeps the issue out, and no metric
+carries a trace id; an alert links to a trace search instead.
 
 Grafana also provisions the **Factory host health** dashboard (folder Factory). It puts each worker
 host's run duration p95 beside that host's SoC temperature, throttling bits, memory use and disk
@@ -253,11 +254,13 @@ Things to know:
   record's level, message and trace id nor leak text the redaction missed. Each host's collector also
   drops any line on dagu's stderr that is not a JSON record rather than shipping it as raw text.
 - Each run leaves its usage record out of band, at `<work root>/usage/<run id>.json` on the host
-  that ran it: tokens, cost, duration, attempts and outcome. `foreman status` prefers the run's root
-  span in the telemetry backend when one is configured (`foreman status --telemetry-url
-  http://127.0.0.1:3200` on the server, or `FACTORY_TELEMETRY_URL`), so it reports a run a worker
-  host executed; without a backend, or for a run the backend has not seen, it reads the local record.
-  It never reads a run's stdout, so a line there that mimics a record cannot forge a usage figure.
+  that ran it: tokens, cost, duration, attempts and outcome. On the dagu server the Ansible role
+  writes the telemetry backend into the config (`telemetry_url`, pointing at that host's Tempo), so
+  `foreman status` reads each run's root span there and reports a run a worker host executed; a
+  worker's config leaves it empty because its own records describe the runs it ran. A flag or
+  `FACTORY_TELEMETRY_URL` overrides it, and for a run with neither a readable trace context nor a
+  trace in the backend, `status` reads the local record. It never reads a run's stdout, so a line
+  there that mimics a record cannot forge a usage figure.
   The run also prints the same record as one JSON line on stdout, which `foreman logs` and the dagu
   UI show to a person reading the run log.
 - Foreman exports OTLP to the host's collector: the dagu unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` and

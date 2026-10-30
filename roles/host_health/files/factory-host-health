@@ -5,7 +5,8 @@
 # forwards them to the telemetry backend.
 #
 # The inputs are overridable so the Ansible spec can run this without a Pi. A failed read publishes
-# nothing: the previous file stays, rather than a partial or stale value replacing it.
+# nothing, so the last good file keeps being served: readers see a stale value rather than a partial
+# one until a read succeeds.
 set -uo pipefail
 
 textfile="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile}"

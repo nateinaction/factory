@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -48,7 +49,8 @@ type Settings struct {
 	FactoryRepo string `mapstructure:"-"`
 	// TelemetryURL is the telemetry backend's trace API (Tempo's HTTP endpoint). `status` reads a
 	// run's usage from the run's root span there when it is set, because a worker's local record is
-	// not visible from the server. Empty reads only the local record.
+	// not visible from the server. The Ansible-written config sets it on the server; a flag or this
+	// setting overrides it. Empty reads only the local record.
 	TelemetryURL string `mapstructure:"telemetry-url"`
 }
 
@@ -159,6 +161,10 @@ type Config struct {
 	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
 	// Empty means no repository is configured, so such a promotion fails closed.
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
+	// TelemetryURL is the host's telemetry backend (Tempo's HTTP API) where `status` reads a run's
+	// root span. Ansible writes it on the dagu server only: a worker's local record describes the runs
+	// it executed, while the server needs the backend to see them. Empty reads only the local record.
+	TelemetryURL string `json:"telemetry_url" mapstructure:"telemetry_url"`
 }
 
 // Unhosted reports whether no worker host takes the agent role. Its issues stay queued.
@@ -242,7 +248,11 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateFactoryRepo(path, c.FactoryRepo)
+	if err := validateFactoryRepo(path, c.FactoryRepo); err != nil {
+		return err
+	}
+
+	return validateTelemetryURL(path, c.TelemetryURL)
 }
 
 // validateRoleCapacity rejects a capacity for an agent role the workflow does not know, and a
@@ -281,6 +291,21 @@ func validateUnhosted(path string, roles []workflow.Role) error {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
 			return fmt.Errorf("config %s: unhosted roles: %w", path, err)
 		}
+	}
+
+	return nil
+}
+
+// validateTelemetryURL checks the configured telemetry backend is an HTTP endpoint. Empty is
+// allowed: a host without a backend reads only its local records.
+func validateTelemetryURL(path, backend string) error {
+	if backend == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(backend)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("config %s: telemetry URL %q is not an http(s) endpoint", path, backend)
 	}
 
 	return nil

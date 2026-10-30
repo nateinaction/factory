@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -16,10 +17,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/ghtest"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
+
+// traceIDAttr is the attribute name a trace id would carry as a metric label. No metric carries it.
+const traceIDAttr = "factory.trace_id"
 
 // metricPoints is every data point of the named metric, keyed by its attributes.
 func metricPoints(rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
@@ -174,6 +179,96 @@ var _ = Describe("poll telemetry", func() {
 			attribute.String(telemetry.AttrAgentRole, "implementer"))
 		Expect(ok).To(BeTrue(), "no capacity measurement")
 		Expect(capacity.Value).To(Equal(int64(1)))
+	})
+
+	It("reports issues per state as a gauge, with zero for a state that has none", func() {
+		h.queue(map[string][]map[string]any{
+			workflow.LabelImplement: {{"number": 5}},
+		})
+
+		_, reader, _, err := traced(workflow.Implementer)
+		Expect(err).NotTo(HaveOccurred())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+		var gauge metricdata.Gauge[int64]
+
+		for _, scope := range rm.ScopeMetrics {
+			for _, m := range scope.Metrics {
+				if m.Name != telemetry.MetricPollIssues {
+					continue
+				}
+
+				g, isGauge := m.Data.(metricdata.Gauge[int64])
+				Expect(isGauge).To(BeTrue(), "issues per state is not a gauge")
+
+				gauge = g
+			}
+		}
+
+		Expect(gauge.DataPoints).NotTo(BeEmpty())
+
+		empty, ok := pointWith(gauge.DataPoints,
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.String(telemetry.AttrState, string(workflow.Plan)))
+		Expect(ok).To(BeTrue(), "a state with no issues has no measurement")
+		Expect(empty.Value).To(BeZero(), "a state with no issues does not report zero")
+
+		implement, ok := pointWith(gauge.DataPoints,
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.String(telemetry.AttrState, string(workflow.Implement)))
+		Expect(ok).To(BeTrue(), "no measurement for a state with an issue")
+		Expect(implement.Value).To(Equal(int64(1)))
+	})
+
+	It("keeps the issue and any trace id out of the poll metrics", func() {
+		h.queue(map[string][]map[string]any{
+			workflow.LabelImplement: {{"number": 5}},
+		})
+
+		_, reader, _, err := traced(workflow.Implementer)
+		Expect(err).NotTo(HaveOccurred())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+		for _, name := range []string{
+			telemetry.MetricPollIssues, telemetry.MetricPollClaims, telemetry.MetricPollCapacity,
+		} {
+			for _, point := range metricPoints(rm, name) {
+				attrs := point.Attributes.ToSlice()
+				Expect(attributeValue(attrs, telemetry.AttrIssue)).To(BeEmpty(), "%s carries the issue", name)
+				Expect(attributeValue(attrs, traceIDAttr)).To(BeEmpty(), "%s carries the trace id", name)
+			}
+		}
+	})
+
+	It("records a reaped run's issue as a label and its trace id as none", func() {
+		h.ensureIssue(1)
+		Expect(emulator.Do(context.Background(), http.MethodPost,
+			"/repos/o/r/issues/1/labels", ghtest.AdminToken,
+			map[string]any{"labels": []string{workflow.LabelImplementing}}, nil)).To(Succeed())
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		_, reader, _, err := traced(workflow.Implementer)
+		Expect(err).NotTo(HaveOccurred())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+		reaped, ok := pointWith(metricPoints(rm, telemetry.MetricRunsReaped),
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, 1))
+		Expect(ok).To(BeTrue(), "a reaped run carries no issue")
+		Expect(reaped.Value).To(Equal(int64(1)))
+		Expect(attributeValue(reaped.Attributes.ToSlice(), traceIDAttr)).To(BeEmpty(),
+			"a reaped run carries the trace id")
 	})
 
 	It("marks a repository it cannot read as an error and still works the others", func() {

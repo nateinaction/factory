@@ -17,13 +17,13 @@ check() {
   if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
 }
 
-# conf <python>: runs the assertions with the parsed collector `c`, dashboard `dash` and group_vars
-# `v` in scope.
+# conf <python>: runs the assertions with the parsed collector `c`, dashboard `dash`, Prometheus
+# config `prom` and group_vars `v` in scope.
 conf() {
   python3 -I -c '
 import json, re, sys
 data = json.load(open(sys.argv[1]))
-c, dash, v = data["collector"], data["dashboard"], data["v"]
+c, dash, prom, v = data["collector"], data["dashboard"], data["prometheus"], data["v"]
 exec(sys.argv[2])
 ' "$out/config.json" "$1"
 }
@@ -151,6 +151,37 @@ memory = next(expr for title, expr in exprs.items() if "memory" in title.lower()
 disk = next(expr for title, expr in exprs.items() if "disk" in title.lower())
 assert "node_memory_MemAvailable_bytes" in memory and "host_name" in memory, memory
 assert "node_filesystem_avail_bytes" in disk and "host_name" in disk, disk
+'
+check "prometheus promotes each host's name to a metric label" conf '
+assert "host.name" in prom["otlp"]["promote_resource_attributes"], prom
+'
+check "the dashboard's health filters name the labels the collector produces" conf '
+# The collector renames the bare Prometheus attributes into the factory namespace, and Prometheus
+# turns their dots into underscores. Take the names from the rename itself, so a dashboard query
+# that drifts from the pipeline fails here.
+produced = set()
+for step in c["processors"]["transform/host"]["metric_statements"]:
+    if step["context"] != "datapoint":
+        continue
+    for statement in step["statements"]:
+        produced.update(re.findall(r"set\(datapoint\.attributes\[\"([^\"]+)\"\]", statement))
+produced = {name.replace(".", "_") for name in produced}
+exprs = {p["title"]: p["targets"][0]["expr"] for p in dash["panels"]}
+throttle = next(expr for title, expr in exprs.items() if "throttl" in title.lower())
+disk = next(expr for title, expr in exprs.items() if "disk" in title.lower())
+assert "factory_host_health_state=\"now\"" in throttle, throttle
+assert "factory_host_health_kind" in throttle, throttle
+assert "factory_host_health_mountpoint=\"/\"" in disk, disk
+# The bare names are deleted by the collector, so filtering on them matches nothing.
+assert not re.search(r"(?<![a-z_])state=\"", throttle), throttle
+assert not re.search(r"(?<![a-z_])mountpoint=\"", disk), disk
+used = {label for expr in exprs.values()
+        for label in re.findall(r"factory_host_health_[a-z_]+", expr)}
+assert used <= produced, (used - produced)
+'
+check "every dashboard panel can be split by host" conf '
+for panel in dash["panels"]:
+    assert "host_name" in panel["targets"][0]["expr"], panel["title"]
 '
 check "every dashboard panel reads the provisioned Prometheus datasource" conf '
 assert {p["datasource"]["uid"] for p in dash["panels"]} == {"prometheus"}, dash["panels"]
