@@ -46,11 +46,6 @@ with:
 pre-commit run --all-files
 ```
 
-The `golangci-lint` hook runs a custom build of golangci-lint with the nilaway
-plugin added, built into `.build/` from `foreman/.custom-gcl.yml` on first use.
-Plain `golangci-lint run` refuses the config because it does not know nilaway;
-run `.build/custom-gcl run ./...` from `foreman/` instead.
-
 The dev shell also provides `emulate`, the GitHub emulator foreman's Go tests run against; see
 [`foreman/docs/emulate.md`](foreman/docs/emulate.md) for how the suites use it and the GitHub
 behaviour it does not model.
