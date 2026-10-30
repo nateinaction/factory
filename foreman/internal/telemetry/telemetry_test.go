@@ -12,7 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -343,5 +345,81 @@ var _ = Describe("ExportEnv", func() {
 
 	It("names every variable the sudoers rule keeps", func() {
 		Expect(telemetry.EnvNames).To(ConsistOf("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"))
+	})
+})
+
+var _ = Describe("TracedTransport", func() {
+	// roundTrip sends one request through the transport against a server answering code, and returns
+	// the span it recorded.
+	roundTrip := func(method, path string, code int) sdktrace.ReadOnlySpan {
+		recorder := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)).Tracer("test")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+		}))
+		DeferCleanup(server.Close)
+
+		hc := &http.Client{Transport: telemetry.TracedTransport(http.DefaultTransport, tracer)}
+
+		req, err := http.NewRequestWithContext(context.Background(), method, server.URL+path, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := hc.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Body.Close()).To(Succeed())
+
+		Expect(recorder.Ended()).To(HaveLen(1))
+
+		return recorder.Ended()[0]
+	}
+
+	attr := func(span sdktrace.ReadOnlySpan, key string) any {
+		for _, kv := range span.Attributes() {
+			if string(kv.Key) == key {
+				return kv.Value.AsInterface()
+			}
+		}
+
+		return nil
+	}
+
+	It("names the span for the route, so a slow call can be found without its repository or issue", func() {
+		span := roundTrip(http.MethodGet, "/repos/nateinaction/factory/issues/160/comments", http.StatusOK)
+
+		Expect(span.Name()).To(Equal("GET /repos/{repo}/issues/{n}/comments"))
+		Expect(attr(span, "http.request.method")).To(Equal("GET"))
+		Expect(attr(span, "http.response.status_code")).To(BeEquivalentTo(http.StatusOK))
+		Expect(span.Status().Code).To(Equal(codes.Unset))
+	})
+
+	It("leaves a 404 unmarked, because an absent label or comment is an expected answer", func() {
+		span := roundTrip(http.MethodDelete, "/repos/o/r/issues/3/labels/factory:plan", http.StatusNotFound)
+
+		Expect(attr(span, "http.response.status_code")).To(BeEquivalentTo(http.StatusNotFound))
+		Expect(span.Status().Code).To(Equal(codes.Unset))
+	})
+
+	It("marks a server error, with a fixed description and never the body", func() {
+		span := roundTrip(http.MethodPost, "/repos/o/r/issues/3/comments", http.StatusBadGateway)
+
+		Expect(span.Status().Code).To(Equal(codes.Error))
+		Expect(span.Status().Description).To(Equal("server error"))
+	})
+
+	It("marks a request that never got an answer", func() {
+		recorder := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)).Tracer("test")
+		hc := &http.Client{Transport: telemetry.TracedTransport(http.DefaultTransport, tracer)}
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:1/repos/o/r", nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = hc.Do(req)
+		Expect(err).To(HaveOccurred())
+
+		Expect(recorder.Ended()).To(HaveLen(1))
+		Expect(recorder.Ended()[0].Status().Code).To(Equal(codes.Error))
+		Expect(recorder.Ended()[0].Status().Description).To(Equal("request failed"))
 	})
 })

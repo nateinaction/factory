@@ -60,11 +60,14 @@ func run() int {
 		Tracer: tel.Tracer,
 		Meter:  tel.Meter,
 		Runner: proc.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
-		HTTP:   &http.Client{Timeout: github.HTTPTimeout},
-		Out:    os.Stdout,
-		Log:    logger,
-		Host:   host,
-		RunID:  os.Getenv("DAG_RUN_ID"),
+		HTTP: &http.Client{
+			Timeout:   github.HTTPTimeout,
+			Transport: telemetry.TracedTransport(http.DefaultTransport, tel.Tracer),
+		},
+		Out:   os.Stdout,
+		Log:   logger,
+		Host:  host,
+		RunID: os.Getenv("DAG_RUN_ID"),
 	}
 
 	root, err := newRootCommand(d, config.SettingsViper(home))

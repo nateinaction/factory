@@ -307,6 +307,9 @@ factory_collector_allowed_attributes:
   - factory.attempt
   - factory.verb
   - factory.exit_code
+  # An outgoing request's method and status code; its span is named for the route, never the URL.
+  - http.request.method
+  - http.response.status_code
   # The run's root span carries its usage, which `foreman status` reads from the backend when one is
   # configured. Where a GenAI convention names a figure, its key is used.
   - factory.attempts
