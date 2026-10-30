@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -319,20 +320,51 @@ func pollingRole(roles []workflow.Role) (workflow.Role, bool) {
 	return "", false
 }
 
-// prepareAll brings every assigned repository up to date. A repository the poll cannot read marks its
-// span as an error and is skipped; the poll still works the others.
+// pollConcurrency is how many repositories one poll prepares at once. It is a ceiling on the poll's
+// open requests, small enough to stay clear of GitHub's secondary rate limits.
+const pollConcurrency = 4
+
+// prepareAll brings every assigned repository up to date, pollConcurrency at a time. A repository the
+// poll cannot read marks its span as an error and is skipped; the poll still works the others. Each
+// repository works on its own permission cache, since the cache is a plain map, and the caches are
+// merged into perms once every repository is done: their keys never overlap, for a key names its
+// repository.
 func prepareAll(
 	ctx context.Context, d Deps, cfg config.Config, perms permissions, inst pollInstruments,
 	traces *pollTraces, assigned Assignment, repos []workflow.Repo, waiting map[workflow.Role]bool,
 ) {
+	// Spans are opened here, before any worker starts, so the trace set is never written concurrently.
 	for _, repo := range repos {
-		repoCtx, span := startRepoSpan(ctx, d, repo)
+		_, span := startRepoSpan(ctx, d, repo)
 		traces.set(repo, span)
+	}
 
-		if err := prepareRepo(repoCtx, d, cfg, perms, inst, repo, assigned[repo], waiting); err != nil {
-			d.log().Warn("skipping a repository the poll cannot read", "repo", repo, "error", err)
-			failSpan(span, "repository read failed")
-		}
+	caches := make([]permissions, len(repos))
+	slots := make(chan struct{}, pollConcurrency)
+
+	var wg sync.WaitGroup
+
+	for i, repo := range repos {
+		caches[i] = newPermissions()
+
+		slots <- struct{}{}
+
+		wg.Go(func() {
+			defer func() { <-slots }()
+
+			repoCtx := traces.context(ctx, repo)
+
+			if err := prepareRepo(repoCtx, d, cfg, caches[i], inst, repo, assigned[repo], waiting); err != nil {
+				d.log().Warn("skipping a repository the poll cannot read", "repo", repo, "error", err)
+				traces.fail(repo, "repository read failed")
+			}
+		})
+	}
+
+	wg.Wait()
+
+	for _, cache := range caches {
+		maps.Copy(perms, cache)
 	}
 }
 

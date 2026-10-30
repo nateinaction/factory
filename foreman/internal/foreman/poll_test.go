@@ -81,6 +81,61 @@ var _ = Describe("Poll", func() {
 		})
 	})
 
+	Describe("repositories", func() {
+		It("polls the assigned repositories at the same time, so a slow one does not hold up the rest", func() {
+			ctx := context.Background()
+			Expect(emulator.ResetRepo(ctx, "o/r2")).To(Succeed())
+			DeferCleanup(func() { Expect(emulator.DeleteRepo(ctx, "o/r2")).To(Succeed()) })
+
+			h.installed[workflow.Implementer] = []string{"o/r", "o/r2"}
+			h.installed[workflow.Reviewer] = []string{"o/r", "o/r2"}
+
+			// Each repository's first issue list waits for the other's. A poll that takes its
+			// repositories one after another never lets the second arrive, and the wait gives up.
+			var (
+				mu      sync.Mutex
+				arrived = map[string]bool{}
+				both    = make(chan struct{})
+				gaveUp  bool
+			)
+
+			meet := func(repo string) http.HandlerFunc {
+				return func(w http.ResponseWriter, _ *http.Request) {
+					mu.Lock()
+					arrived[repo] = true
+
+					if len(arrived) == 2 {
+						select {
+						case <-both:
+						default:
+							close(both)
+						}
+					}
+					mu.Unlock()
+
+					select {
+					case <-both:
+					case <-time.After(3 * time.Second):
+						mu.Lock()
+						gaveUp = true
+						mu.Unlock()
+					}
+
+					ghtest.WriteJSON(w, []map[string]any{})
+				}
+			}
+			h.gh.Handle("GET /repos/o/r/issues", meet("o/r"))
+			h.gh.Handle("GET /repos/o/r2/issues", meet("o/r2"))
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			Expect(gaveUp).To(BeFalse(), "the second repository was not polled while the first was waiting")
+		})
+	})
+
 	Describe("routing a new issue", func() {
 		DescribeTable("puts a ticket in its first queue",
 			func(labels []string, want string) {
