@@ -158,6 +158,10 @@ for p in dash["panels"]:
     assert "{{host_name}}" in legend, (p["title"], legend)
     assert "__field" not in legend, (p["title"], legend)
 '
+check "throttling is a row per host and kind that colours the stretches it was active" conf '
+panel = next(p for p in dash["panels"] if "throttl" in p["title"].lower())
+assert panel["type"] == "state-timeline", panel["type"]
+'
 check "prometheus promotes each host's name to a metric label" conf '
 assert "host.name" in prom["otlp"]["promote_resource_attributes"], prom
 '

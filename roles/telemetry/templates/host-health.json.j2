@@ -130,27 +130,37 @@
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
           "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 1
+            "fillOpacity": 80,
+            "lineWidth": 0
           },
           "mappings": [
             {
               "options": {
                 "0": {
+                  "color": "green",
                   "text": "clear"
                 },
                 "1": {
+                  "color": "red",
                   "text": "active"
                 }
               },
               "type": "value"
             }
           ],
-          "max": 1,
-          "min": 0,
-          "unit": "short"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
@@ -163,10 +173,11 @@
       "id": 3,
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
+          "showLegend": false
         },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "never",
         "tooltip": {
           "mode": "multi"
         }
@@ -185,7 +196,7 @@
         }
       ],
       "title": "Throttling now by worker host (1 = active)",
-      "type": "timeseries"
+      "type": "state-timeline"
     },
     {
       "datasource": {
