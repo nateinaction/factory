@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -46,6 +45,10 @@ const tunnelDirections = 2
 // refused rather than growing the proxy without limit.
 const MaxTunnels = 64
 
+// MaxRefusedHosts bounds how many refused hosts one run's proxy remembers for its usage line. A model
+// that asks for endless names is refused without growing the record past this.
+const MaxRefusedHosts = 256
+
 // Proxy is a running egress proxy.
 type Proxy struct {
 	policy       sandbox.Network
@@ -61,7 +64,7 @@ type Proxy struct {
 	mu           sync.Mutex
 	domains      map[string]struct{}
 	refused      map[string]struct{}
-	refusals     map[security.Outcome]int
+	refusals     *security.Tally
 	tunnels      map[net.Conn]struct{}
 	open         int
 	log          *slog.Logger
@@ -114,12 +117,12 @@ func startProxy(
 	p := &Proxy{
 		policy: policy, api: api, token: token, listener: ln, log: logger, gateway: g,
 		domains: map[string]struct{}{}, refused: map[string]struct{}{},
-		refusals: map[security.Outcome]int{}, tunnels: map[net.Conn]struct{}{},
+		refusals: security.NewTally(), tunnels: map[net.Conn]struct{}{},
 	}
 	plainDial := (&net.Dialer{Timeout: proxy.DialTimeout}).DialContext
 	// Both transports ignore the proxy environment variables, so traffic the run sends through this
 	// proxy is never sent through another one.
-	p.transport = proxy.Transport(p.gateway.dialContext, proxy.DialTimeout)
+	p.transport = proxy.Transport(p.dial, proxy.DialTimeout)
 	// The key proxy is foreman's own loopback listener rather than a model-chosen destination, so
 	// its transport dials without the public-address check.
 	p.apiTransport = proxy.Transport(plainDial, proxy.DialTimeout)
@@ -203,13 +206,7 @@ func (p *Proxy) Refused() []string {
 // Refusals counts every refused request by outcome. It is the run's record of what the proxy turned
 // away and why, which the alert rules read; the event's destination stays out of a metric.
 func (p *Proxy) Refusals() map[security.Outcome]int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	out := make(map[security.Outcome]int, len(p.refusals))
-	maps.Copy(out, p.refusals)
-
-	return out
+	return p.refusals.Counts()
 }
 
 // sortedHosts is the keys of hosts, sorted. It is never nil.
@@ -270,15 +267,23 @@ func (p *Proxy) record(host string) {
 	p.domains[strings.ToLower(host)] = struct{}{}
 }
 
+// dial reaches address through the gateway, recording the host only once the destination has passed
+// the gateway's checks. Because nothing is recorded before the decision, a refusal leaves an earlier
+// successful request to the same host recorded as allowed.
+func (p *Proxy) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	return p.gateway.dialDecided(ctx, network, address, p.record)
+}
+
 // deny notes one refused domain and emits the request's security event, once. It never takes the
 // request, so no header or token can reach the event.
 func (p *Proxy) deny(host string, outcome security.Outcome) {
 	p.mu.Lock()
-	p.refused[strings.ToLower(host)] = struct{}{}
-	p.refusals[outcome]++
+	if len(p.refused) < MaxRefusedHosts {
+		p.refused[strings.ToLower(host)] = struct{}{}
+	}
 	p.mu.Unlock()
 
-	security.Emit(p.log, security.EventEgressRefused, outcome, host)
+	p.refusals.Refuse(p.log, security.EventEgressRefused, outcome, host)
 }
 
 // refuse answers a destination the proxy will not reach.
@@ -291,8 +296,7 @@ func (p *Proxy) refuse(w http.ResponseWriter, host string, outcome security.Outc
 // address, failure for every other cause.
 func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure string) {
 	if refused, ok := refusal(err); ok {
-		// The policy admitted the host before the dial, so it was noted as allowed; it was not reached.
-		p.unrecord(host)
+		// The gateway refuses before the host is recorded, so an earlier allowed record stands.
 		p.log.Debug("egress proxy: destination is not publicly routable", "host", host, "address", refused.addr.String())
 		p.refuse(w, host, security.RefusedNotRoutable)
 
@@ -301,14 +305,6 @@ func (p *Proxy) failed(w http.ResponseWriter, host string, err error, failure st
 
 	p.log.Warn("egress proxy: upstream unavailable", "host", host, "error", err)
 	http.Error(w, failure, http.StatusBadGateway)
-}
-
-// unrecord takes back record: the host was refused after all.
-func (p *Proxy) unrecord(host string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	delete(p.domains, strings.ToLower(host))
 }
 
 // tunnel carries a CONNECT to its destination.
@@ -336,13 +332,12 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 
 	defer p.releaseTunnel()
 
-	p.record(host)
 	p.relay(w, r, host, port)
 }
 
 // relay reaches the tunnel's destination, hijacks the client connection and pipes both ways.
 func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, host, port string) {
-	upstream, err := p.gateway.dialContext(r.Context(), "tcp", net.JoinHostPort(host, port))
+	upstream, err := p.dial(r.Context(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		p.failed(w, host, err, "egress proxy: upstream unavailable")
 
@@ -445,7 +440,8 @@ func (p *Proxy) copyTunnel(client, upstream net.Conn) {
 	p.mu.Unlock()
 }
 
-// forward carries one absolute-form HTTP request to its destination.
+// forward carries one absolute-form HTTP request to its destination. The egress transport records the
+// host once the gateway has decided the destination.
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	host := r.URL.Hostname()
 	if !p.policy.Permits(host) {
@@ -454,7 +450,6 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.record(host)
 	p.forwarder.ServeHTTP(w, r)
 }
 
