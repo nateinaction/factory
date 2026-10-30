@@ -57,6 +57,10 @@ check "each agent role's run capacity is the run cap times its hosts" python3 -I
 check "foreman's config gives each agent role its run capacity" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":1,"researcher":1,"implementer":1,"reviewer":1,"curator":1}; assert d["role_capacity"] == want, d' \
   "$out/config.json"
+check "the server's config points status at Tempo" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert d["telemetry_url"] == "http://127.0.0.1:3200", d' "$out/config.json"
+check "a worker's config reads no remote backend" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert d["telemetry_url"] == "", d' "$out/config-worker.json"
 check "no old name in any rendered file" bash -c '! grep -rq finances-agent "$1"' _ "$out"
 
 check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$out/dagu-agent.sudoers"

@@ -80,7 +80,8 @@ const (
 	AttrCost = "factory.cost"
 	// AttrPeakContext is the largest context any one model step used.
 	AttrPeakContext = "factory.peak_context"
-	// AttrRunID is the dagu run id one run's spans belong to. It is how `status` finds a run's trace.
+	// AttrRunID is the dagu run id one run's spans belong to, which ties a run's spans to its log.
+	// `status` finds a run's trace from its TRACEPARENT, not from this attribute.
 	AttrRunID = "factory.run_id"
 )
 

@@ -25,7 +25,9 @@ const statusHistory = `[
   "startedAt":"2026-10-28T10:00:00Z","params":"REPO=o/r ISSUE=5","workerId":"factory-2"},
  {"name":"factory-planner","dagRunId":"run-planner","status":"queued","params":"REPO=o/r ISSUE=7"},
  {"name":"factory-reviewer","dagRunId":"run-old","status":"succeeded",
-  "startedAt":"2026-10-28T09:50:00Z","params":"REPO=o/r ISSUE=6","workerId":"factory-2"}
+  "startedAt":"2026-10-28T09:50:00Z",
+  "params":"REPO=o/r ISSUE=6 TRACEPARENT=00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "workerId":"factory-2"}
 ]`
 
 // statusUsage is the out-of-band usage record a finished run left for status.
@@ -170,9 +172,13 @@ var _ = Describe("Status", func() {
 	})
 
 	Context("with a telemetry backend", func() {
-		// tempoTrace is the run's root span as Tempo's /api/v2/traces serves it: a worker host's run,
-		// which no local record on the server can describe.
-		const tempoTrace = `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"foreman.run",` +
+		// statusTraceID is the trace the finished run's TRACEPARENT names.
+		const statusTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+		// tempoTrace is the run's root span as the pinned Tempo's /api/v2/traces/{id} serves it: a
+		// worker host's run, which no local record on the server can describe. Tempo nests the trace
+		// under "trace".
+		const tempoTrace = `{"trace":{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"foreman.run",` +
 			`"startTimeUnixNano":"1700000000000000000","endTimeUnixNano":"1700000754000000000",` +
 			`"attributes":[` +
 			`{"key":"factory.repo","value":{"stringValue":"o/r"}},` +
@@ -186,28 +192,27 @@ var _ = Describe("Status", func() {
 			`{"key":"factory.cost","value":{"doubleValue":0.25}},` +
 			`{"key":"factory.attempts","value":{"intValue":"2"}},` +
 			`{"key":"factory.outcome","value":{"stringValue":"rework"}}` +
-			`]}]}]}]}`
+			`]}]}]}]}}`
 
-		// backend serves a Tempo API for one run. found is false for a trace it has not seen.
+		// backend serves a Tempo API for one trace. found is false for a trace it has not seen. It
+		// fails the spec on any other path, so a lookup by run id cannot pass unnoticed.
 		backend := func(found bool) *httptest.Server {
 			GinkgoHelper()
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/api/search":
-					// Only the run the spec's trace belongs to is in the backend.
-					if !found || !strings.Contains(r.URL.Query().Get("q"), `"run-old"`) {
-						_, _ = io.WriteString(w, `{"traces":[]}`)
-
-						return
-					}
-
-					_, _ = io.WriteString(w, `{"traces":[{"traceID":"abc123"}]}`)
-				case "/api/v2/traces/abc123":
-					_, _ = io.WriteString(w, tempoTrace)
-				default:
+				if r.URL.Path != "/api/v2/traces/"+statusTraceID {
 					http.NotFound(w, r)
+
+					return
 				}
+
+				if !found {
+					http.NotFound(w, r)
+
+					return
+				}
+
+				_, _ = io.WriteString(w, tempoTrace)
 			}))
 			DeferCleanup(server.Close)
 
@@ -215,7 +220,8 @@ var _ = Describe("Status", func() {
 		}
 
 		It("reports a run's usage from its trace, so a run on another host is visible", func() {
-			h.deps.Settings.TelemetryURL = backend(true).URL
+			// Ansible writes the server's backend URL into the host's config, so status needs no flag.
+			cfg.TelemetryURL = backend(true).URL
 
 			answerDagu()
 
@@ -224,6 +230,17 @@ var _ = Describe("Status", func() {
 			Expect(h.out.String()).To(MatchRegexp(
 				`(?m)^o/r\s+#6\s+reviewer\s+prov/review\s+factory-2\s+10\s+2\s+5\s+15/200000\s+0\.25\s+` +
 					`12m34s\s+2\s+rework\s+2026-10-28T09:50:00Z\s*$`))
+		})
+
+		It("lets the setting override the config on the host", func() {
+			cfg.TelemetryURL = backend(false).URL
+			h.deps.Settings.TelemetryURL = backend(true).URL
+
+			answerDagu()
+
+			Expect(Status(context.Background(), h.deps, cfg)).To(BeZero())
+			Expect(h.out.String()).To(ContainSubstring("prov/review"),
+				"the setting was not preferred over the config")
 		})
 
 		It("falls back to the local record for a run the backend has not seen", func() {

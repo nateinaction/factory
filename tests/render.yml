@@ -50,6 +50,14 @@
         dest: "{{ lookup('env', 'RENDER_DIR') }}/config.json"
         mode: "0644"
 
+    - name: Render a worker's foreman config
+      ansible.builtin.template:
+        src: ../roles/agent/templates/config.json.j2
+        dest: "{{ lookup('env', 'RENDER_DIR') }}/config-worker.json"
+        mode: "0644"
+      vars:
+        dagu_mode: worker
+
     - name: Render dagu's queue config
       ansible.builtin.template:
         src: ../roles/dagu/templates/config.yaml.j2
