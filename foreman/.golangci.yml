@@ -83,6 +83,9 @@ linters:
     - nilerr
     # Returning nil, nil.
     - nilnil
+    # Nil values followed across calls and packages to a dereference. Not a built-in linter: it comes
+    # from the custom binary `golangci-lint custom` builds, see .custom-gcl.yml.
+    - nilaway
     # HTTP requests sent without a context.
     - noctx
     # Slices that could be preallocated.
@@ -198,6 +201,13 @@ linters:
       # that cross in from the standard library and third parties.
       ignore-package-globs:
         - github.com/nateinaction/factory/foreman/*
+    custom:
+      nilaway:
+        type: module
+        description: Potential nil panics, followed across function and package boundaries.
+        settings:
+          # Without this nilaway analyzes the standard library and every dependency.
+          include-pkgs: github.com/nateinaction/factory/foreman
 
   exclusions:
     rules:
@@ -208,6 +218,17 @@ linters:
           - funlen
           - dupl
           - goconst
+      # nilaway does not read Gomega: `Expect(err).NotTo(HaveOccurred())` guards a value for the spec,
+      # and nilaway still sees the nil. A spec cannot nil-panic past its own assertions.
+      - path: _test\.go
+        linters:
+          - nilaway
+      # The same flow, reported where it ends: a spec's unguarded value reaching production code. The
+      # text names the spec file the flow starts in, so a flow that starts in production code still reports.
+      - path: internal/(egress/egress|ghtest/emulate)\.go
+        text: '_test\.go:\d+'
+        linters:
+          - nilaway
       # Test fixtures are fake secrets ("minted-token-reviewer") and paths under a temp directory.
       - path: _test\.go
         linters:

@@ -30,9 +30,15 @@ repos:
         files: ^foreman/(go\.mod|go\.sum|.*\.go)$
         pass_filenames: false
 
+      # Runs the custom golangci-lint binary, which carries the nilaway plugin (foreman/.custom-gcl.yml);
+      # plain `golangci-lint run` does not know nilaway and refuses the config. The binary is built into
+      # .build/ when it is missing or older than .custom-gcl.yml.
       - id: golangci-lint
         name: golangci-lint
-        entry: bash -c 'cd foreman && golangci-lint run ./...'
+        entry: >-
+          bash -c 'cd foreman &&
+          { [ ../.build/custom-gcl -nt .custom-gcl.yml ] || golangci-lint custom; } &&
+          ../.build/custom-gcl run ./...'
         language: system
         files: ^foreman/.*\.go$
         pass_filenames: false
