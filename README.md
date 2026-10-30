@@ -247,11 +247,13 @@ Things to know:
   issue text) is logged only at `debug`, with every secret the run holds redacted;
   at the default level the run log carries no transcript.
 - Each run leaves its usage record out of band, at `<work root>/usage/<run id>.json` on the host
-  that ran it: tokens, cost, duration, attempts and outcome. `foreman status` prefers the run's root
-  span in the telemetry backend when one is configured (`foreman status --telemetry-url
-  http://127.0.0.1:3200` on the server, or `FACTORY_TELEMETRY_URL`), so it reports a run a worker
-  host executed; without a backend, or for a run the backend has not seen, it reads the local record.
-  It never reads a run's stdout, so a line there that mimics a record cannot forge a usage figure.
+  that ran it: tokens, cost, duration, attempts and outcome. On the dagu server the Ansible role
+  writes the telemetry backend into the config (`telemetry_url`, pointing at that host's Tempo), so
+  `foreman status` reads each run's root span there and reports a run a worker host executed; a
+  worker's config leaves it empty because its own records describe the runs it ran. A flag or
+  `FACTORY_TELEMETRY_URL` overrides it, and for a run with neither a readable trace context nor a
+  trace in the backend, `status` reads the local record. It never reads a run's stdout, so a line
+  there that mimics a record cannot forge a usage figure.
   The run also prints the same record as one JSON line on stdout, which `foreman logs` and the dagu
   UI show to a person reading the run log.
 - Foreman exports OTLP to the host's collector: the dagu unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` and

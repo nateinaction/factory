@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/opencode"
@@ -23,7 +24,8 @@ const (
 	TraceTimeout = 10 * time.Second
 	// TraceBytes bounds one response, so a misbehaving backend cannot exhaust the host's memory.
 	TraceBytes = 8 << 20
-	// runSpanName is the run verb's process span: the span that carries the run's usage.
+	// runSpanName is the run verb's root span name, before RootSpanName prefixes the package: the span
+	// that carries the run's usage.
 	runSpanName = "run"
 )
 
@@ -39,14 +41,22 @@ func newTempoClient(base string) tempoClient {
 	return tempoClient{base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: TraceTimeout}}
 }
 
-// traceUsage reads the usage report the run's root span carries. ok is false when the backend has no
-// such trace, which is a run from before telemetry or one the backend has already pruned.
+// traceUsage reads the usage report the run's root span carries. ok is false, so the caller reads
+// the local record, when the run names no readable trace context, the backend cannot be read or has
+// no such trace, the trace has no run span, or the run span carries no outcome.
 func traceUsage(
-	ctx context.Context, d Deps, cfg config.Config, run factoryRun,
+	ctx context.Context, d Deps, cfg config.Config, run factoryRun, backendURL string,
 ) (usageRecord, bool) {
-	client := newTempoClient(d.Settings.TelemetryURL)
+	client := newTempoClient(backendURL)
 
-	trace, err := client.traceFor(ctx, run.RunID)
+	traceID, ok := runTraceID(ctx, run)
+	if !ok {
+		d.log().Debug("usage record: the run names no trace", "run", run.RunID)
+
+		return usageRecord{}, false
+	}
+
+	trace, err := client.traceFor(ctx, traceID)
 	if err != nil {
 		d.log().Warn("usage record: cannot read the backend trace", "run", run.RunID, "error", err)
 
@@ -70,19 +80,12 @@ func traceUsage(
 	return usageRecord{run: run, report: report}, true
 }
 
-// tempoSearch is the part of Tempo's search response this reads: the trace a run id belongs to.
-type tempoSearch struct {
-	Traces []struct {
-		TraceID string `json:"traceID"`
-	} `json:"traces"`
-}
-
-// tempoTrace is one trace, in either shape Tempo serves: the OTLP JSON of /api/v2/traces, or the
-// batches object older releases serve from /api/traces. Both are read, so the pinned Tempo and a
-// marginally older one both work.
+// tempoTrace is one trace as the pinned Tempo's /api/v2/traces/{id} serves it: the OTLP JSON of
+// the trace, nested under the response's "trace" field.
 type tempoTrace struct {
-	ResourceSpans []tempoScopeHolder `json:"resourceSpans"`
-	Batches       []tempoScopeHolder `json:"batches"`
+	Trace struct {
+		ResourceSpans []tempoScopeHolder `json:"resourceSpans"`
+	} `json:"trace"`
 }
 
 // tempoScopeHolder is one resource's spans.
@@ -110,32 +113,41 @@ type tempoAttribute struct {
 	} `json:"value"`
 }
 
-// traceFor finds the trace one run belongs to and reads it.
-func (c tempoClient) traceFor(ctx context.Context, runID string) (tempoTrace, error) {
-	if !validRunID.MatchString(runID) {
-		return tempoTrace{}, fmt.Errorf("backend trace: run id %q is not a plain name", runID)
+// runTraceID is the W3C trace id the run's TRACEPARENT parameter names. ok is false when the run
+// names none, or names something that is not a well-formed traceparent.
+func runTraceID(ctx context.Context, run factoryRun) (string, bool) {
+	parent, ok := run.Param(telemetry.TraceParentVar)
+	if !ok {
+		return "", false
 	}
 
-	query := url.Values{
-		"q":     {fmt.Sprintf("{ span.%s = %q }", telemetry.AttrRunID, runID)},
-		"limit": {"1"},
+	ctx, ok = telemetry.ContinueTrace(ctx, parent)
+	if !ok {
+		return "", false
 	}
 
-	var found tempoSearch
-	if err := c.get(ctx, "/api/search?"+query.Encode(), &found); err != nil {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return "", false
+	}
+
+	return sc.TraceID().String(), true
+}
+
+// traceFor reads one trace from the backend. traceID is validated before it names a path, so a
+// malformed value cannot name another endpoint.
+func (c tempoClient) traceFor(ctx context.Context, traceID string) (tempoTrace, error) {
+	id, err := trace.TraceIDFromHex(traceID)
+	if err != nil {
+		return tempoTrace{}, fmt.Errorf("backend trace: %q is not a trace id", traceID)
+	}
+
+	var got tempoTrace
+	if err := c.get(ctx, "/api/v2/traces/"+id.String(), &got); err != nil {
 		return tempoTrace{}, err
 	}
 
-	if len(found.Traces) == 0 || found.Traces[0].TraceID == "" {
-		return tempoTrace{}, nil
-	}
-
-	var trace tempoTrace
-	if err := c.get(ctx, "/api/v2/traces/"+url.PathEscape(found.Traces[0].TraceID), &trace); err != nil {
-		return tempoTrace{}, err
-	}
-
-	return trace, nil
+	return got, nil
 }
 
 // get reads one JSON document from the backend, bounded by TraceBytes.
@@ -175,7 +187,7 @@ func (c tempoClient) get(ctx context.Context, path string, out any) error {
 
 // runSpan finds the span named for the run verb, the one the run's usage is annotated on.
 func runSpan(trace tempoTrace) (tempoSpan, bool) {
-	for _, holder := range append(trace.ResourceSpans, trace.Batches...) {
+	for _, holder := range trace.Trace.ResourceSpans {
 		for _, scope := range holder.ScopeSpans {
 			for _, span := range scope.Spans {
 				if span.Name == telemetry.RootSpanName(runSpanName) {
