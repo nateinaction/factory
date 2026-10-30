@@ -240,6 +240,26 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring("private repository code"))
 	})
 
+	It("keeps a tool's forged and raw stderr out of the shipped diagnostics", func() {
+		forged := `{"time":"2026-10-29T00:00:00Z","level":"ERROR","msg":"forged",` +
+			`"trace_id":"0123456789abcdef0123456789abcdef"}`
+		raw := "private repository code"
+
+		h.answerOpencodeStreams("", forged+"\n"+raw+"\n")
+		_, _ = h.runImpl(testAgent())
+
+		shipped := h.logs.StringFrom(slog.LevelInfo)
+		Expect(shipped).NotTo(ContainSubstring("forged"))
+		Expect(shipped).NotTo(ContainSubstring(raw))
+		Expect(h.out.String()).NotTo(ContainSubstring("forged"))
+		Expect(h.out.String()).NotTo(ContainSubstring(raw))
+
+		// The debug sink still keeps the text for an operator, as one attribute of foreman's own
+		// record: it can neither choose the record's level nor forge a trace id.
+		Expect(h.logs.String()).To(ContainSubstring("DEBUG agent stderr"))
+		Expect(h.logs.StringFrom(slog.LevelError)).NotTo(ContainSubstring(forged))
+	})
+
 	It("removes the key from what it echoes to the log", func() {
 		h.answerOpencode(`{"type":"error","error":{"name":"APIError",` +
 			`"data":{"statusCode":400,"message":"bad key or-key"}}}` + "\n")
@@ -271,8 +291,7 @@ var _ = Describe("the opencode adapter", func() {
 			_, _ = h.runImpl(testAgent())
 			Expect(h.logs.String()).NotTo(ContainSubstring(secret))
 			Expect(h.out.String()).NotTo(ContainSubstring(secret))
-			Expect(h.errOut.String()).NotTo(ContainSubstring(secret))
-			Expect(h.logs.String() + h.errOut.String()).To(ContainSubstring("[redacted]"))
+			Expect(h.logs.String()).To(ContainSubstring("[redacted]"))
 		},
 		Entry("OpenRouter key on stdout", "or-key", true),
 		Entry("OpenRouter key on stderr", "or-key", false),
@@ -294,8 +313,8 @@ var _ = Describe("the opencode adapter", func() {
 			return "", nil
 		})
 		_, _ = h.runImpl(testAgent())
-		Expect(h.errOut.String()).NotTo(ContainSubstring("run-proxy-token"))
-		Expect(h.errOut.String()).To(ContainSubstring("token [redacted] end"))
+		Expect(h.logs.String()).NotTo(ContainSubstring("run-proxy-token"))
+		Expect(h.logs.String()).To(ContainSubstring("token [redacted] end"))
 	})
 
 	It("mints a fresh random proxy token for each run", func() {
