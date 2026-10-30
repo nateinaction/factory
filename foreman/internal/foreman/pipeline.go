@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
@@ -265,6 +266,10 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	// failure anywhere below leaves nothing behind.
 	defer func() { err = errors.Join(err, files.remove()) }()
 
+	if err := files.seedConfig(r.d.Settings.Home); err != nil {
+		return runResult{}, err
+	}
+
 	// The domains the egress proxy allowed and refused are the run's, read in the defer below. Each
 	// proxy counts its refusals as they happen, through the run's one tally.
 	var domains, refused []string
@@ -300,8 +305,13 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 		err = errors.Join(err, px.egress.Close(), px.key.Close())
 	}()
 
+	baseURL, err := modelBaseURL(runtime.GOOS, px.egress.URL())
+	if err != nil {
+		return runResult{}, err
+	}
+
 	env := runEnv{
-		sec: px.sec, baseURL: px.egress.URL(), token: px.token,
+		sec: px.sec, baseURL: baseURL, token: px.token,
 		egressPort: proxyPort(px.egress.Address()), network: network,
 	}
 

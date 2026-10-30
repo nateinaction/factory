@@ -284,6 +284,10 @@ func newHarness() *harness {
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
+	// The host's rendered opencode config, which a run copies into its own home.
+	hostConfig := filepath.Join(dir, "home", ".config", "opencode")
+	Expect(os.MkdirAll(hostConfig, 0o700)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(hostConfig, "opencode.json"), []byte("{}"), 0o600)).To(Succeed())
 	// dagu answers an empty active-run history, so a poll sees every agent role idle.
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 		if len(c.Argv) > 1 && c.Argv[1] == "history" {

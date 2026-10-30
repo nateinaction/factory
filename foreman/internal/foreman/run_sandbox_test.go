@@ -158,6 +158,39 @@ var _ = Describe("the sandbox", func() {
 		}
 	})
 
+	It("gives the model the agent definitions the host's opencode config holds", func() {
+		// The real home is hidden from the sandbox, so the run's own config directory is where the
+		// model finds its agent roles; without them opencode falls back to its default agent.
+		hostConfig := filepath.Join(h.deps.Settings.Home, ".config", "opencode")
+		Expect(os.MkdirAll(hostConfig, 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(hostConfig, "opencode.json"), []byte(`{"agent":{}}`), 0o600)).To(Succeed())
+
+		var seen string
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) && seen == "" {
+				raw, err := os.ReadFile(filepath.Join(c.Env["XDG_CONFIG_HOME"], "opencode", "opencode.json"))
+				Expect(err).NotTo(HaveOccurred(), "the run's config directory holds no opencode.json")
+
+				seen = string(raw)
+			}
+
+			return base(c)
+		})
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+		Expect(seen).To(Equal(`{"agent":{}}`))
+	})
+
+	It("fails the run, starting no model, when the host has no opencode config", func() {
+		Expect(os.Remove(filepath.Join(h.deps.Settings.Home, ".config", "opencode", "opencode.json"))).To(Succeed())
+
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(MatchError(ContainSubstring("read the opencode config")))
+		Expect(code).NotTo(BeZero())
+		Expect(h.opencodeCalls()).To(BeEmpty(), "ran the default agent")
+	})
+
 	It("deletes the run's HOME, XDG directories and toolchain afterwards", func() {
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 		Expect(h.runDir(workflow.Implementer, 5)).NotTo(BeAnExistingFile())

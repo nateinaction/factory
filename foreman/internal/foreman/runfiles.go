@@ -83,6 +83,34 @@ func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles,
 	return f, nil
 }
 
+// opencodeConfigName is the host's rendered opencode config, which defines the agent roles.
+const opencodeConfigName = "opencode.json"
+
+// seedConfig copies the host's opencode config into the run's own config directory. The real home is
+// hidden from the sandbox, and a model that cannot find its agent role falls back to opencode's default
+// agent, which has none of the role's permission limits: a missing config fails the run.
+func (f sandboxFiles) seedConfig(hostHome string) error {
+	src := filepath.Join(hostHome, ".config", "opencode", opencodeConfigName)
+
+	raw, err := os.ReadFile(src) //nolint:gosec // foreman's configured home joined with a fixed name
+	if err != nil {
+		return fmt.Errorf("read the opencode config: %w", err)
+	}
+
+	dir := filepath.Join(f.home, ".config", "opencode")
+	if err := os.MkdirAll(dir, privateDirMode); err != nil {
+		return fmt.Errorf("run config directory: %w", err)
+	}
+
+	dst := filepath.Join(dir, opencodeConfigName)
+
+	if err := os.WriteFile(dst, raw, privateFileMode); err != nil { //nolint:gosec // the run directory and a fixed name
+		return fmt.Errorf("write the run's opencode config: %w", err)
+	}
+
+	return nil
+}
+
 // remove deletes the run directory and the toolchain clone.
 func (f sandboxFiles) remove() error {
 	return errors.Join(os.RemoveAll(f.dir), os.RemoveAll(f.toolchain))
