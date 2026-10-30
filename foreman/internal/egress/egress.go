@@ -267,9 +267,9 @@ func (p *Proxy) record(host string) {
 	p.domains[strings.ToLower(host)] = struct{}{}
 }
 
-// dial reaches address through the gateway, recording the host only once the destination has passed
-// the gateway's checks. Because nothing is recorded before the decision, a refusal leaves an earlier
-// successful request to the same host recorded as allowed.
+// dial reaches address through the gateway, recording the host only once a connection to it is made.
+// Because nothing is recorded before the decision, a refusal leaves an earlier successful request to
+// the same host recorded as allowed, and a destination the run never reached is not recorded at all.
 func (p *Proxy) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	return p.gateway.dialDecided(ctx, network, address, p.record)
 }

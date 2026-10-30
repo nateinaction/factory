@@ -842,6 +842,24 @@ var _ = Describe("Proxy", func() {
 			Expect(p.Refused()).To(ContainElement("flip.example"))
 		})
 
+		It("records a host only once a connection to it is made", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					return nil, errors.New("test dial: connection refused")
+				},
+			})
+
+			resp, conn := connect(p.Address(), "unreachable.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+			Expect(p.Domains()).NotTo(ContainElement("unreachable.example"),
+				"a host the run never reached is recorded as allowed")
+			Expect(p.Refused()).To(BeEmpty(), "a dial failure is not a refusal")
+		})
+
 		It("bounds the refused hosts it remembers", func() {
 			p := start(policy("api.example.com"), "")
 			DeferCleanup(p.Close)
