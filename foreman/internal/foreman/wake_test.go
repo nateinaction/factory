@@ -7,10 +7,15 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -422,6 +427,62 @@ var _ = Describe("dead runs", func() {
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
 		Expect(h.markerComments(1)).To(BeEmpty())
 		Expect(h.logs.String()).To(ContainSubstring("cannot mint the dead run's own token"))
+	})
+
+	It("records one reaped run by agent role and repository", func() {
+		reader := sdkmetric.NewManualReader()
+		h.deps.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+		h.ensureIssue(1)
+		addLabel(1)
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelFailed))
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+		points := metricPoints(rm, telemetry.MetricRunsReaped)
+		Expect(points).To(HaveLen(1))
+
+		point, ok := pointWith(points,
+			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, 1),
+		)
+		Expect(ok).To(BeTrue(), "the point carries the reaped run's agent role, repository and issue")
+		Expect(point.Value).To(Equal(int64(1)))
+	})
+
+	It("records no reaped run when the dead run cannot be marked failed", func() {
+		reader := sdkmetric.NewManualReader()
+		h.deps.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+		h.ensureIssue(1)
+		addLabel(1)
+		h.gh.Status("POST /repos/o/r/issues/1/labels", http.StatusInternalServerError)
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+		Expect(metricPoints(rm, telemetry.MetricRunsReaped)).To(BeEmpty())
 	})
 
 	It("does not fail a run whose slow retro outlasts the deadline plus margin", func() {
