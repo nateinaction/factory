@@ -1,6 +1,9 @@
 package workflow_test
 
 import (
+	"bytes"
+	"log/slog"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -23,6 +26,19 @@ var _ = Describe("ParseRepo", func() {
 		Entry(nil, ""), Entry(nil, "a"), Entry(nil, "a/b/c"), Entry(nil, "a/b c"), Entry(nil, "a/../b?x"),
 		Entry(nil, "/b"), Entry(nil, "a/b\n"), Entry(nil, "../etc"), Entry(nil, "a/.."),
 	)
+})
+
+var _ = Describe("a Repo in a log record", func() {
+	It("is logged as its owner/name, not as an empty object", func() {
+		repo, err := workflow.ParseRepo("o/r")
+		Expect(err).NotTo(HaveOccurred())
+
+		var out bytes.Buffer
+
+		slog.New(slog.NewJSONHandler(&out, nil)).Info("polled", "repo", repo)
+
+		Expect(out.String()).To(ContainSubstring(`"repo":"o/r"`))
+	})
 })
 
 var _ = Describe("ParseIssueRef", func() {

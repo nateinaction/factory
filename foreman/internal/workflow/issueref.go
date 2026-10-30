@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -24,6 +25,12 @@ func ParseRepo(s string) (Repo, error) {
 // String returns the owner/name form, or "" for the zero Repo.
 func (r Repo) String() string {
 	return r.name
+}
+
+// LogValue logs a Repo as its owner/name. Without it the unexported name leaves a log record the
+// empty object {}.
+func (r Repo) LogValue() slog.Value {
+	return slog.StringValue(r.name)
 }
 
 // Owner returns the repository owner, the only owner whose factory Apps are ours. It is empty for
