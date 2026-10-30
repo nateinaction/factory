@@ -275,9 +275,9 @@ factory_foreman_otel_service_name: foreman
 # The host whose telemetry backend this collector forwards to (traces, metrics and logs, each to its
 # own port). Empty means no backend: the collector keeps receiving and deriving metrics, and exports nothing.
 factory_collector_backend_host: "{{ factory_telemetry_host if factory_telemetry | bool else '' }}"
-# Attributes (span, resource and metric) that may leave the host. Everything else is redacted, so a
-# new attribute is dropped until someone adds it here. The first group is spanmetrics' own dimensions
-# and the standard resource attributes.
+# Attributes (span, resource, metric and log record) that may leave the host. Everything else is
+# redacted, so a new attribute is dropped until someone adds it here. The first group is spanmetrics'
+# own dimensions and the standard resource attributes.
 factory_collector_allowed_attributes:
   - service.name
   - span.name
@@ -297,6 +297,11 @@ factory_collector_allowed_attributes:
   - factory.event
   - factory.worker_host
   - factory.run_id
+  # What a poll left a queue alone for, and what a process ran and exited with.
+  - factory.skip_reason
+  - factory.attempt
+  - factory.verb
+  - factory.exit_code
   # The run's root span carries its usage, which `foreman status` reads from the backend when one is
   # configured. Where a GenAI convention names a figure, its key is used.
   - factory.attempts
@@ -306,6 +311,15 @@ factory_collector_allowed_attributes:
   - gen_ai.usage.input_tokens
   - gen_ai.usage.output_tokens
   - gen_ai.usage.cache_read.input_tokens
+  # Security events are log records with their own bare keys (security.Scope and security.Emit),
+  # not the factory.* attributes of a span or metric. Every one of them must reach Loki, so a single
+  # query on the record's body returns each event with the host and run it names.
+  - event
+  - outcome
+  - host
+  - agent_role
+  - repository
+  - issue
   # Foreman's diagnostics carry the trace's ids as log attributes as well as the record's own trace
   # context, so Loki's derived field finds them from a Grafana log line.
   - trace_id
