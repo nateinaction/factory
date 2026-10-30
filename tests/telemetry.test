@@ -127,4 +127,71 @@ for svc in prometheus tempo loki grafana; do
     grep -Fxq 'NoNewPrivileges=true' '$out/$svc.service'"
 done
 
+# systemd reads StartLimit* only in [Unit]; in [Service] they are ignored.
+check "every backend unit reads its restart limit from [Unit]" python3 -I -c '
+import sys
+for path in sys.argv[1:]:
+    section, seen = None, {}
+    for line in open(path):
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+            continue
+        key = line.partition("=")[0]
+        if key in ("StartLimitIntervalSec", "StartLimitBurst"):
+            seen[key] = section
+            assert section == "[Unit]", (path, key, section)
+    assert set(seen) == {"StartLimitIntervalSec", "StartLimitBurst"}, (path, seen)
+' "$out/prometheus.service" "$out/tempo.service" "$out/loki.service" "$out/grafana.service"
+
+# --- the serve check names the exact listener, not a port number inside a longer one ---
+mkdir -p "$out/bin"
+ln -sf "$root/tests/fake_tailscale" "$out/bin/tailscale"
+
+# serve <status file>: run the role's serve tasks with a fake tailscale and record its calls.
+serve() {
+  rm -f "$out/serve-calls"
+  if ! TAILSCALE_STATUS_FILE="$1" TAILSCALE_CALLS_FILE="$out/serve-calls" \
+    FAKE_TAILSCALE_BIN="$out/bin" ansible-playbook "$root/tests/serve.yml" >"$out/.serve" 2>&1; then
+    cat "$out/.serve" >&2
+    echo "FAIL serve playbook" >&2
+    exit 1
+  fi
+}
+
+# Every listener here ends in an extra digit, so the old substring check saw each port as served.
+cat >"$out/unrelated-status" <<'EOF'
+# Tailscale Serve is forwarding
+
+|-- tcp://factory-1.example.ts.net:143170 (tailnet only)
+|--> tcp://127.0.0.1:143170
+|-- tcp://factory-1.example.ts.net:19090 (tailnet only)
+|--> tcp://127.0.0.1:19090
+|-- tcp://factory-1.example.ts.net:31000 (tailnet only)
+|--> tcp://127.0.0.1:31000
+https://factory-1.example.ts.net:30000 (tailnet only)
+|-- / proxy http://127.0.0.1:30000
+EOF
+serve "$out/unrelated-status"
+check "every ingest port is served past an unrelated longer port" bash -c "
+  grep -Fxq -- 'serve --bg --tcp=14317 tcp://127.0.0.1:14317' '$out/serve-calls' &&
+  grep -Fxq -- 'serve --bg --tcp=9090 tcp://127.0.0.1:9090' '$out/serve-calls' &&
+  grep -Fxq -- 'serve --bg --tcp=3100 tcp://127.0.0.1:3100' '$out/serve-calls' &&
+  grep -Fxq -- 'serve --bg --https=3000 http://127.0.0.1:3000' '$out/serve-calls'"
+
+cat >"$out/exact-status" <<'EOF'
+# Tailscale Serve is forwarding
+
+|-- tcp://factory-1.example.ts.net:14317 (tailnet only)
+|--> tcp://127.0.0.1:14317
+|-- tcp://factory-1.example.ts.net:9090 (tailnet only)
+|--> tcp://127.0.0.1:9090
+|-- tcp://factory-1.example.ts.net:3100 (tailnet only)
+|--> tcp://127.0.0.1:3100
+https://factory-1.example.ts.net:3000 (tailnet only)
+|-- / proxy http://127.0.0.1:3000
+EOF
+serve "$out/exact-status"
+check "an already-set-up serve is left alone" bash -c '[ ! -s "$1" ]' _ "$out/serve-calls"
+
 [ "$failures" -eq 0 ]

@@ -101,12 +101,20 @@ r = c["receivers"]["filelog/foreman"]
 assert r["include"] == [v["factory_dagu_logs_dir"] + "/factory-*/dag-run_*/*.err"], r["include"]
 assert r["storage"] in c["service"]["extensions"], r["storage"]
 types = [op["type"] for op in r["operators"]]
-assert types == ["json_parser", "trace_parser", "move"], types
+assert types == ["filter", "json_parser", "trace_parser", "move"], types
 assert "filelog/foreman" in c["service"]["pipelines"]["logs"]["receivers"]
 '
+check "a file reached through a symlink is dropped before it is parsed" conf '
+r = c["receivers"]["filelog/foreman"]
+assert r["include_file_path_resolved"] is True, r
+op = r["operators"][0]
+assert op["type"] == "filter", op
+# The trailing slash keeps a sibling directory whose name starts the same way out of the prefix.
+assert "path_resolved" in op["expr"], op
+assert v["factory_dagu_logs_dir"] + "/\"" in op["expr"], op
+'
 check "the JSON parser drops a line it cannot parse instead of shipping it raw" conf '
-op = c["receivers"]["filelog/foreman"]["operators"][0]
-assert op["type"] == "json_parser", op
+op = next(op for op in c["receivers"]["filelog/foreman"]["operators"] if op["type"] == "json_parser")
 assert op["on_error"] == "drop", op
 '
 check "the filelog receiver resumes from disk after a restart" conf '

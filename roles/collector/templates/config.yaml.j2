@@ -35,8 +35,18 @@ receivers:
       - {{ factory_dagu_logs_dir }}/factory-*/dag-run_*/*.err
     start_at: end
     include_file_path: true
+    # The receiver follows a symlink, and the capability can read what it points at. Each record
+    # carries the real path of the file it came from, so the filter below drops anything that
+    # resolves outside the log directory: a link the agent user creates there cannot publish a
+    # root-only file to Loki. The log directory itself must not be reached through a symlink, or
+    # every record resolves elsewhere; the filter then drops all of them rather than leaking one.
+    include_file_path_resolved: true
     storage: file_storage/offsets
     operators:
+      - type: filter
+        expr: >-
+          attributes["log.file.path_resolved"] == nil or not
+          hasPrefix(attributes["log.file.path_resolved"], "{{ factory_dagu_logs_dir }}/")
       - type: json_parser
         parse_from: body
         parse_to: attributes

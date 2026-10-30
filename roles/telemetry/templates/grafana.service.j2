@@ -2,6 +2,9 @@
 Description=Grafana (foreman telemetry UI, loopback only)
 After=network-online.target prometheus.service tempo.service loki.service
 Wants=network-online.target
+# Back off instead of looping forever on a persistent crash. Both keys belong in [Unit].
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -15,8 +18,6 @@ Environment=GOMEMLIMIT={{ (factory_telemetry_memory_max_mib.grafana * 0.8) | int
 MemoryMax={{ factory_telemetry_memory_max_mib.grafana }}M
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 NoNewPrivileges=true
 ProtectSystem=strict
