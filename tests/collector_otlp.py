@@ -289,9 +289,10 @@ service:
 
     # The run's stderr file exists before the collector starts (a dagu run creates it as it runs), so
     # the receiver's start_at: end picks up what is appended afterwards.
-    run_dir = os.path.join(logs_dir, "factory-implementer", "dag-run_20260101_000000Z_run-old")
+    # dagu keeps a step's stderr at <dag>/<run id>/<attempt id>/<step>.stderr.log.
+    run_dir = os.path.join(logs_dir, "factory-implementer", "run-old", "a1b2c3")
     os.makedirs(run_dir)
-    run_err = os.path.join(run_dir, "implementer.20260101.000000.000.run-old.err")
+    run_err = os.path.join(run_dir, "implementer.stderr.log")
     open(run_err, "w").close()
 
     # A root-only file the dagu user must not be able to publish to Loki, reached the ways a symlink
@@ -302,22 +303,22 @@ service:
         f.write(json.dumps({"time": "2026-01-01T00:00:00.123456789Z", "level": "INFO",
                             "msg": "root-only secret"}) + "\n")
     os.chmod(root_only, 0o600)
-    os.symlink(root_only, os.path.join(run_dir, "leak.err"))
+    os.symlink(root_only, os.path.join(run_dir, "leak.stderr.log"))
 
     outside_run = os.path.join(work, "outside-run")
-    os.makedirs(outside_run)
-    outside_err = os.path.join(outside_run, "sneak.err")
+    os.makedirs(os.path.join(outside_run, "a1b2c3"))
+    outside_err = os.path.join(outside_run, "a1b2c3", "sneak.stderr.log")
     open(outside_err, "w").close()
     os.makedirs(os.path.join(logs_dir, "factory-leak"))
-    os.symlink(outside_run, os.path.join(logs_dir, "factory-leak", "dag-run_20260101_000000Z_run-sneak"))
+    os.symlink(outside_run, os.path.join(logs_dir, "factory-leak", "run-sneak"))
 
     # A directory whose name starts with the log directory's name is still outside it.
     sibling_run = os.path.join(work, "dagu-logs-outside")
-    os.makedirs(sibling_run)
-    sibling_err = os.path.join(sibling_run, "sneak.err")
+    os.makedirs(os.path.join(sibling_run, "a1b2c3"))
+    sibling_err = os.path.join(sibling_run, "a1b2c3", "sneak.stderr.log")
     open(sibling_err, "w").close()
     os.makedirs(os.path.join(logs_dir, "factory-sibling"))
-    os.symlink(sibling_run, os.path.join(logs_dir, "factory-sibling", "dag-run_20260101_000000Z_run-sibling"))
+    os.symlink(sibling_run, os.path.join(logs_dir, "factory-sibling", "run-sibling"))
 
     sink_log = open(os.path.join(work, "sink.log"), "w")
     front_log = open(os.path.join(work, "front.log"), "w")
