@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   pull_request:
+# Read the repository and nothing else; no job here writes to it.
+permissions:
+  contents: read
 jobs:
   lint-and-vulncheck:
     name: pre-commit hooks and govulncheck

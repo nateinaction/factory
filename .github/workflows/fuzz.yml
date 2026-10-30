@@ -4,6 +4,9 @@ on:
     # Weekly, Monday 05:00 UTC.
     - cron: "0 5 * * 1"
   workflow_dispatch:
+# Read the repository and nothing else; no job here writes to it.
+permissions:
+  contents: read
 jobs:
   fuzz:
     name: fuzz the untrusted-input parsers
