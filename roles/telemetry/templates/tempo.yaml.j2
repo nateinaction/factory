@@ -12,10 +12,30 @@ distributor:
         grpc:
           endpoint: {{ factory_telemetry_host_loopback }}:{{ factory_telemetry_tempo_otlp_port }}
 
-# Traces older than block_retention are deleted by the compactor.
-compactor:
+# Tempo 3 removed the compactor: the backend scheduler plans the retention and compaction jobs and
+# the backend worker runs them, both in process in this single-binary deployment. Traces older than
+# block_retention are deleted.
+backend_scheduler:
+  local_work_path: /var/lib/tempo/work
+  provider:
+    compaction:
+      compaction:
+        block_retention: {{ factory_telemetry_tempo_retention }}
+
+backend_worker:
   compaction:
     block_retention: {{ factory_telemetry_tempo_retention }}
+
+# Tempo 3 defaults these to /var/tempo, which the unit's ProtectSystem=strict makes read-only; keep
+# them under the unit's StateDirectory.
+live_store:
+  shutdown_marker_dir: /var/lib/tempo/live-store
+  wal:
+    path: /var/lib/tempo/live-store-wal
+
+block_builder:
+  wal:
+    path: /var/lib/tempo/block-builder-wal
 
 storage:
   trace:

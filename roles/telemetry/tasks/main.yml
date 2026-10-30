@@ -13,7 +13,7 @@
   loop:
     - { package: prometheus, binary: prometheus }
     - { package: tempo, binary: tempo }
-    - { package: loki, binary: loki }
+    - { package: grafana-loki, binary: loki }
     - { package: grafana, binary: grafana }
   loop_control:
     label: "{{ item.package }}"

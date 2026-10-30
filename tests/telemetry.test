@@ -92,7 +92,8 @@ check "prometheus retention is bounded by age and size" bash -c "
   grep -Eq -- '--storage.tsdb.retention.time=[0-9]+[dh]' '$out/prometheus.service' &&
   grep -Eq -- '--storage.tsdb.retention.size=[0-9]+[KMG]B' '$out/prometheus.service'"
 check "tempo retention is bounded by age" conf '
-assert tempo["compactor"]["compaction"]["block_retention"].endswith("h")
+assert tempo["backend_scheduler"]["provider"]["compaction"]["compaction"]["block_retention"].endswith("h")
+assert tempo["backend_worker"]["compaction"]["block_retention"].endswith("h")
 '
 check "loki retention is bounded by age and enforced" conf '
 assert loki["limits_config"]["retention_period"].endswith("h")
