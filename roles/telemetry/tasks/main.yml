@@ -97,35 +97,7 @@
     daemon_reload: true
   loop: [prometheus, tempo, loki, grafana]
 
-# The backend stays on loopback; tailscaled forwards to it, so it is on the tailnet and nowhere
-# else. The collectors on the other hosts reach the three ingest ports as raw TCP (tailnet
-# traffic is already encrypted); Grafana is served over HTTPS.
-- name: Read the current tailscale serve config
-  ansible.builtin.command: tailscale serve status
-  register: telemetry_serve_status
-  changed_when: false
-  failed_when: false # tailscale not up yet is reported by the assert below
-  check_mode: false
-
-- name: Fail if tailscale is not available
-  ansible.builtin.assert:
-    that: telemetry_serve_status.rc == 0
-    fail_msg: "tailscale serve status failed: {{ telemetry_serve_status.stderr | default('') }}"
-
-# The `when` below already asks whether the listener is missing, so a task that runs did change it.
-- name: Serve the ingest ports to the tailnet
-  ansible.builtin.command: >-
-    tailscale serve --bg --tcp={{ item }} tcp://{{ factory_telemetry_host_loopback }}:{{ item }}
-  changed_when: true
-  when: (item | string) not in telemetry_serve_status.stdout
-  loop:
-    - "{{ factory_telemetry_tempo_otlp_port }}"
-    - "{{ factory_telemetry_prometheus_port }}"
-    - "{{ factory_telemetry_loki_port }}"
-
-- name: Serve Grafana to the tailnet over HTTPS
-  ansible.builtin.command: >-
-    tailscale serve --bg --https={{ factory_telemetry_grafana_port }}
-    http://{{ factory_telemetry_host_loopback }}:{{ factory_telemetry_grafana_port }}
-  changed_when: true
-  when: not (telemetry_serve_status.stdout is search('(?m)^https://\\S+:' ~ factory_telemetry_grafana_port ~ '\\b'))
+# The backend is exposed to the tailnet only through tailscale serve. The tasks live in their own
+# file so tests/serve.yml can run them against a fake tailscale.
+- name: Serve the backend to the tailnet
+  ansible.builtin.include_tasks: serve.yml

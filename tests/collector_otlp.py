@@ -215,7 +215,9 @@ def log_payload(now):
 
 def main():
     root = sys.argv[1]
-    work = tempfile.mkdtemp(prefix="collector-otlp-")
+    # Real path, because the collector compares a file's resolved path with the log directory: a
+    # temporary tree reached through a symlink (/tmp on macOS is /private/tmp) would differ.
+    work = os.path.realpath(tempfile.mkdtemp(prefix="collector-otlp-"))
     logs_dir = os.path.join(work, "dagu-logs")
     state_dir = os.path.join(work, "state")
     render_dir = os.path.join(work, "render")
@@ -292,6 +294,31 @@ service:
     run_err = os.path.join(run_dir, "implementer.20260101.000000.000.run-old.err")
     open(run_err, "w").close()
 
+    # A root-only file the dagu user must not be able to publish to Loki, reached the ways a symlink
+    # in the log directory can: the link is the log file, or it is a whole run directory. The
+    # collector's CAP_DAC_READ_SEARCH can read the target, so the receiver has to drop it.
+    root_only = os.path.join(work, "root-only")
+    with open(root_only, "w") as f:
+        f.write(json.dumps({"time": "2026-01-01T00:00:00.123456789Z", "level": "INFO",
+                            "msg": "root-only secret"}) + "\n")
+    os.chmod(root_only, 0o600)
+    os.symlink(root_only, os.path.join(run_dir, "leak.err"))
+
+    outside_run = os.path.join(work, "outside-run")
+    os.makedirs(outside_run)
+    outside_err = os.path.join(outside_run, "sneak.err")
+    open(outside_err, "w").close()
+    os.makedirs(os.path.join(logs_dir, "factory-leak"))
+    os.symlink(outside_run, os.path.join(logs_dir, "factory-leak", "dag-run_20260101_000000Z_run-sneak"))
+
+    # A directory whose name starts with the log directory's name is still outside it.
+    sibling_run = os.path.join(work, "dagu-logs-outside")
+    os.makedirs(sibling_run)
+    sibling_err = os.path.join(sibling_run, "sneak.err")
+    open(sibling_err, "w").close()
+    os.makedirs(os.path.join(logs_dir, "factory-sibling"))
+    os.symlink(sibling_run, os.path.join(logs_dir, "factory-sibling", "dag-run_20260101_000000Z_run-sibling"))
+
     sink_log = open(os.path.join(work, "sink.log"), "w")
     front_log = open(os.path.join(work, "front.log"), "w")
 
@@ -336,6 +363,15 @@ service:
             # A line that is not a JSON record, as a tool writing to fd 2 could leave behind: it must
             # be dropped rather than shipped as raw text to Loki.
             f.write("private raw tool output\n")
+
+        # The symlink targets, written after the receiver started. A record that came back through a
+        # symlink must never reach Loki, even though the collector can read the target.
+        for path, message in ((root_only, "root-only secret"),
+                              (outside_err, "symlinked directory secret"),
+                              (sibling_err, "similarly named directory secret")):
+            with open(path, "a") as f:
+                f.write(json.dumps({"time": "2026-01-01T00:00:00.223456789Z", "level": "INFO",
+                                    "msg": message}) + "\n")
 
         # The role's batch timeout is 5s, so give the exports well over one batch interval.
         wanted = [
@@ -399,6 +435,13 @@ service:
 
     if "private raw tool output" in out:
         sys.stderr.write("the collector shipped a line it could not parse as JSON\n")
+        sys.stderr.write(out)
+        return 1
+
+    smuggled = [m for m in ("root-only secret", "symlinked directory secret",
+                            "similarly named directory secret") if m in out]
+    if smuggled:
+        sys.stderr.write("the collector shipped a file reached through a symlink: " + repr(smuggled) + "\n")
         sys.stderr.write(out)
         return 1
 
