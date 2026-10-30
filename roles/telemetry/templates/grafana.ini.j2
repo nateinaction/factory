@@ -7,7 +7,9 @@ http_port = {{ factory_telemetry_grafana_port }}
 data = /var/lib/grafana
 provisioning = /etc/grafana/provisioning
 
-# The admin login comes from group_vars, never from Grafana's built-in default.
+# The admin password comes from the play's variables, never from Grafana's built-in default. It has
+# no default in group_vars: the role fails closed when it is unset. This file is root-only, and
+# systemd passes the service a credential copy (see grafana.service.j2).
 [security]
 admin_user = {{ factory_telemetry_grafana_admin_user }}
 admin_password = {{ factory_telemetry_grafana_admin_password }}

@@ -1,0 +1,21 @@
+---
+# Grafana's admin password has no default: a value in group_vars would put the password in the
+# repository. Fail closed before writing anything when the play is given none.
+- name: Fail when Grafana's admin password is unset
+  ansible.builtin.assert:
+    that: factory_telemetry_grafana_admin_password | default('') | length > 0
+    fail_msg: >-
+      factory_telemetry_grafana_admin_password is unset; set it in an ansible-vault file (or with
+      -e) before provisioning the telemetry backend
+
+# The config holds that password, so only root may read it. Grafana runs as a DynamicUser that cannot
+# read a root-only file, so systemd reads the file as root and hands the service a credential copy
+# (LoadCredential in grafana.service.j2).
+- name: Configure Grafana
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: "{{ telemetry_grafana_config_path }}"
+    owner: "{{ telemetry_grafana_config_owner }}"
+    group: "{{ telemetry_grafana_config_group }}"
+    mode: "0600"
+  notify: Restart grafana
