@@ -170,7 +170,8 @@ var _ = Describe("Poll", func() {
 			Expect(markers).To(HaveLen(1))
 			Expect(markers[0]).To(Equal(
 				"<!-- factory:handoff role=implementer run=run-1 " +
-					"from=factory:implement to=factory:implementing sha= -->"))
+					"from=factory:implement to=factory:implementing sha= -->\n\n" +
+					"The Implementer moved this issue from `factory:implement` to `factory:implementing`."))
 
 			Expect(h.gh.Summary()).To(ContainElements(
 				"DELETE /repos/o/r/issues/5/labels/factory:implement",

@@ -609,7 +609,7 @@ func (c Client) CloseResolved(ctx context.Context, ref workflow.IssueRef, t work
 	}
 
 	if mine == 0 {
-		if err := c.Comment(ctx, ref, marker); err != nil {
+		if err := c.Comment(ctx, ref, marker+"\n\n"+workflow.TransitionNote(t)); err != nil {
 			return err
 		}
 	}
@@ -660,7 +660,7 @@ func (c Client) Claim(ctx context.Context, ref workflow.IssueRef, t workflow.Tra
 		return false, err
 	}
 
-	if err := c.Comment(ctx, ref, marker); err != nil {
+	if err := c.Comment(ctx, ref, marker+"\n\n"+workflow.TransitionNote(t)); err != nil {
 		return false, err
 	}
 

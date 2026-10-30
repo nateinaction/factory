@@ -292,6 +292,14 @@ var _ = Describe("Client", func() {
 				Equal([]string{`{"labels":["factory:implementing"]}` + "\n"}))
 		})
 
+		It("says in words what moved, so the comment is not blank on the page", func() {
+			number := issue(workflow.LabelImplement)
+
+			Expect(c.Claim(ctx, ref(number), transition)).To(BeTrue())
+			Expect(p.Bodies("POST", "/repos/o/r/issues/"+itoa(number)+"/comments")[0]).To(
+				ContainSubstring("The Implementer moved this issue from `factory:implement` to `factory:implementing`."))
+		})
+
 		It("fails closed when someone else got there first", func() {
 			number := issue()
 
