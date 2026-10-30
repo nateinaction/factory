@@ -108,9 +108,7 @@ def metric_payloads(now):
                         "metrics": [
                             {
                                 "name": "factory.poll.issues",
-                                "sum": {
-                                    "aggregationTemporality": 2,
-                                    "isMonotonic": True,
+                                "gauge": {
                                     "dataPoints": [
                                         {
                                             "asInt": "3",

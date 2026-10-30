@@ -1,22 +1,19 @@
 # {{ ansible_managed }}
 # Prometheus alert rules for the signals that need a human. Thresholds, windows and the cost budget
-# are group_vars (factory_alerts_*), never constants here. A per-event alert names the agent role,
-# repository and issue from its metric's labels and links straight to the trace that raised it; an
+# are group_vars (factory_alerts_*), never constants here. A per-issue alert names the agent role,
+# repository and issue from its metric's labels and links to a search for the role's traces; an
 # aggregate alert names the agent role and repository and links to a search for their offending
-# traces and their failed issues. The issue and trace id are labels on the security-event metric
+# traces and their failed issues. The issue is a label on the security-event and reaped-run metrics
 # only (see factory_collector_allowed_attributes): a Prometheus rule can template only labels, and
 # #132's acceptance criterion requires a per-event alert to name the issue it needs a human to see.
+# No metric carries a trace id, so no alert links to one.
 {% set role = '{{ $labels.factory_agent_role }}' %}
 {% set repo = '{{ $labels.factory_repo }}' %}
 {% set issue = '{{ $labels.factory_issue }}' %}
-{% set traceid = '{{ $labels.factory_trace_id }}' %}
 {% set trace_query = '%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C'
   ~ '%22queryType%22%3A%22traceql%22%2C%22query%22%3A%22%7B%20span.factory.agent_role%20%3D%20%5C%22'
   ~ role ~ '%5C%22%20%26%26%20span.factory.repo%20%3D%20%5C%22' ~ repo ~ '%5C%22%20%7D%22%7D%5D%7D' %}
 {% set trace_search = factory_alerts_grafana_url ~ '/explore?left=' ~ trace_query %}
-{% set event_trace_query = '%7B%22datasource%22%3A%22tempo%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C'
-  ~ '%22queryType%22%3A%22traceId%22%2C%22query%22%3A%22' ~ traceid ~ '%22%7D%5D%7D' %}
-{% set event_trace = factory_alerts_grafana_url ~ '/explore?left=' ~ event_trace_query %}
 {% set issue_url = 'https://github.com/' ~ repo ~ '/issues/' ~ issue %}
 {% set issues = 'https://github.com/' ~ repo ~ '/issues?q=label%3Afactory%3Afailed' %}
 groups:
@@ -24,7 +21,7 @@ groups:
     rules:
       - alert: ForemanEgressNotRoutable
         expr: >-
-          sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
+          sum by (factory_agent_role, factory_repo, factory_issue) (
             increase(factory_security_events_total{
               event="egress_refused", outcome="refused_not_routable"}[{{ factory_alerts_security_window }}])
           ) > 0
@@ -36,12 +33,12 @@ groups:
             A run whose agent role is {{ role }}, repository is {{ repo }} and issue is #{{ issue }}
             had a request refused because its destination resolves to a non-public address (loopback,
             private, shared, link-local or a metadata endpoint).
-          trace: '{{ event_trace }}'
+          trace: '{{ trace_search }}'
           issue: '{{ issue_url }}'
 
       - alert: ForemanProxyBadToken
         expr: >-
-          sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
+          sum by (factory_agent_role, factory_repo, factory_issue) (
             increase(factory_security_events_total{
               event=~"egress_refused|key_proxy_refused", outcome="refused_bad_token"}[{{ factory_alerts_security_window }}])
           ) > 0
@@ -53,12 +50,12 @@ groups:
             A request to the egress or OpenRouter key proxy of a run whose agent role is {{ role }},
             repository is {{ repo }} and issue is #{{ issue }} carried a missing or wrong run token,
             and was refused.
-          trace: '{{ event_trace }}'
+          trace: '{{ trace_search }}'
           issue: '{{ issue_url }}'
 
       - alert: ForemanOutputFactoryMarker
         expr: >-
-          sum by (factory_agent_role, factory_repo, factory_issue, factory_trace_id) (
+          sum by (factory_agent_role, factory_repo, factory_issue) (
             increase(factory_security_events_total{
               event="output_rejected", outcome="factory_marker"}[{{ factory_alerts_security_window }}])
           ) > 0
@@ -70,7 +67,7 @@ groups:
             A model output file from a run whose agent role is {{ role }}, repository is {{ repo }}
             and issue is #{{ issue }} carried a factory marker: an attempt to forge a state transition
             or a review. Nothing in the file was applied.
-          trace: '{{ event_trace }}'
+          trace: '{{ trace_search }}'
           issue: '{{ issue_url }}'
 
   - name: factory-runs
@@ -122,17 +119,17 @@ groups:
 
       - alert: ForemanDeadRunReaped
         expr: >-
-          sum by (factory_agent_role, factory_repo) (
+          sum by (factory_agent_role, factory_repo, factory_issue) (
             increase(factory_runs_reaped_total[{{ factory_alerts_dead_run_window }}])
           ) > 0
         labels:
           severity: warning
         annotations:
-          summary: 'A poll reaped a dead {{ role }} run in {{ repo }}'
+          summary: 'A poll reaped a dead {{ role }} run in {{ repo }}, issue #{{ issue }}'
           description: >-
             A poll found a {{ role }} run in {{ repo }} whose running label outlived its deadline
-            plus the dead-run margin, and moved its issue to factory:failed. Nothing retries it
-            automatically. The trace search lists the role's recent runs and the issue list names the
-            failed issues, including the reaped one.
+            plus the dead-run margin, and moved issue #{{ issue }} to factory:failed. Nothing retries
+            it automatically. The trace search lists the role's recent runs, and the issue is the one
+            the poll moved.
           trace: '{{ trace_search }}'
-          issue: '{{ issues }}'
+          issue: '{{ issue_url }}'

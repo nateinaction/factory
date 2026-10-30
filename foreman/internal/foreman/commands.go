@@ -384,8 +384,9 @@ func prepareRepo(
 	return nil
 }
 
-// measureIssues records how many open issues the repository has in each factory state. A stranded
-// issue carrying more than one state label counts in each, which is what the labels say.
+// measureIssues records how many open issues the repository has in each factory state, including zero
+// for a state that has emptied. A stranded issue carrying more than one state label counts in each,
+// which is what the labels say.
 func measureIssues(ctx context.Context, inst pollInstruments, repo workflow.Repo, issues []workflow.Issue) {
 	counts := map[workflow.State]int64{}
 
@@ -401,9 +402,13 @@ func measureIssues(ctx context.Context, inst pollInstruments, repo workflow.Repo
 		}
 	}
 
-	for state, count := range counts {
+	for _, state := range workflow.States() {
+		if state == workflow.Closed {
+			continue
+		}
+
 		role, _ := workflow.RoleOf(state)
-		inst.issuesInState(ctx, repo, state, role, count)
+		inst.issuesInState(ctx, repo, state, role, counts[state])
 	}
 }
 
@@ -476,7 +481,7 @@ func failDeadRun(
 
 	_, err = d.client(token).Finish(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number}, t, text)
 	if err == nil {
-		inst.alerts.runReaped(ctx, role, repo)
+		inst.alerts.runReaped(ctx, role, repo, issue.Number)
 	}
 
 	return true, err
