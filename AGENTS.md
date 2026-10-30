@@ -1,3 +1,7 @@
+## Running commands
+
+Run every command in this repo inside the flake's dev shell (`nix develop -c <command>`, or the direnv-loaded shell). `gitleaks`, `srt` and the Go toolchain are only on the path there, and the pre-commit hooks fail without them: `gitleaks` is missing, and the sandbox specs fail without `srt`.
+
 ## Agent skills
 
 ### Issue tracker
