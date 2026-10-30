@@ -81,7 +81,7 @@ func (d Deps) evaluateDevEnv(ctx context.Context, repo workflow.Repo, f sandboxF
 			"--option", "accept-flake-config", "false",
 			"--no-write-lock-file",
 			"--extra-experimental-features", "nix-command flakes",
-			"--flake", "path:" + f.toolchain,
+			"path:" + f.toolchain,
 		},
 		Dir: f.toolchain, Env: nixEnv(f), Timeout: ToolchainTimeout, Capture: true,
 	})

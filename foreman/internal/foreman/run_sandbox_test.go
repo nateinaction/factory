@@ -195,7 +195,9 @@ var _ = Describe("the sandbox", func() {
 		Expect(nix).To(HaveLen(1))
 		Expect(joined(nix[0])).To(ContainSubstring("--option accept-flake-config false"))
 		Expect(joined(nix[0])).To(ContainSubstring("--no-write-lock-file"))
-		Expect(joined(nix[0])).To(ContainSubstring("--flake path:" + toolchain))
+		// print-dev-env takes the flake as its installable; it has no --flake flag.
+		Expect(joined(nix[0])).To(HaveSuffix(" path:" + toolchain))
+		Expect(joined(nix[0])).NotTo(ContainSubstring("--flake "))
 		Expect(joined(nix[0])).NotTo(ContainSubstring(workdir), "the working branch's flake was used")
 		Expect(nix[0].Env).To(HaveKeyWithValue("PATH", HavePrefix("/nix/var/nix/profiles/default/bin:")))
 		Expect(nix[0].Env).To(HaveKeyWithValue("HOME", filepath.Join(h.runDir(workflow.Implementer, 5), "home")))
