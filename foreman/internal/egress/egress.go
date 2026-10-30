@@ -206,8 +206,9 @@ func (p *Proxy) Refused() []string {
 	return sortedHosts(p.refused)
 }
 
-// Refusals counts every refused request by outcome. It is the run's record of what the proxy turned
-// away and why, which the alert rules read; the event's destination stays out of a metric.
+// Refusals counts every refused request by outcome. It reads the run's tally, which this proxy shares
+// with the key proxy and which measured each refusal as it happened; the event's destination stays out
+// of a metric.
 func (p *Proxy) Refusals() map[security.Outcome]int {
 	return p.refusals.Counts()
 }

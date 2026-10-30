@@ -145,7 +145,8 @@ func (p *Proxy) Usage() Usage {
 	return p.usage
 }
 
-// Refusals counts every refused request by outcome, which the alert rules read.
+// Refusals counts every refused request by outcome. It reads the run's tally, which this proxy shares
+// with the egress proxy and which measured each refusal as it happened.
 func (p *Proxy) Refusals() map[security.Outcome]int {
 	return p.refusals.Counts()
 }
