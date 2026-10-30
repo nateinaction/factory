@@ -196,6 +196,26 @@ var _ = Describe("the sandbox", func() {
 		Expect(seen).To(Equal(`{"agent":{}}`))
 	})
 
+	It("links the run's skills directory to the factory's forked skills", func() {
+		Expect(os.MkdirAll(h.deps.Settings.Skills, 0o700)).To(Succeed())
+
+		var target string
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) && target == "" {
+				var err error
+
+				target, err = os.Readlink(filepath.Join(c.Env["XDG_CONFIG_HOME"], "opencode", "skills"))
+				Expect(err).NotTo(HaveOccurred(), "the run's config directory does not link the skills")
+			}
+
+			return base(c)
+		})
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+		Expect(target).To(Equal(h.deps.Settings.Skills))
+	})
+
 	It("fails the run, starting no model, when the host has no opencode config", func() {
 		Expect(os.Remove(filepath.Join(h.deps.Settings.Home, ".config", "opencode", "opencode.json"))).To(Succeed())
 

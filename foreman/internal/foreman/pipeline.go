@@ -266,7 +266,7 @@ func (r run) pipeline(ctx context.Context) (result runResult, err error) {
 	// failure anywhere below leaves nothing behind.
 	defer func() { err = errors.Join(err, files.remove()) }()
 
-	if err := files.seedConfig(r.d.Settings.Home); err != nil {
+	if err := files.seedConfig(r.d.Settings.Home, r.d.Settings.Skills); err != nil {
 		return runResult{}, err
 	}
 
