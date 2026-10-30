@@ -52,12 +52,14 @@ var nonPublicPrefixes = []netip.Prefix{ //nolint:gochecknoglobals // a read-only
 	netip.MustParsePrefix("2002::/16"),
 }
 
-// publiclyRoutable reports whether addr is one the proxy may dial: a valid global unicast address
-// outside every loopback, private, link-local, shared and multicast range. It does not unmap an
+// publiclyRoutable reports whether addr is one the proxy may dial: a valid, unzoned global unicast
+// address outside every loopback, private, link-local, shared and multicast range. A zone is refused
+// because Go's IsGlobalUnicast compares against the unspecified address with the zone included, so
+// "::%0", which a dial reaches as the local host, would pass. It does not unmap an
 // IPv4-mapped IPv6 address: the ranges above are IPv4 prefixes, which do not hold a mapped address,
 // so the caller unmaps first (see lookup).
 func publiclyRoutable(addr netip.Addr) bool {
-	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+	if !addr.IsValid() || addr.Zone() != "" || !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return false
 	}
 

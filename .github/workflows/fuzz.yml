@@ -1,0 +1,32 @@
+name: Fuzz
+on:
+  schedule:
+    # Weekly, Monday 05:00 UTC.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+jobs:
+  fuzz:
+    name: fuzz the untrusted-input parsers
+    runs-on: ubuntu-latest
+    # Five targets at 2 minutes each, plus the Nix and build time.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      # Each target runs for a fixed time. Go reports a failing input as a file under testdata/fuzz,
+      # which the next step uploads; add it to the repo as a regression seed when fixing the bug.
+      - name: fuzz
+        working-directory: foreman
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            for target in config:FuzzLoad egress:FuzzPubliclyRoutable egress:FuzzParseAPI \
+              proxy:FuzzAddress proxyauth:FuzzUnderPrefix; do
+              go test "./internal/${target%%:*}" -run "^\$" -fuzz "^${target##*:}\$" -fuzztime 2m
+            done
+          '
+      - name: upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failing-inputs
+          path: foreman/internal/*/testdata/fuzz
