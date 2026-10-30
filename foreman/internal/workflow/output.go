@@ -477,12 +477,16 @@ func sharedProblems(text string) (problems []string, forged, object bool) {
 
 	var raw any
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return []string{syntaxProblem(err)}, false, false
+		problems, forged = unparsedProblems(syntaxProblem(err), text)
+
+		return problems, forged, false
 	}
 
 	obj, ok := raw.(map[string]any)
 	if !ok {
-		return []string{"must be a JSON object"}, false, false
+		problems, forged = unparsedProblems("must be a JSON object", text)
+
+		return problems, forged, false
 	}
 
 	if version, ok := obj["version"].(float64); !ok || version != OutputFileVersion {
@@ -492,6 +496,17 @@ func sharedProblems(text string) (problems []string, forged, object bool) {
 	markers := markerProblems(raw, "")
 
 	return append(problems, markers...), len(markers) > 0, true
+}
+
+// unparsedProblems names why the text is not one JSON object, and whether it carries a factory
+// marker. A marker in text foreman cannot read is still a forgery: forging a transition is the
+// security-relevant part, whatever else is wrong with the file.
+func unparsedProblems(problem, text string) (problems []string, forged bool) {
+	if strings.Contains(text, MarkerPrefix) {
+		return []string{problem, "carries a factory marker"}, true
+	}
+
+	return []string{problem}, false
 }
 
 // syntaxProblem names why the text is not one JSON object foreman can read. A repeated member is

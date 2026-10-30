@@ -9,6 +9,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+export TELEMETRY_GO="$root/foreman/internal/telemetry/telemetry.go"
 
 failures=0
 check() {
@@ -45,6 +46,19 @@ want = {
     "ForemanDeadRunReaped",
 }
 assert {r["alert"] for r in rules} == want, {r["alert"] for r in rules}
+'
+# --- every rule selects on a label the emitted series carry ---
+check "each alert selects only labels foreman emits" rules '
+import os, re
+go = open(os.environ["TELEMETRY_GO"]).read()
+emitted = {m.replace(".", "_") for m in re.findall(r"^\s*Attr\w+\s*=\s*\"(factory\.[^\"]+)\"", go, re.M)}
+# AttrModel takes its key from the pinned GenAI conventions, not from a literal here.
+if "semconv.GenAIRequestModelKey" in go:
+    emitted.add("gen_ai_request_model")
+for r in rules:
+    for selector in re.findall(r"\{([^{}]*)\}", r["expr"]):
+        for label in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)", selector):
+            assert label in emitted, (r["alert"], label, sorted(emitted))
 '
 check "each alert fires from its synthetic event" bash -c "
   python3 -I '$root/tests/alerts_promtool.py' '$out/rules.json' '$out/promtool.json' &&
