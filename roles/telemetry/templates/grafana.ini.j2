@@ -5,6 +5,7 @@ http_port = {{ factory_telemetry_grafana_port }}
 
 [paths]
 data = /var/lib/grafana
+plugins = /var/lib/grafana/plugins
 provisioning = /etc/grafana/provisioning
 
 # The admin password comes from the play's variables, never from Grafana's built-in default. It has

@@ -63,6 +63,10 @@ text = open(sys.argv[2]).read()
 assert "admin_user = " + v["factory_telemetry_grafana_admin_user"] in text, text
 assert "admin_password = " + v["factory_telemetry_grafana_admin_password"] in text, text
 ' "$out/config.json" "$out/grafana.ini"
+# The nix package's homepath is read-only, and Grafana installs the Loki, Prometheus and Tempo datasource
+# plugins at start; without a writable plugin directory every install fails and the datasources never load.
+check "grafana installs its plugins into its writable state directory" \
+  grep -Fxq 'plugins = /var/lib/grafana/plugins' "$out/grafana.ini"
 check "grafana reads its root-only config as a systemd credential" bash -c "
   grep -Fxq 'LoadCredential=grafana.ini:/etc/grafana/grafana.ini' '$out/grafana.service' &&
   grep -Fq -- '--config=%d/grafana.ini' '$out/grafana.service'"
