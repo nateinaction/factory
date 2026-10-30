@@ -49,6 +49,13 @@ check "a worker labelled every agent role" grep -Fq -- '--worker.labels runner=a
 check "dagu exports foreman's OTLP endpoint to its steps" bash -c "
   grep -Fxq 'Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318' '$out/dagu-worker.service' &&
   grep -Fxq 'Environment=OTEL_SERVICE_NAME=foreman' '$out/dagu-worker.service'"
+# Dagu hands a step only its own allowlisted environment, not the service unit's, so each DAG names the
+# export itself or foreman's spans and metrics never leave the process.
+for dag in factory-poll factory-planner factory-researcher factory-implementer factory-reviewer factory-curator; do
+  check "$dag exports foreman's OTLP endpoint to its steps" bash -c "
+    grep -Fq 'OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318' '$out/$dag.yaml' &&
+    grep -Fq 'OTEL_SERVICE_NAME: foreman' '$out/$dag.yaml'"
+done
 check "foreman's config names the unhosted roles" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); assert "unhosted_roles" in d, d' "$out/config.json"
 check "each agent role's run capacity is the run cap times its hosts" python3 -I -c \

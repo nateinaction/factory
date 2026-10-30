@@ -22,6 +22,11 @@ params:
     required: false
     default: ""
     description: W3C trace context of the poll's enqueue span, so the run continues its trace
+{% if factory_foreman_otlp_endpoint | length > 0 %}
+env:
+  - OTEL_EXPORTER_OTLP_ENDPOINT: {{ factory_foreman_otlp_endpoint }}
+  - OTEL_SERVICE_NAME: {{ factory_foreman_otel_service_name }}
+{% endif %}
 steps:
   - name: {{ agent_role }}
     run: /usr/local/bin/foreman start {{ agent_role }} "${params.REPO}" "${params.ISSUE}" "${params.TRACEPARENT}"

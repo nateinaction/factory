@@ -4,6 +4,11 @@
 type: graph
 schedule: "*/5 * * * *"
 max_active_runs: 1
+{% if factory_foreman_otlp_endpoint | length > 0 %}
+env:
+  - OTEL_EXPORTER_OTLP_ENDPOINT: {{ factory_foreman_otlp_endpoint }}
+  - OTEL_SERVICE_NAME: {{ factory_foreman_otel_service_name }}
+{% endif %}
 steps:
   - name: poll
     run: /usr/local/bin/foreman poll
