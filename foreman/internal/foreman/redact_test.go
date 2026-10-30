@@ -67,22 +67,24 @@ var _ = Describe("redaction", func() {
 		Expect(redact("unchanged", []string{""})).To(Equal("unchanged"))
 	})
 
-	It("returns the destination's write error for a complete line", func() {
+	It("returns the destination's write error for a complete line, with every byte consumed", func() {
 		sentinel := errors.New("destination is full")
 		w := newRedactWriter(errWriter{err: sentinel}, []string{secret})
+		p := []byte("a line with " + secret + "\n")
 
-		n, err := w.Write([]byte("a line with " + secret + "\n"))
+		n, err := w.Write(p)
 		Expect(err).To(MatchError(sentinel))
-		Expect(n).To(BeZero())
+		Expect(n).To(Equal(len(p)), "the writer buffered p, so a caller must not write it again")
 	})
 
-	It("returns the destination's write error for a full buffer", func() {
+	It("returns the destination's write error for a full buffer, with every byte consumed", func() {
 		sentinel := errors.New("destination is full")
 		w := newRedactWriter(errWriter{err: sentinel}, []string{secret})
+		p := []byte(secret + strings.Repeat("b", maxPending))
 
-		n, err := w.Write([]byte(secret + strings.Repeat("b", maxPending)))
+		n, err := w.Write(p)
 		Expect(err).To(MatchError(sentinel))
-		Expect(n).To(BeZero())
+		Expect(n).To(Equal(len(p)), "the writer buffered p, so a caller must not write it again")
 	})
 
 	It("returns the destination's write error when flushing the last line", func() {

@@ -48,7 +48,8 @@ func newRedactWriter(dst io.Writer, secrets []string) *redactWriter {
 	return &redactWriter{dst: dst, secrets: secrets, tail: tail}
 }
 
-// Write buffers p and writes out its complete lines.
+// Write buffers p and writes out its complete lines. A failing destination has still taken every
+// byte of p into the buffer, so Write reports len(p) with the error: a caller must not write p again.
 func (w *redactWriter) Write(p []byte) (int, error) {
 	w.pending += string(p)
 
@@ -57,7 +58,7 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 		w.pending = w.pending[i+1:]
 
 		if err := w.emit(redact(line, w.secrets)); err != nil {
-			return 0, err
+			return len(p), err
 		}
 	}
 
@@ -67,7 +68,7 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 		w.pending = clean[len(clean)-keep:]
 
 		if err := w.emit(clean[:len(clean)-keep]); err != nil {
-			return 0, err
+			return len(p), err
 		}
 	}
 
