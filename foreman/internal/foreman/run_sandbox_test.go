@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -75,6 +75,20 @@ var _ = Describe("the sandbox", func() {
 		var settings []srtSettings
 
 		settingsOn(&settings)
+
+		// The model's URL names srt's bridge on Linux, not the proxy, so the proxy's own port is read
+		// from the proxy the run started.
+		var started EgressProxy
+
+		h.deps.Egress = func(
+			ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+		) (EgressProxy, error) {
+			px, err := egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, h.deps.log(), refusals)
+			started = px
+
+			return px, err
+		}
+
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 
 		calls := h.runner.find("srt --settings")
@@ -108,19 +122,35 @@ var _ = Describe("the sandbox", func() {
 				Permission struct {
 					ExternalDirectory map[string]string `json:"external_directory"`
 				} `json:"permission"`
+				Agent map[string]struct {
+					Permission struct {
+						ExternalDirectory map[string]string `json:"external_directory"`
+					} `json:"permission"`
+				} `json:"agent"`
 			}
 			Expect(json.Unmarshal([]byte(c.Env["OPENCODE_CONFIG_CONTENT"]), &config)).To(Succeed())
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue("*", "deny"),
 				"every external path outside this run is denied")
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(runDir, "allow"))
 			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch, "allow"))
+			// opencode matches a file inside a directory against `dir/*`, so each directory needs that rule too.
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(runDir+"/*", "allow"))
+			Expect(config.Permission.ExternalDirectory).To(HaveKeyWithValue(scratch+"/*", "allow"))
 			Expect(config.Permission.ExternalDirectory).To(
 				HaveKeyWithValue(retroPath(h.deps.Settings.WorkRoot, 5, workflow.Implementer), "allow"))
+			// An agent's own permissions come after the global ones and end in `*: deny`, so the allows
+			// that matter are the agent's: without them the model cannot write its output file.
+			agent := config.Agent["implementer"].Permission.ExternalDirectory
+			Expect(agent).To(HaveKeyWithValue("*", "deny"))
+			Expect(agent).To(HaveKeyWithValue(scratch+"/*", "allow"))
+			Expect(agent).To(HaveKeyWithValue(runDir+"/*", "allow"))
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherRun))
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherScratch))
 		}
 
-		port := proxyPortOf(h.opencodeCalls()[0])
+		Expect(started).NotTo(BeNil(), "the run never started an egress proxy")
+
+		port := proxyPort(started.Address())
 
 		for _, s := range settings {
 			Expect(s.Network.HTTPProxyPort).To(Equal(port), "egress must cross foreman's proxy")
@@ -138,6 +168,76 @@ var _ = Describe("the sandbox", func() {
 			Expect(s.Filesystem.DenyWrite).To(ConsistOf(filepath.Join(work, ".git")),
 				"the model may edit the working tree but never commit")
 		}
+	})
+
+	It("never lets an OTEL_ variable reach the model", func() {
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+		GinkgoT().Setenv("OTEL_SERVICE_NAME", "foreman")
+		GinkgoT().Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=test")
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+
+		Expect(h.opencodeCalls()).NotTo(BeEmpty())
+
+		for _, c := range h.opencodeCalls() {
+			for name := range c.Env {
+				Expect(name).NotTo(HavePrefix("OTEL_"),
+					"the model learned where foreman exports telemetry")
+			}
+		}
+	})
+
+	It("gives the model the agent definitions the host's opencode config holds", func() {
+		// The real home is hidden from the sandbox, so the run's own config directory is where the
+		// model finds its agent roles; without them opencode falls back to its default agent.
+		hostConfig := filepath.Join(h.deps.Settings.Home, ".config", "opencode")
+		Expect(os.MkdirAll(hostConfig, 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(hostConfig, "opencode.json"), []byte(`{"agent":{}}`), 0o600)).To(Succeed())
+
+		var seen string
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) && seen == "" {
+				raw, err := os.ReadFile(filepath.Join(c.Env["XDG_CONFIG_HOME"], "opencode", "opencode.json"))
+				Expect(err).NotTo(HaveOccurred(), "the run's config directory holds no opencode.json")
+
+				seen = string(raw)
+			}
+
+			return base(c)
+		})
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+		Expect(seen).To(Equal(`{"agent":{}}`))
+	})
+
+	It("links the run's skills directory to the factory's forked skills", func() {
+		Expect(os.MkdirAll(h.deps.Settings.Skills, 0o700)).To(Succeed())
+
+		var target string
+
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if isModel(c) && target == "" {
+				var err error
+
+				target, err = os.Readlink(filepath.Join(c.Env["XDG_CONFIG_HOME"], "opencode", "skills"))
+				Expect(err).NotTo(HaveOccurred(), "the run's config directory does not link the skills")
+			}
+
+			return base(c)
+		})
+
+		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
+		Expect(target).To(Equal(h.deps.Settings.Skills))
+	})
+
+	It("fails the run, starting no model, when the host has no opencode config", func() {
+		Expect(os.Remove(filepath.Join(h.deps.Settings.Home, ".config", "opencode", "opencode.json"))).To(Succeed())
+
+		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
+		Expect(err).To(MatchError(ContainSubstring("read the opencode config")))
+		Expect(code).NotTo(BeZero())
+		Expect(h.opencodeCalls()).To(BeEmpty(), "ran the default agent")
 	})
 
 	It("deletes the run's HOME, XDG directories and toolchain afterwards", func() {
@@ -177,7 +277,9 @@ var _ = Describe("the sandbox", func() {
 		Expect(nix).To(HaveLen(1))
 		Expect(joined(nix[0])).To(ContainSubstring("--option accept-flake-config false"))
 		Expect(joined(nix[0])).To(ContainSubstring("--no-write-lock-file"))
-		Expect(joined(nix[0])).To(ContainSubstring("--flake path:" + toolchain))
+		// print-dev-env takes the flake as its installable; it has no --flake flag.
+		Expect(joined(nix[0])).To(HaveSuffix(" path:" + toolchain))
+		Expect(joined(nix[0])).NotTo(ContainSubstring("--flake "))
 		Expect(joined(nix[0])).NotTo(ContainSubstring(workdir), "the working branch's flake was used")
 		Expect(nix[0].Env).To(HaveKeyWithValue("PATH", HavePrefix("/nix/var/nix/profiles/default/bin:")))
 		Expect(nix[0].Env).To(HaveKeyWithValue("HOME", filepath.Join(h.runDir(workflow.Implementer, 5), "home")))
@@ -210,8 +312,8 @@ var _ = Describe("the sandbox", func() {
 
 	It("fails closed when the egress proxy cannot bind", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) {
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(context.Context, sandbox.Network, string, string, *security.Tally) (EgressProxy, error) {
 			return nil, errors.New("bind egress proxy: address already in use")
 		}
 
@@ -234,8 +336,12 @@ var _ = Describe("the sandbox", func() {
 	It("fails closed when the egress proxy's address cannot be parsed", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
 		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "not an address"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(
+			context.Context, sandbox.Network, string, string, *security.Tally,
+		) (EgressProxy, error) {
+			return e, nil
+		}
 
 		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
 		Expect(err).To(HaveOccurred())
@@ -248,8 +354,12 @@ var _ = Describe("the sandbox", func() {
 	It("stops both proxies and removes the run's directories however the run ends", func() {
 		p := &fakeProxy{url: "http://127.0.0.1:9/api/v1"}
 		e := &fakeEgress{url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9"}
-		h.deps.Proxy = func(string, string, string) (Forwarder, error) { return p, nil }
-		h.deps.Egress = func(context.Context, sandbox.Network, string, string) (EgressProxy, error) { return e, nil }
+		h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) { return p, nil }
+		h.deps.Egress = func(
+			context.Context, sandbox.Network, string, string, *security.Tally,
+		) (EgressProxy, error) {
+			return e, nil
+		}
 		h.answerOpencode(errStream("ContextOverflowError", 0))
 
 		code, err := Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)
@@ -267,7 +377,7 @@ var _ = Describe("the sandbox", func() {
 		fake := &fakeEgress{
 			url: "http://127.0.0.1:9/api/v1", address: "127.0.0.1:9", domains: []string{"api.example.com"},
 		}
-		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _, _ string) (EgressProxy, error) {
+		h.deps.Egress = func(_ context.Context, policy sandbox.Network, _, _ string, _ *security.Tally) (EgressProxy, error) {
 			fake.policy = policy
 
 			return fake, nil
@@ -336,14 +446,3 @@ var _ = Describe("the sandbox", func() {
 		Expect(h.opencodeCalls()).To(HaveLen(2))
 	})
 })
-
-// proxyPortOf is the egress proxy port an opencode command's base URL names.
-func proxyPortOf(c proc.Cmd) int {
-	parsed, err := url.Parse(baseURL(c))
-	Expect(err).NotTo(HaveOccurred())
-
-	port, err := strconv.Atoi(parsed.Port())
-	Expect(err).NotTo(HaveOccurred())
-
-	return port
-}

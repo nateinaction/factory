@@ -649,6 +649,17 @@ func RenderTransition(t Transition) (string, error) {
 		transitionPrefix, t.Role, t.RunID, t.From, t.To, t.SHA), nil
 }
 
+// TransitionNote is the sentence a bare transition comment carries after its marker. The marker is an
+// HTML comment, which GitHub draws as an empty comment; the sentence is what a reader sees.
+func TransitionNote(t Transition) string {
+	name := string(t.Role)
+	if name != "" {
+		name = strings.ToUpper(name[:1]) + name[1:]
+	}
+
+	return fmt.Sprintf("The %s moved this issue from `%s` to `%s`.", name, t.From, t.To)
+}
+
 // shaField is the marker field that names a commit.
 const shaField = "sha"
 

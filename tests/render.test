@@ -19,15 +19,19 @@ failures=0
 check() {
   local name="$1"
   shift
-  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
 }
 
 for role in planner researcher implementer reviewer curator; do
   dag="$out/factory-$role.yaml"
   check "$role DAG calls foreman start with its role" \
-    grep -Fq "/usr/local/bin/foreman start $role \${params.REPO} \${params.ISSUE}" "$dag"
+    grep -Fq "/usr/local/bin/foreman start $role \"\${params.REPO}\" \"\${params.ISSUE}\" \"\${params.TRACEPARENT}\"" "$dag"
   check "$role DAG declares REPO" grep -Eq 'name: REPO' "$dag"
   check "$role DAG declares ISSUE" grep -Eq 'name: ISSUE' "$dag"
+  check "$role DAG declares TRACEPARENT" grep -Eq 'name: TRACEPARENT' "$dag"
   check "$role DAG has its own queue" grep -Fq "queue: factory-$role" "$dag"
   check "$role DAG selects a host that takes the role" grep -Fq "$role: \"true\"" "$dag"
   check "$role queue rendered for dagu" grep -Fq "name: factory-$role" "$out/dagu-config.yaml"
@@ -45,6 +49,16 @@ check "the per-host run cap defaults to one" python3 -I -c \
   "$out/scheduling.json"
 check "a worker runs at most the run cap at once" grep -Fq -- '--worker.max-active-runs 1' "$out/dagu-worker.service"
 check "a worker labelled every agent role" grep -Fq -- '--worker.labels runner=agent,planner=true,researcher=true,implementer=true,reviewer=true,curator=true' "$out/dagu-worker.service"
+check "dagu exports foreman's OTLP endpoint to its steps" bash -c "
+  grep -Fxq 'Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318' '$out/dagu-worker.service' &&
+  grep -Fxq 'Environment=OTEL_SERVICE_NAME=foreman' '$out/dagu-worker.service'"
+# Dagu hands a step only its own allowlisted environment, not the service unit's, so each DAG names the
+# export itself or foreman's spans and metrics never leave the process.
+for dag in factory-poll factory-planner factory-researcher factory-implementer factory-reviewer factory-curator; do
+  check "$dag exports foreman's OTLP endpoint to its steps" bash -c "
+    grep -Fq 'OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318' '$out/$dag.yaml' &&
+    grep -Fq 'OTEL_SERVICE_NAME: foreman' '$out/$dag.yaml'"
+done
 check "foreman's config names the unhosted roles" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); assert "unhosted_roles" in d, d' "$out/config.json"
 check "each agent role's run capacity is the run cap times its hosts" python3 -I -c \
@@ -53,6 +67,10 @@ check "each agent role's run capacity is the run cap times its hosts" python3 -I
 check "foreman's config gives each agent role its run capacity" python3 -I -c \
   'import json,sys; d=json.load(open(sys.argv[1])); want={"planner":1,"researcher":1,"implementer":1,"reviewer":1,"curator":1}; assert d["role_capacity"] == want, d' \
   "$out/config.json"
+check "the server's config points status at Tempo" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert d["telemetry_url"] == "http://127.0.0.1:3200", d' "$out/config.json"
+check "a worker's config reads no remote backend" python3 -I -c \
+  'import json,sys; d=json.load(open(sys.argv[1])); assert d["telemetry_url"] == "", d' "$out/config-worker.json"
 check "no old name in any rendered file" bash -c '! grep -rq finances-agent "$1"' _ "$out"
 
 check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$out/dagu-agent.sudoers"
@@ -60,10 +78,11 @@ check "sudoers permits foreman run *" grep -Fq '/usr/local/bin/foreman run *' "$
 check "sudoers has exactly one permitted command" bash -c \
   'grep -E "NOPASSWD:" "$1" | sed "s/.*NOPASSWD: *//" | grep -Fxq "/usr/local/bin/foreman run *"' _ "$out/dagu-agent.sudoers"
 # The agent never inherits the factory's configuration through sudo: no FACTORY_* variable is kept.
-check "sudoers keeps no FACTORY_ variable" bash -c '! grep -Eq "FACTORY_" "$1"' _ "$out/dagu-agent.sudoers"
-# The check above is not vacuous: env_keep is present, and names only the dagu run id.
-check "sudoers keeps only DAG_RUN_ID in the environment" bash -c \
-  'kept="$(grep -E "env_keep" "$1" | sed "s/.*env_keep *+\?= *//" | tr -d "\"" | tr " " "\n" | sort -u)"; [ "$kept" = "DAG_RUN_ID" ]' _ "$out/dagu-agent.sudoers"
+check "sudoers keeps no FACTORY_ variable" bash -c '! grep -Ev "^\s*#" "$1" | grep -Eq "FACTORY_"' _ "$out/dagu-agent.sudoers"
+# The check above is not vacuous: env_keep is present, and names the run id, the trace context and the
+# telemetry export variables only.
+check "sudoers keeps only the run id, trace context and OTEL export variables" bash -c \
+  'kept="$(grep -E "env_keep" "$1" | sed "s/.*env_keep *+\?= *//" | tr -d "\"" | tr " " "\n" | sort -u)"; [ "$kept" = "$(printf "DAG_RUN_ID\nOTEL_EXPORTER_OTLP_ENDPOINT\nOTEL_SERVICE_NAME\nTRACEPARENT")" ]' _ "$out/dagu-agent.sudoers"
 if command -v visudo >/dev/null 2>&1; then
   check "sudoers passes visudo" visudo -cf "$out/dagu-agent.sudoers"
 fi

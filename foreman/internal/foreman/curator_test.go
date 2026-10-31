@@ -3,6 +3,7 @@ package foreman
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -14,7 +15,7 @@ import (
 )
 
 // curatorSkill, curatorDocs and curatorReview are the groups these specs work with.
-var ( //nolint:gochecknoglobals // read-only test fixtures
+var (
 	curatorSkillTarget = workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"}     //nolint:gochecknoglobals
 	curatorDocsTarget  = workflow.RetroTarget{Kind: workflow.TargetDocs, Name: "AGENTS.md"}      //nolint:gochecknoglobals
 	curatorSkillGroup  = workflow.GroupID{Target: curatorSkillTarget, Key: "guide-misses-tests"} //nolint:gochecknoglobals
@@ -227,6 +228,7 @@ var _ = Describe("the Curator", func() {
 		factory := h.factoryRepo()
 		h.deps.Settings.FactoryRepo = factory
 		h.installed[workflow.Curator] = append(h.installed[workflow.Curator], factory)
+		h.writeFactoryToken(workflow.Curator)
 
 		number := dashboard(workflow.DashboardState{})
 
@@ -367,7 +369,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 		Expect(dashboard).To(HaveLen(1))
 
 		Expect(curatorEnqueues()).To(HaveLen(1))
-		Expect(curatorEnqueues()[0]).To(ContainSubstring("ISSUE=" + fmt.Sprint(dashboard[0].Number)))
+		Expect(curatorEnqueues()[0]).To(ContainSubstring("ISSUE=" + strconv.Itoa(dashboard[0].Number)))
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(1), "queued a second run before the first finished")
@@ -409,7 +411,7 @@ var _ = Describe("the poll's Curator trigger", func() {
 		Expect(poll()).Error().NotTo(HaveOccurred())
 
 		Expect(curatorEnqueues()).To(HaveLen(1))
-		Expect(curatorEnqueues()[0]).To(ContainSubstring("ISSUE=" + fmt.Sprint(dashboard[0].Number)))
+		Expect(curatorEnqueues()[0]).To(ContainSubstring("ISSUE=" + strconv.Itoa(dashboard[0].Number)))
 
 		Expect(poll()).Error().NotTo(HaveOccurred())
 		Expect(curatorEnqueues()).To(HaveLen(1), "a curate bypassed the once-a-day limit")

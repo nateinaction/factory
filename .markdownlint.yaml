@@ -1,0 +1,7 @@
+# Prose here wraps by sentence, links are written bare, and the docs carry HTML comments and
+# tables sized by hand, so these style rules would only add noise.
+MD013: false # line length
+MD033: false # inline HTML
+MD034: false # bare URLs
+MD041: false # first line a heading
+MD060: false # table column style

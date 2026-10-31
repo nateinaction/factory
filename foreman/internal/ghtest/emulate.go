@@ -428,8 +428,8 @@ func (e *Emulate) CreateReviewAs(ctx context.Context, repo string, pr int, token
 
 // repoName is the final path element of owner/name.
 func repoName(repo string) string {
-	if i := strings.LastIndex(repo, "/"); i >= 0 {
-		return repo[i+1:]
+	if _, name, found := strings.CutLast(repo, "/"); found {
+		return name
 	}
 
 	return repo

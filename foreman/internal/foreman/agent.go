@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 )
 
 // agent runs the model, retrying transient failures up to twice within r.Timeout.
@@ -28,7 +30,9 @@ func (s session) agent(ctx context.Context, r opencode.Run) (opencode.Result, er
 	var res opencode.Result
 
 	for attempt := 1; attempt <= opencode.MaxModelAttempts; attempt++ {
-		stream, err := s.attempt(ctx, r, time.Until(deadline))
+		res.Attempts = attempt
+
+		stream, err := s.tracedAttempt(ctx, r, attempt, time.Until(deadline))
 
 		res.Usage = res.Usage.Add(stream.Usage)
 
@@ -79,27 +83,72 @@ func (s session) afterAttempt(
 		return false, &opencode.ModelError{Kind: kind, Attempts: attempt, Cause: cause}
 	}
 
-	if err := s.d.sleep(ctx, opencode.Backoff(attempt)); err != nil {
+	if err := s.backoff(ctx, attempt); err != nil {
 		return false, fmt.Errorf("%s: %w", r.Role, err)
 	}
 
 	return false, nil
 }
 
+// tracedAttempt runs one model attempt inside its own span, which carries the attempt number and, when
+// the attempt failed, the failure kind. A retried attempt is a failed span of its own, beside the
+// backoff that follows it.
+func (s session) tracedAttempt(
+	ctx context.Context, r opencode.Run, attempt int, timeout time.Duration,
+) (opencode.Stream, error) {
+	ctx, span := s.spans.start(ctx, telemetry.SpanModelAttempt, attribute.Int(telemetry.AttrAttempt, attempt))
+	defer span.End()
+
+	stream, err := s.attempt(ctx, r, timeout)
+	if kind, failed := opencode.Failure(stream, err); failed {
+		markFailure(span, kind)
+	}
+
+	return stream, err
+}
+
+// backoff waits before the next attempt inside the wait's own span, which names the attempt it
+// precedes and how long it waits.
+func (s session) backoff(ctx context.Context, attempt int) error {
+	wait := opencode.Backoff(attempt)
+
+	_, span := s.spans.start(ctx, telemetry.SpanModelBackoff,
+		attribute.Int(telemetry.AttrNextAttempt, attempt+1),
+		attribute.Float64(telemetry.AttrBackoffSeconds, wait.Seconds()))
+	defer span.End()
+
+	if err := s.d.sleep(ctx, wait); err != nil {
+		markFailureOf(span, err)
+
+		return err
+	}
+
+	return nil
+}
+
 // attempt runs opencode once under the run's sandbox and parses what it printed. The stream goes to
-// the dagu log with the OpenRouter key removed. A session without a backend or settings refuses to
-// start the model: there is no unsandboxed fallback.
+// the log at debug level, not info, with every secret the run holds removed: the transcript carries
+// private repository code and issue text, so it stays out of the default diagnostics. A session
+// without a backend or settings refuses to start the model: there is no unsandboxed fallback.
 func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Duration) (opencode.Stream, error) {
 	argv := sandbox.Argv(s.srt, s.settings, opencode.Argv(r))
 	if argv == nil {
 		return opencode.Stream{}, errors.New("the sandbox is not configured")
 	}
 
+	// Every byte the model process writes reaches a log through here: stdout through the
+	// "agent output" record, stderr through the debug sink. Nothing the model writes reaches the
+	// diagnostic stream raw, so a sandboxed tool cannot forge a record or leak unredacted text.
+	stderr := newRedactWriter(debugSink{log: s.d.log(), ctx: ctx}, s.secrets)
+
 	out, err := s.d.Runner.Run(ctx, proc.Cmd{
 		Argv: argv, Dir: s.workdir, Env: s.agentEnv, ReplaceEnv: true, Timeout: timeout, Capture: true,
+		Stderr: stderr,
 	})
+	err = errors.Join(err, stderr.flush())
+
 	if out != "" {
-		s.d.log().Info("agent output", "text", s.redact(out))
+		s.d.log().DebugContext(ctx, "agent output", "text", redact(out, s.secrets))
 	}
 
 	stream, parseErr := opencode.ParseStream(out)
@@ -109,20 +158,9 @@ func (s session) attempt(ctx context.Context, r opencode.Run, timeout time.Durat
 	return stream, errors.Join(err, parseErr)
 }
 
-// redact removes the run's key and proxy token from text bound for a log.
-func (s session) redact(text string) string {
-	for _, secret := range []string{s.key, s.token} {
-		if secret == "" {
-			continue
-		}
-
-		text = strings.ReplaceAll(text, secret, "[redacted]")
-	}
-
-	return text
-}
-
-// logUsage writes the run's single usage line to stdout, which dagu captures in the run log.
+// logUsage prints the run's single usage line to stdout, which dagu captures in the run log. The line
+// is kept while people and `foreman logs` read it; status reads the run's out-of-band record instead
+// (see recordUsage), so nothing in a report depends on a line the run's stdout carries.
 func (d Deps) logUsage(r opencode.UsageReport) {
 	line, err := json.Marshal(r)
 	if err != nil {

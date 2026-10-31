@@ -11,7 +11,7 @@ import (
 )
 
 // curator groups the curator specs work with.
-var ( //nolint:gochecknoglobals // read-only test fixtures
+var (
 	skillTarget = workflow.RetroTarget{Kind: workflow.TargetSkill, Name: "implement"} //nolint:gochecknoglobals
 	docsTarget  = workflow.RetroTarget{Kind: workflow.TargetDocs, Name: "AGENTS.md"}  //nolint:gochecknoglobals
 

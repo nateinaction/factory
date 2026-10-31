@@ -20,12 +20,21 @@ linters:
     - depguard
     # Duplicated code.
     - dupl
+    # Duplicated words in comments and strings ("the the").
+    - dupword
     # Two durations multiplied together.
     - durationcheck
+    # Sentinel errors named ErrX and error types named XError.
+    - errname
     # Error comparison and wrapping mistakes.
     - errorlint
     # Switches over an enum that miss a case.
     - exhaustive
+    # Struct literals of the config and request types that omit a field: a missing field silently
+    # takes its zero value. Explicit mode, so only the types listed under settings are checked.
+    - exhaustruct_v5
+    # Contexts that nest on every loop iteration.
+    - fatcontext
     # Type assertions whose failure is not checked.
     - forcetypeassert
     # Functions over 60 lines or 40 statements.
@@ -54,18 +63,28 @@ linters:
     - goprintffuncname
     # Security problems.
     - gosec
+    # replace, retract and exclude directives in go.mod.
+    - gomoddirectives
+    # Direct dependencies outside the allowlist: a model can invent a module path.
+    - gomodguard_v2
     # Consistent import aliases.
     - importas
     # Interfaces with too many methods.
     - interfacebloat
+    # Counting for loops that could range over an integer.
+    - intrange
     # Lines over 120 characters.
     - lll
+    # Odd or mismatched key-value pairs in slog calls.
+    - loggercheck
     # Slices declared with a length and then appended to.
     - makezero
     # Common English misspellings.
     - misspell
     # Magic numbers.
     - mnd
+    # Code that newer Go idioms and the standard library simplify.
+    - modernize
     # Marshalled structs without field tags.
     - musttag
     # Naked returns in long functions.
@@ -74,18 +93,32 @@ linters:
     - nestif
     # Returning nil when an error was checked.
     - nilerr
+    # Returning a nil error variable after checking a different one.
+    - nilnesserr
     # Returning nil, nil.
     - nilnil
     # HTTP requests sent without a context.
     - noctx
+    # Malformed or unexplained nolint directives.
+    - nolintlint
+    # fmt.Sprintf calls a faster function replaces.
+    - perfsprint
     # Slices that could be preallocated.
     - prealloc
     # Shadowed predeclared identifiers.
     - predeclared
     # Reassigned package variables such as io.EOF.
     - reassign
+    # Mixed value and pointer receivers on one type.
+    - recvcheck
     # General style.
     - revive
+    # Consistent slog usage.
+    - sloglint
+    # OpenTelemetry spans that are never ended.
+    - spancheck
+    # Unnecessary type conversions.
+    - unconvert
     # Functions and parameters that are never used.
     - unparam
     # Standard library constants written as literals.
@@ -102,6 +135,35 @@ linters:
     - wsl_v5
 
   settings:
+    govet:
+      # Everything govet offers except the memory-layout analyzers (atomicalign, fieldalignment),
+      # which are optimizations, and shadow, which flags idiomatic `err` shadowing.
+      enable:
+        - deepequalerrors
+        - hostport
+        - nilness
+        - reflectvaluecompare
+        - sortslice
+        - stdversion
+        - unusedwrite
+        - waitgroup
+    exhaustruct_v5:
+      enforce-patterns:
+        - 'github\.com/nateinaction/factory/foreman/internal/config\.(Settings|AgentConfig|EgressConfig|Config)'
+        - 'github\.com/nateinaction/factory/foreman/internal/prompt\.RetroRequest'
+      explicit-mode: true
+    gomodguard_v2:
+      local-replace-directives: true
+      # The module's direct dependencies. Adding one is a reviewed change to this list, which is
+      # the point: a model-invented module path fails here before it is fetched into go.mod.
+      allowed:
+        - module: github.com/onsi/ginkgo/v2
+        - module: github.com/onsi/gomega
+        - module: github.com/spf13/cobra
+        - module: github.com/spf13/pflag
+        - module: github.com/spf13/viper
+        - module: go.opentelemetry.io/otel
+          match-type: prefix
     funlen:
       lines: 60
       statements: 40
@@ -176,6 +238,10 @@ linters:
       - path: _test\.go
         linters:
           - gosec
+      # A test builds the one field it exercises; the rest are meant to take their zero values.
+      - path: _test\.go
+        linters:
+          - exhaustruct_v5
 
 issues:
   max-issues-per-linter: 0

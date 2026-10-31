@@ -23,15 +23,15 @@ type gateway struct {
 	dial    proxy.DialFunc
 }
 
-// refusedDestination is a destination the proxy will not reach, named by the address that refused
+// refusedDestinationError is a destination the proxy will not reach, named by the address that refused
 // it.
-type refusedDestination struct {
+type refusedDestinationError struct {
 	host string
 	addr netip.Addr
 }
 
 // Error names the host and the address that made it unworthy of a connection.
-func (e refusedDestination) Error() string {
+func (e refusedDestinationError) Error() string {
 	return fmt.Sprintf("egress proxy: %q is not publicly routable: it resolves to %s", e.host, e.addr)
 }
 
@@ -52,12 +52,14 @@ var nonPublicPrefixes = []netip.Prefix{ //nolint:gochecknoglobals // a read-only
 	netip.MustParsePrefix("2002::/16"),
 }
 
-// publiclyRoutable reports whether addr is one the proxy may dial: a valid global unicast address
-// outside every loopback, private, link-local, shared and multicast range. It does not unmap an
+// publiclyRoutable reports whether addr is one the proxy may dial: a valid, unzoned global unicast
+// address outside every loopback, private, link-local, shared and multicast range. A zone is refused
+// because Go's IsGlobalUnicast compares against the unspecified address with the zone included, so
+// "::%0", which a dial reaches as the local host, would pass. It does not unmap an
 // IPv4-mapped IPv6 address: the ranges above are IPv4 prefixes, which do not hold a mapped address,
 // so the caller unmaps first (see lookup).
 func publiclyRoutable(addr netip.Addr) bool {
-	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() {
+	if !addr.IsValid() || addr.Zone() != "" || !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return false
 	}
 
@@ -70,6 +72,15 @@ func publiclyRoutable(addr netip.Addr) bool {
 // publicly routable, and dials an address it resolved. Dialing the checked address is what keeps a
 // second DNS answer from pointing the connection somewhere the check never saw.
 func (g gateway) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return g.dialDecided(ctx, network, address, nil)
+}
+
+// dialDecided is dialContext with decided told the host once a connection to it is made: a host the
+// run never reached is not a host it contacted. A refusal happens in the lookup, before any dial, so it
+// never calls decided and cannot undo an earlier record.
+func (g gateway) dialDecided(
+	ctx context.Context, network, address string, decided func(host string),
+) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, fmt.Errorf("egress proxy: destination %q: %w", address, err)
@@ -80,6 +91,22 @@ func (g gateway) dialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
+	conn, err := g.reach(ctx, network, host, port, addrs)
+	if err != nil {
+		return nil, err
+	}
+
+	if decided != nil {
+		decided(host)
+	}
+
+	return conn, nil
+}
+
+// reach dials one of the addresses lookup returned, trying each in turn.
+func (g gateway) reach(
+	ctx context.Context, network, host, port string, addrs []netip.Addr,
+) (net.Conn, error) {
 	var dialErr error
 
 	for _, addr := range addrs {
@@ -114,7 +141,7 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 	for _, addr := range addrs[:min(len(addrs), maxResolvedAddresses)] {
 		addr = addr.Unmap()
 		if !publiclyRoutable(addr) {
-			return nil, refusedDestination{host: host, addr: addr}
+			return nil, refusedDestinationError{host: host, addr: addr}
 		}
 
 		checked = append(checked, addr)
@@ -124,10 +151,10 @@ func (g gateway) lookup(ctx context.Context, host string) ([]netip.Addr, error) 
 }
 
 // refusal finds a destination the gateway refused, reporting whether err is one.
-func refusal(err error) (refusedDestination, bool) {
-	if refused, ok := errors.AsType[refusedDestination](err); ok {
+func refusal(err error) (refusedDestinationError, bool) {
+	if refused, ok := errors.AsType[refusedDestinationError](err); ok {
 		return refused, true
 	}
 
-	return refusedDestination{}, false
+	return refusedDestinationError{}, false
 }

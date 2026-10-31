@@ -26,6 +26,8 @@ import (
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -49,7 +51,18 @@ func Run(
 		return 1, fmt.Errorf("unknown agent role %q", role)
 	}
 
-	r := run{d: d, role: role, entry: entry, spec: runSpec{ref: ref, agent: agent, retro: retro, limit: limit}}
+	handed, err := d.readHandedTokens(role, ref.Repo)
+	if err != nil {
+		return 1, err
+	}
+
+	d.handed = handed
+
+	r := run{
+		d: d, role: role, entry: entry,
+		spec:   runSpec{ref: ref, agent: agent, retro: retro, limit: limit},
+		alerts: newAlertInstruments(d),
+	}
 
 	result, err := r.pipeline(ctx)
 
@@ -163,14 +176,15 @@ type session struct {
 	gitEnv   map[string]string
 	agentEnv map[string]string
 	gitArgv  []string
+	// spans opens the run's stage spans, each carrying the run's attributes.
+	spans stageSpans
 	// srt is the sandbox backend every model process runs under, and settings is the run's policy.
 	// Both are required: a session with either missing refuses to start the model.
 	srt      string
 	settings string
-	// key is the OpenRouter key, kept only to scrub it from anything echoed. The model never has it.
-	key string
-	// token is the run's proxy token, kept only to scrub it from anything echoed.
-	token string
+	// secrets are every secret the run holds (the OpenRouter key, the proxy token and the model's
+	// read-only GitHub token), kept only to scrub them from anything the model process writes.
+	secrets []string
 }
 
 // git runs git in the clone.
@@ -187,9 +201,15 @@ func (s session) head(ctx context.Context) (string, error) {
 
 // clone clones the repository into the session's workdir.
 func (s session) clone(ctx context.Context, repo workflow.Repo) error {
+	_, span := s.spans.start(ctx, telemetry.SpanClone)
+	defer span.End()
+
 	_, err := s.d.run(ctx, proc.Cmd{
 		Argv: []string{gitProgram, gitClone, "https://github.com/" + repo.String() + ".git", s.workdir}, Env: s.gitEnv,
 	})
+	if err != nil {
+		markFailureOf(span, err)
+	}
 
 	return err
 }
@@ -197,7 +217,7 @@ func (s session) clone(ctx context.Context, repo workflow.Repo) error {
 // newSession prepares the environments for a clone at workdir; agentEnv is the model process's
 // environment. Every git call runs with the clone's hooks disabled, so nothing the model wrote can
 // run outside the sandbox; identity adds the committer a run needs.
-func newSession(d Deps, j job, workdir string, identity []string) session {
+func newSession(d Deps, j job, workdir string, identity []string, spans stageSpans) session {
 	gitArgv := append([]string{"git", "-C", workdir, "-c", "core.hooksPath=" + nullHooksPath}, identity...)
 
 	return session{
@@ -206,8 +226,8 @@ func newSession(d Deps, j job, workdir string, identity []string) session {
 		gitEnv:   GitAuthEnv(j.sec.githubToken),
 		agentEnv: j.env,
 		gitArgv:  gitArgv,
-		key:      j.sec.openrouterKey,
-		token:    j.token,
+		spans:    spans,
+		secrets:  []string{j.sec.openrouterKey, j.token, j.env["GH_TOKEN"]},
 	}
 }
 
@@ -252,7 +272,7 @@ type job struct {
 // model's one GitHub credential is a read-only token of its own App's, scoped to the repository.
 // external names the paths outside the clone the model may reach, and db is its state database.
 func (r run) loadJob(ctx context.Context, env runEnv, external []string, db string) (job, error) {
-	model, err := opencode.Env(env.baseURL, env.token, db, external, r.spec.agent)
+	model, err := opencode.Env(r.role, env.baseURL, env.token, db, external, r.spec.agent)
 	if err != nil {
 		return job{}, err
 	}
@@ -277,15 +297,23 @@ func (r run) loadJob(ctx context.Context, env runEnv, external []string, db stri
 // egress starts the run's egress proxy with the agent role's policy, forwarding its API calls to
 // apiURL. A proxy that cannot start fails the run: the model has no other egress, and there is never
 // an unsandboxed fallback.
-func (d Deps) egress(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
+func (d Deps) egress(
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, policy sandbox.Network, apiURL, token string,
+	refusals *security.Tally,
+) (EgressProxy, error) {
 	start := d.Egress
 	if start == nil {
-		start = func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error) {
-			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, d.log())
+		start = func(
+			ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+		) (EgressProxy, error) {
+			// The proxy's security events carry the run they belong to.
+			log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
+
+			return egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, log, refusals)
 		}
 	}
 
-	return start(ctx, policy, apiURL, token)
+	return start(ctx, policy, apiURL, token, refusals)
 }
 
 // proxyPort is the port of a loopback host:port, or zero when it cannot be parsed. A zero port fails
@@ -305,16 +333,19 @@ func proxyPort(addr string) int {
 }
 
 // proxy starts the run's OpenRouter proxy with key on the loopback address. A proxy that cannot start
-// fails the run: the model has no other way to reach OpenRouter.
-func (d Deps) proxy(key, token string) (Forwarder, error) {
+// fails the run: the model has no other way to reach OpenRouter. Its security events carry the run
+// they belong to.
+func (d Deps) proxy(
+	ctx context.Context, role workflow.Role, ref workflow.IssueRef, key, token string, refusals *security.Tally,
+) (Forwarder, error) {
 	start := d.Proxy
 	if start == nil {
-		start = func(key, token, addr string) (Forwarder, error) {
-			return openrouter.Start(key, token, addr)
-		}
+		log := security.Scope(d.log(), securityRun(role, ref.Repo, ref.Number))
+
+		return openrouter.StartWithLogger(ctx, key, token, openrouter.Loopback, log, refusals)
 	}
 
-	return start(key, token, openrouter.Loopback)
+	return start(key, token, openrouter.Loopback, refusals)
 }
 
 // tokenBytes is the entropy of the per-run proxy token.
@@ -330,7 +361,7 @@ func (d Deps) token() (string, error) {
 		}
 
 		if token == "" {
-			return "", fmt.Errorf("mint proxy token: empty")
+			return "", errors.New("mint proxy token: empty")
 		}
 
 		return token, nil
@@ -376,6 +407,18 @@ func startCode(err error, code int) int {
 	return code
 }
 
+// emitStepCap emits the security event for a run that reached its step cap. Reaching it fails the run
+// and is never retried, so the run is worth recording on its own. It records through the run's own
+// instruments, built when the run started.
+func (r run) emitStepCap(ctx context.Context, err error) {
+	if opencode.KindOf(err) != opencode.FailStepCap {
+		return
+	}
+
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventRunCapped, security.RunStepCap, "")
+}
+
 // buildImplementerPrompt builds the Implementer's prompt from the clone's docs, the review feedback
 // and the comments that woke the issue.
 func buildImplementerPrompt(
@@ -413,15 +456,22 @@ func rework(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]work
 	return thread, ci, err
 }
 
-// guidance reads every comment since the marker that woke the issue, from the issue and its pull
-// request, oldest first. An issue that was not woken reads nothing.
+// guidance reads every comment since the marker that woke the issue, oldest first. A research ticket
+// has no pull request, and the Researcher's App has no Pull requests permission to look for one. An
+// issue that was not woken reads nothing.
 func guidance(ctx context.Context, c github.Client, ref workflow.IssueRef) ([]workflow.Item, error) {
 	comments, err := c.ListComments(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 
-	return issueThread(ctx, c, ref, comments)
+	thread := slices.Clone(comments)
+
+	slices.SortStableFunc(thread, func(a, b workflow.Item) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	return workflow.Guidance(thread, ref.Repo.Owner()), nil
 }
 
 // issueThread is the guidance the issue's comments carry: the open pull request's comments join them,
@@ -481,21 +531,30 @@ func scratchDir(root, name string) (string, error) {
 // outputProblem turns an unreadable output file into the error a rejected one returns. The error
 // carries the file's name, which the comment shows once, so the problem does not repeat it.
 func outputProblem(file string, err error) error {
-	return &workflow.OutputError{File: file, Problems: []string{"cannot be read: " + err.Error()}}
+	return &workflow.OutputError{
+		File: file, Problems: []string{"cannot be read: " + err.Error()}, Problem: workflow.OutputUnreadable,
+	}
 }
 
-// rejectOutput posts every problem with a rejected output file in one comment, then returns the
-// failure the run reports. Nothing in the file is applied: the issue goes to failed instead.
-func rejectOutput(
-	ctx context.Context, c github.Client, repo workflow.Repo, number int, role workflow.Role, err error,
-) error {
+// rejectOutput posts every problem with a rejected output file in one comment, emits the rejection's
+// security event, then returns the failure the run reports. Nothing in the file is applied: the issue
+// goes to failed instead.
+func (r run) rejectOutput(ctx context.Context, c github.Client, err error) error {
 	var rejected *workflow.OutputError
 	if !errors.As(err, &rejected) {
 		return err
 	}
 
+	// The event carries the run and the class of problem, never the file's text: it is the model's.
+	// The class is workflow.OutputProblem's own value, which is also the security outcome: one set of
+	// values, so there is no bridge to fall through.
+	outcome := security.Outcome(rejected.Problem)
+
+	r.alerts.securityEvent(ctx, r.d.log(), securityRun(r.role, r.spec.ref.Repo, r.spec.ref.Number),
+		security.EventOutputRejected, outcome, "")
+
 	lines := []string{
-		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", role), "",
+		fmt.Sprintf("The %s's output file was rejected, so nothing was applied.", r.role), "",
 		fmt.Sprintf("File: `%s`", rejected.File), "",
 	}
 	for _, problem := range rejected.Problems {
@@ -503,7 +562,9 @@ func rejectOutput(
 	}
 
 	text := workflow.Truncate(strings.Join(lines, "\n"), workflow.CommentLimitChars)
-	if postErr := c.Comment(ctx, workflow.IssueRef{Repo: repo, Number: number}, text); postErr != nil {
+
+	ref := workflow.IssueRef{Repo: r.spec.ref.Repo, Number: r.spec.ref.Number}
+	if postErr := c.Comment(ctx, ref, text); postErr != nil {
 		// Both failures matter: the file was bad and the report never reached the issue.
 		return errors.Join(err, postErr)
 	}
@@ -537,12 +598,19 @@ func (s session) applyImplementer(
 // commit stages the working tree and commits it, with the clone's hooks disabled so nothing the
 // model wrote runs outside the sandbox. A tree with nothing to commit is left as it is.
 func (s session) commit(ctx context.Context, message string) error {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishCommit)
+	defer span.End()
+
 	if _, err := s.git(ctx, nil, "add", "-A"); err != nil {
+		markFailureOf(span, err)
+
 		return err
 	}
 
 	status, err := s.git(ctx, nil, "status", "--porcelain")
 	if err != nil {
+		markFailureOf(span, err)
+
 		return err
 	}
 
@@ -551,6 +619,9 @@ func (s session) commit(ctx context.Context, message string) error {
 	}
 
 	_, err = s.git(ctx, nil, "commit", "-m", message)
+	if err != nil {
+		markFailureOf(span, err)
+	}
 
 	return err
 }
@@ -608,11 +679,25 @@ func (s session) publish(
 		push = []string{gitPush, "--force", gitRemote, branch}
 	}
 
-	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+	if err := s.push(ctx, push); err != nil {
 		return nil, err
 	}
 
 	return s.upsertPR(ctx, j, repo, branch, pr, out)
+}
+
+// push pushes the branch inside its stage span.
+func (s session) push(ctx context.Context, push []string) error {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishPush)
+	defer span.End()
+
+	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+		markFailureOf(span, err)
+
+		return err
+	}
+
+	return nil
 }
 
 // upsertPR opens the pull request linked to the issue, or updates the open one's text when the output
@@ -620,14 +705,24 @@ func (s session) publish(
 func (s session) upsertPR(
 	ctx context.Context, j job, repo workflow.Repo, branch string, pr *github.PullRequest, out workflow.ImplementerOutput,
 ) (*github.PullRequest, error) {
+	_, span := s.spans.start(ctx, telemetry.SpanPublishPR)
+	defer span.End()
+
 	if pr == nil {
-		return openPR(ctx, j.c, repo, j.issue, branch, out)
+		opened, err := openPR(ctx, j.c, repo, j.issue, branch, out)
+		if err != nil {
+			markFailureOf(span, err)
+		}
+
+		return opened, err
 	}
 
 	if out.PRTitle != "" && out.PRBody != "" {
 		ref := workflow.IssueRef{Repo: repo, Number: pr.Number}
 
 		if err := j.c.UpdatePR(ctx, ref, out.PRTitle, workflow.PRBody(j.issue.Number, out.PRBody)); err != nil {
+			markFailureOf(span, err)
+
 			return nil, err
 		}
 	}
@@ -793,7 +888,7 @@ func (s session) publishResearch(ctx context.Context, number int, branch string)
 		push = []string{gitPush, "--force", gitRemote, branch}
 	}
 
-	if _, err := s.git(ctx, s.gitEnv, push...); err != nil {
+	if err := s.push(ctx, push); err != nil {
 		return "", err
 	}
 
@@ -956,7 +1051,7 @@ func postVerdict(
 		}
 
 		if reviewer == "" {
-			d.log().Warn("no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
+			d.log().WarnContext(ctx, "no human writer to ask to review and merge", "repo", repo, "issue", issue.Number,
 				"pr", pr, "author", issue.Author)
 
 			return workflow.ReviewClean, nil
@@ -1004,7 +1099,7 @@ func mergeReviewer(
 		}
 
 		if workflow.WriterPermission(permission) {
-			d.log().Info("asking the latest human writer to review and merge", "repo", repo,
+			d.log().InfoContext(ctx, "asking the latest human writer to review and merge", "repo", repo,
 				"issue", issue.Number, "reviewer", login)
 
 			return login, nil

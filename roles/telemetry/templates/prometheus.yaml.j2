@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Prometheus scrapes nothing: every host's collector pushes OTLP to it. It evaluates the alert rules
+# below on its own clock and lists what is firing at /alerts.
+#
+# Every metric's resource names the host that produced it. Prometheus promotes no resource attribute
+# by default, so name the host here: it becomes the label host_name that the dashboard groups by.
+otlp:
+  promote_resource_attributes:
+    - host.name
+global: {}
+rule_files:
+  - /etc/prometheus/alerts.yaml

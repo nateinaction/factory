@@ -1,0 +1,6 @@
+# The fuzz step hands a script to `bash -c` in single quotes on purpose, so its variables expand in
+# that inner shell. shellcheck's SC2016 on it means nothing here.
+paths:
+  .github/workflows/fuzz.yml:
+    ignore:
+      - 'SC2016'

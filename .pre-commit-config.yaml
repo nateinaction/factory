@@ -7,6 +7,172 @@
 repos:
   - repo: local
     hooks:
+      # The stock file hygiene checks from pre-commit-hooks, which the dev shell provides. A fixer
+      # rewrites the file and so fails the run, like go fix. `types` is what the upstream definitions
+      # set, which `system` hooks do not inherit.
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: trailing-whitespace-fixer
+        language: system
+        types: [text]
+
+      - id: end-of-file-fixer
+        name: fix end of files
+        entry: end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: mixed-line-ending
+        name: fix mixed line endings
+        entry: mixed-line-ending
+        language: system
+        types: [text]
+
+      - id: check-yaml
+        name: check yaml
+        entry: check-yaml
+        language: system
+        types: [yaml]
+
+      - id: check-json
+        name: check json
+        entry: check-json
+        language: system
+        types: [json]
+
+      - id: check-added-large-files
+        name: check added large files
+        entry: check-added-large-files
+        language: system
+
+      - id: check-merge-conflict
+        name: check merge conflict
+        entry: check-merge-conflict
+        language: system
+        types: [text]
+
+      - id: check-case-conflict
+        name: check case conflict
+        entry: check-case-conflict
+        language: system
+
+      - id: detect-private-key
+        name: detect private key
+        entry: detect-private-key
+        language: system
+        types: [text]
+
+      - id: check-executables-have-shebangs
+        name: executables have shebangs
+        entry: check-executables-have-shebangs
+        language: system
+        types: [text, executable]
+
+      - id: check-shebang-scripts-are-executable
+        name: shebang scripts are executable
+        entry: check-shebang-scripts-are-executable
+        language: system
+        types: [text]
+
+      - id: check-symlinks
+        name: check symlinks
+        entry: check-symlinks
+        language: system
+        types: [symlink]
+
+      - id: destroyed-symlinks
+        name: detect destroyed symlinks
+        entry: destroyed-symlinks
+        language: system
+        types: [file]
+
+      # Stops a commit made directly on main. CI runs on main, where this must be skipped (SKIP).
+      - id: no-commit-to-branch
+        name: no commit to main
+        entry: no-commit-to-branch --branch main
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # Shell: lint, then format. Files are found by shebang or extension through `types`.
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+        # direnv's file has no shebang and is not a shell script.
+        exclude: ^\.envrc$
+
+      - id: shfmt
+        name: shfmt
+        entry: shfmt -d -i 2 -ci
+        language: system
+        types: [shell]
+
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+
+      - id: zizmor
+        name: zizmor
+        entry: zizmor --offline
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --check
+        language: system
+        types: [python]
+
+      - id: nixfmt
+        name: nixfmt
+        entry: nixfmt --check
+        language: system
+        types: [nix]
+
+      - id: statix
+        name: statix
+        entry: statix check
+        language: system
+        types: [nix]
+        pass_filenames: false
+
+      - id: deadnix
+        name: deadnix
+        entry: deadnix --fail
+        language: system
+        types: [nix]
+
+      - id: markdownlint
+        name: markdownlint
+        entry: markdownlint
+        language: system
+        types: [markdown]
+
+      # Spelling in code, comments and docs. _typos.toml holds the allowed terms.
+      - id: typos
+        name: typos
+        entry: typos --force-exclude
+        language: system
+
+      # Scans what is staged for a commit, so a secret is stopped before it reaches history; CI scans
+      # the history too. It runs on every commit, not only when a Go or YAML file changes.
+      - id: gitleaks
+        name: gitleaks
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: go-fix
         name: go fix
         entry: bash -c 'cd foreman && go fix ./...'
@@ -28,9 +194,18 @@ repos:
         files: ^foreman/.*\.go$
         pass_filenames: false
 
+      # golangci-lint's unused sees one package at a time. deadcode follows calls from main and the
+      # tests across packages, and exits 0 even when it finds something, so any output fails the hook.
+      - id: deadcode
+        name: deadcode
+        entry: bash -c 'cd foreman && out=$(go tool deadcode -test ./...) && [ -z "$out" ] || { echo "$out"; exit 1; }'
+        language: system
+        files: ^foreman/(go\.mod|go\.sum|.*\.go)$
+        pass_filenames: false
+
       - id: go-test
         name: go test (ginkgo)
-        entry: bash -c 'cd foreman && go tool ginkgo -r --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'
+        entry: bash -c 'cd foreman && go tool ginkgo -r -p --race --randomize-all --fail-on-pending --fail-on-empty --keep-going'
         language: system
         files: ^foreman/.*\.go$
         pass_filenames: false

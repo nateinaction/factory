@@ -21,6 +21,14 @@ import (
 // testToken is the per-run token every spec sends the proxy.
 const testToken = "run-token"
 
+// testKey is the OpenRouter key every spec's proxy holds.
+const testKey = "sk-or-test"
+
+// startTest binds a proxy over a stand-in upstream, with no security event logger.
+func startTest(token, addr, upstream string) (*Proxy, error) {
+	return startAt(context.Background(), testKey, token, addr, upstream, nil, nil)
+}
+
 // upstreamCall is one request an upstream test server received.
 type upstreamCall struct {
 	authorization string
@@ -107,7 +115,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 				return
 			}
 		})
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -154,7 +162,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 				}
 			}
 		})
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -169,7 +177,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 
 	It("strips a header the client names in Connection before forwarding", func() {
 		up = newUpstream(nil)
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -218,7 +226,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 			// the test reads the stream regardless of a flush error
 			_ = http.NewResponseController(w).Flush()
 		})
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -268,7 +276,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 
 	It("refuses a path outside OpenRouter's API without calling the upstream", func() {
 		up = newUpstream(nil)
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -282,7 +290,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 
 	It("refuses a request that names another destination", func() {
 		up = newUpstream(nil)
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -304,7 +312,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 
 	It("refuses a request without its run token", func() {
 		up = newUpstream(nil)
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -331,17 +339,17 @@ var _ = Describe("the OpenRouter proxy", func() {
 	It("refuses to start without a run token", func() {
 		up = newUpstream(nil)
 
-		_, err := start("sk-or-test", "", Loopback, up.URL)
+		_, err := startTest("", Loopback, up.URL)
 		Expect(err).To(MatchError(ContainSubstring("token")))
 	})
 
 	It("listens on loopback only", func() {
 		up = newUpstream(nil)
 
-		_, err := start("sk-or-test", testToken, "0.0.0.0:0", up.URL)
+		_, err := startTest(testToken, "0.0.0.0:0", up.URL)
 		Expect(err).To(MatchError(ContainSubstring("loopback")))
 
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -355,14 +363,14 @@ var _ = Describe("the OpenRouter proxy", func() {
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(taken.Close)
 
-		_, err = start("sk-or-test", testToken, taken.Addr().String(), up.URL)
+		_, err = startTest(testToken, taken.Addr().String(), up.URL)
 		Expect(err).To(MatchError(ContainSubstring("bind")))
 		Expect(err.Error()).NotTo(ContainSubstring("sk-or-test"), "the key leaked into an error")
 	})
 
 	It("stops when it is closed", func() {
 		up = newUpstream(nil)
-		p, err := start("sk-or-test", testToken, Loopback, up.URL)
+		p, err := startTest(testToken, Loopback, up.URL)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(p.Close()).To(Succeed())
@@ -376,7 +384,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 	})
 
 	It("never puts its key in what it answers when the upstream is unreachable", func() {
-		p, err := start("sk-or-test", testToken, Loopback, "http://127.0.0.1:1")
+		p, err := startTest(testToken, Loopback, "http://127.0.0.1:1")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 
@@ -393,7 +401,7 @@ var _ = Describe("the OpenRouter proxy", func() {
 		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 		DeferCleanup(func() { slog.SetDefault(previous) })
 
-		p, err := start("sk-or-test", testToken, Loopback, "http://127.0.0.1:1")
+		p, err := startTest(testToken, Loopback, "http://127.0.0.1:1")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(p.Close)
 

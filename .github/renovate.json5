@@ -1,0 +1,37 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", "helpers:pinGitHubActionDigests"],
+  // Only what the factory keeps current on purpose. The npm manager would bump
+  // nix/emulate/package.json without the version and npmDepsHash in flake.nix.
+  enabledManagers: ["gomod", "github-actions", "nix"],
+  // The nix manager (flake.lock) is still opt-in.
+  nix: { enabled: true },
+  postUpdateOptions: ["gomodTidy"],
+  schedule: ["before 6am on monday"],
+  packageRules: [
+    {
+      groupName: "Go modules",
+      matchManagers: ["gomod"],
+    },
+    {
+      groupName: "GitHub Actions",
+      matchManagers: ["github-actions"],
+    },
+    // Auto-merge waits for the required status checks; majors wait for a human.
+    {
+      matchUpdateTypes: ["minor", "patch", "digest", "pin", "pinDigest"],
+      automerge: true,
+    },
+    // flake.nix asserts that nixpkgs' sandbox-runtime equals srtVersion, which must match
+    // group_vars, so a nixpkgs bump needs a human to move them together.
+    {
+      matchManagers: ["nix"],
+      automerge: false,
+    },
+    // flake.nix builds foreman with buildGo127Module, so the Go version moves there first.
+    {
+      matchDepTypes: ["golang"],
+      enabled: false,
+    },
+  ],
+}

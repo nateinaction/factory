@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -31,7 +33,7 @@ func prepareImplementer(ctx context.Context, rc runCtx) (prepared, error) {
 		prompt:  text,
 		failKey: headKeyOf,
 		after: func(ctx context.Context, s session, _ opencode.Result) outcome {
-			out, err := readOutput(rc.paths.out, workflow.ImplementerOutputFile,
+			out, err := readOutput(ctx, rc.spans(), rc.paths.out, workflow.ImplementerOutputFile,
 				func(text string) (workflow.ImplementerOutput, error) {
 					return workflow.ParseImplementerOutput(text, pr != nil, feedback)
 				})
@@ -75,7 +77,7 @@ func prepareResearcher(ctx context.Context, rc runCtx) (prepared, error) {
 
 // researchAfter reads the Researcher's output and applies it.
 func researchAfter(ctx context.Context, rc runCtx, s session) outcome {
-	out, err := readOutput(rc.paths.out, workflow.ResearcherOutputFile, workflow.ParseResearcherOutput)
+	out, err := readOutput(ctx, rc.spans(), rc.paths.out, workflow.ResearcherOutputFile, workflow.ParseResearcherOutput)
 	if err != nil {
 		return rejected(ctx, rc, err, s.headKey(ctx))
 	}
@@ -138,12 +140,19 @@ func prepareReviewer(ctx context.Context, rc runCtx) (prepared, error) {
 		// The retro is keyed by the reviewed PR head SHA, on every path that reached the model.
 		failKey: func(context.Context, session) string { return sha },
 		after: func(ctx context.Context, _ session, _ opencode.Result) outcome {
-			out, err := readOutput(rc.paths.out, workflow.ReviewerOutputFile, workflow.ParseReviewerOutput)
+			out, err := readOutput(ctx, rc.spans(), rc.paths.out, workflow.ReviewerOutputFile, workflow.ParseReviewerOutput)
 			if err != nil {
 				return rejected(ctx, rc, err, sha)
 			}
 
+			ctx, span := rc.spans().start(ctx, telemetry.SpanPublishReview)
+
 			code, err := postVerdict(ctx, rc.d, rc.j.c, repo, pr.Number, sha, out, rc.j.issue, rc.spec.limit)
+			if err != nil {
+				markFailureOf(span, err)
+			}
+
+			span.End()
 
 			return outcome{code: code, retroKey: sha, err: err}
 		},
@@ -177,7 +186,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 		prompt:          prompt.Planner(docs, rc.spec.ref.Repo.String(), rc.j.issue, comments, rc.paths.out),
 		toolchainBranch: branch,
 		after: func(ctx context.Context, _ session, _ opencode.Result) outcome {
-			out, err := readOutput(rc.paths.out, workflow.PlannerOutputFile, workflow.ParsePlannerOutput)
+			out, err := readOutput(ctx, rc.spans(), rc.paths.out, workflow.PlannerOutputFile, workflow.ParsePlannerOutput)
 			if err != nil {
 				return rejected(ctx, rc, err, "")
 			}
@@ -187,7 +196,7 @@ func preparePlanner(ctx context.Context, rc runCtx) (prepared, error) {
 				return outcome{err: err}
 			}
 
-			return outcome{retroKey: fmt.Sprint(commentID)}
+			return outcome{retroKey: strconv.FormatInt(commentID, 10)}
 		},
 	}, nil
 }
@@ -215,7 +224,7 @@ func prepareCurator(ctx context.Context, rc runCtx) (prepared, error) {
 		prompt:      prompt.Curator(ref, private, reports, view, rc.paths.out),
 		noToolchain: true,
 		after: func(ctx context.Context, s session, _ opencode.Result) outcome {
-			out, err := readOutput(rc.paths.out, workflow.CuratorOutputFile, workflow.ParseCuratorOutput)
+			out, err := readOutput(ctx, rc.spans(), rc.paths.out, workflow.CuratorOutputFile, workflow.ParseCuratorOutput)
 			if err != nil {
 				// The dashboard is never commented on, so a rejected file is only logged; the claim ages
 				// out and the next poll retries.

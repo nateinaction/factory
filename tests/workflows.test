@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Every GitHub Actions workflow limits its GITHUB_TOKEN with an explicit top-level permissions block,
+# so a job holds only what it names and never the repository's default. No host needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+for f in "$root"/.github/workflows/*.yml; do
+  check "$(basename "$f") sets a top-level permissions block" grep -Eq '^permissions:' "$f"
+  # The block is the indented lines under the key; it must be exactly one: contents: read.
+  check "$(basename "$f") grants nothing beyond contents: read" test \
+    "$(awk '/^permissions:/ {in_block = 1; next} /^[^ #]/ {in_block = 0} in_block && NF {print}' "$f")" = "  contents: read"
+done
+
+[ "$failures" -eq 0 ]

@@ -8,13 +8,39 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
 // devEnv is the part of `nix print-dev-env --json` foreman reads: the shell variables, of which PATH
 // names the resolved toolchain's store paths.
 type devEnv struct {
-	Variables map[string]string `json:"variables"`
+	Variables map[string]devVar `json:"variables"`
+}
+
+// devVar is one variable nix reports: its type and its value, which is a string for a variable and a
+// list for an array. Only PATH is read, so the value stays raw until then.
+type devVar struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
+}
+
+// pathVar is the variable that names the resolved toolchain.
+const pathVar = "PATH"
+
+// path is the PATH the environment reports; it is an error when there is none, or it is not a string.
+func (e devEnv) path() (string, error) {
+	raw := e.Variables[pathVar].Value
+	if len(raw) == 0 {
+		return "", nil
+	}
+
+	var path string
+	if err := json.Unmarshal(raw, &path); err != nil {
+		return "", fmt.Errorf("read %s: %w", pathVar, err)
+	}
+
+	return path, nil
 }
 
 // toolchain resolves the repository's dev environment outside the sandbox, from the flake on the
@@ -22,7 +48,7 @@ type devEnv struct {
 // accept-flake-config is off, so a flake cannot grant itself settings, and the evaluation is told not
 // to write a lock file: the default branch is used exactly as committed.
 func (d Deps) toolchain(
-	ctx context.Context, c github.Client, repo workflow.Repo, token, branch string, f sandboxFiles,
+	ctx context.Context, c github.Client, repo workflow.Repo, token, branch string, f sandboxFiles, spans stageSpans,
 ) (string, error) {
 	if branch == "" {
 		var err error
@@ -31,23 +57,56 @@ func (d Deps) toolchain(
 		}
 	}
 
-	if _, err := d.run(ctx, proc.Cmd{
+	if err := d.shallowClone(ctx, repo, branch, token, f, spans); err != nil {
+		return "", err
+	}
+
+	return d.devEnv(ctx, repo, f, spans)
+}
+
+// shallowClone clones the default branch's flake inside its stage span.
+func (d Deps) shallowClone(
+	ctx context.Context, repo workflow.Repo, branch, token string, f sandboxFiles, spans stageSpans,
+) error {
+	_, span := spans.start(ctx, telemetry.SpanToolchainClone)
+	defer span.End()
+
+	_, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
 			gitProgram, gitClone, "--depth", "1", "--branch", branch,
 			"https://github.com/" + repo.String() + ".git", f.toolchain,
 		},
 		Env: GitAuthEnv(token), Timeout: ToolchainTimeout,
-	}); err != nil {
-		return "", err
+	})
+	if err != nil {
+		markFailureOf(span, err)
 	}
 
+	return err
+}
+
+// devEnv evaluates the cloned flake inside its stage span and returns the PATH it resolved.
+func (d Deps) devEnv(ctx context.Context, repo workflow.Repo, f sandboxFiles, spans stageSpans) (string, error) {
+	_, span := spans.start(ctx, telemetry.SpanToolchainEnv)
+	defer span.End()
+
+	path, err := d.evaluateDevEnv(ctx, repo, f)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return path, err
+}
+
+// evaluateDevEnv runs the dev-environment evaluation and reads the PATH it reports.
+func (d Deps) evaluateDevEnv(ctx context.Context, repo workflow.Repo, f sandboxFiles) (string, error) {
 	out, err := d.run(ctx, proc.Cmd{
 		Argv: []string{
 			"nix", "print-dev-env", "--json",
 			"--option", "accept-flake-config", "false",
 			"--no-write-lock-file",
 			"--extra-experimental-features", "nix-command flakes",
-			"--flake", "path:" + f.toolchain,
+			"path:" + f.toolchain,
 		},
 		Dir: f.toolchain, Env: nixEnv(f), Timeout: ToolchainTimeout, Capture: true,
 	})
@@ -60,11 +119,16 @@ func (d Deps) toolchain(
 		return "", fmt.Errorf("parse the default branch's dev environment: %w", err)
 	}
 
-	if env.Variables["PATH"] == "" {
+	path, err := env.path()
+	if err != nil {
+		return "", fmt.Errorf("parse the default branch's dev environment: %w", err)
+	}
+
+	if path == "" {
 		return "", fmt.Errorf("the default branch's flake resolved no PATH for %s", repo)
 	}
 
-	return env.Variables["PATH"], nil
+	return path, nil
 }
 
 // nixEnv is the environment of the dev-environment resolution: the run's private HOME and XDG

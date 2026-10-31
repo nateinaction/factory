@@ -96,7 +96,7 @@ func (h *cliHarness) execute(args ...string) int {
 
 	cmd, err := executeCommand(context.Background(), root, args, h.sudo)
 
-	return exit(h.logger, cmd, err)
+	return exit(context.Background(), h.logger, cmd, err)
 }
 
 // writeConfig writes text as the Ansible role config and returns its path.
@@ -150,7 +150,7 @@ var _ = Describe("the foreman command", func() {
 			Entry("poll with arguments", "poll", "extra"),
 			Entry("start alone", "start"),
 			Entry("start without an issue", "start", "implementer", "o/r"),
-			Entry("start with an extra argument", "start", "implementer", "o/r", "5", "extra"),
+			Entry("start with an extra argument", "start", "implementer", "o/r", "5", "extra", "more"),
 			Entry("run without an issue", "run", "implementer", "o/r"),
 			Entry("a malformed repository", "start", "implementer", "not-a-repo", "5"),
 			Entry("a word for an issue", "start", "implementer", "o/r", "five"),
@@ -161,7 +161,20 @@ var _ = Describe("the foreman command", func() {
 			Entry("logs with an extra argument", "logs", "o/r", "5", "extra"),
 			Entry("logs with a malformed repository", "logs", "not-a-repo", "5"),
 			Entry("logs with a word for an issue", "logs", "o/r", "five"),
+			Entry("history alone", "history"),
+			Entry("history with an extra argument", "history", "o/r", "5"),
+			Entry("history with a malformed repository", "history", "not-a-repo"),
 		)
+
+		It("accepts start with a trace context argument", func() {
+			path := filepath.Join(h.dir, "missing.json")
+
+			// The missing config fails the command after its arguments parse: that proves the fourth
+			// argument was accepted, without running an agent role.
+			Expect(h.execute("start", "implementer", "o/r", "5", "not-a-traceparent", "--config", path)).
+				To(Equal(1))
+			Expect(h.logs.String()).NotTo(ContainSubstring("accepts 3 arg(s)"))
+		})
 
 		DescribeTable("fails closed on an unknown agent role",
 			func(verb string) {
@@ -234,6 +247,7 @@ var _ = Describe("the foreman command", func() {
 			Entry("poll", "poll"),
 			Entry("status", "status"),
 			Entry("logs", "logs", "o/r", "5"),
+			Entry("history", "history", "o/r"),
 			Entry("start", "start", "implementer", "o/r", "5"),
 			Entry("run with no arguments", "run"),
 			Entry("run with one argument", "run", "implementer"),
@@ -286,6 +300,7 @@ var _ = Describe("the foreman command", func() {
 		Expect(help).To(ContainSubstring("run"))
 		Expect(help).To(ContainSubstring("status"))
 		Expect(help).To(ContainSubstring("logs"))
+		Expect(help).To(ContainSubstring("history"))
 		Expect(help).NotTo(ContainSubstring("completion"))
 	})
 
@@ -299,6 +314,7 @@ var _ = Describe("the foreman command", func() {
 		Entry("run", "run", "foreman run <agent-role> <owner/repo> <issue> [flags]"),
 		Entry("status", "status", "foreman status [flags]"),
 		Entry("logs", "logs", "foreman logs <owner/repo> <issue> [flags]"),
+		Entry("history", "history", "foreman history <owner/repo> [flags]"),
 	)
 
 	Context("with no runs in dagu", func() {

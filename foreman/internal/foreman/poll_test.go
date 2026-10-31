@@ -81,6 +81,114 @@ var _ = Describe("Poll", func() {
 		})
 	})
 
+	Describe("repositories", func() {
+		It("polls the assigned repositories at the same time, so a slow one does not hold up the rest", func() {
+			ctx := context.Background()
+			Expect(emulator.ResetRepo(ctx, "o/r2")).To(Succeed())
+			DeferCleanup(func() { Expect(emulator.DeleteRepo(ctx, "o/r2")).To(Succeed()) })
+
+			h.installed[workflow.Implementer] = []string{"o/r", "o/r2"}
+			h.installed[workflow.Reviewer] = []string{"o/r", "o/r2"}
+
+			// Each repository's first issue list waits for the other's. A poll that takes its
+			// repositories one after another never lets the second arrive, and the wait gives up.
+			var (
+				mu      sync.Mutex
+				arrived = map[string]bool{}
+				both    = make(chan struct{})
+				gaveUp  bool
+			)
+
+			meet := func(repo string) http.HandlerFunc {
+				return func(w http.ResponseWriter, _ *http.Request) {
+					mu.Lock()
+					arrived[repo] = true
+
+					if len(arrived) == 2 {
+						select {
+						case <-both:
+						default:
+							close(both)
+						}
+					}
+					mu.Unlock()
+
+					select {
+					case <-both:
+					case <-time.After(3 * time.Second):
+						mu.Lock()
+						gaveUp = true
+						mu.Unlock()
+					}
+
+					ghtest.WriteJSON(w, []map[string]any{})
+				}
+			}
+			h.gh.Handle("GET /repos/o/r/issues", meet("o/r"))
+			h.gh.Handle("GET /repos/o/r2/issues", meet("o/r2"))
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			Expect(gaveUp).To(BeFalse(), "the second repository was not polled while the first was waiting")
+		})
+	})
+
+	Describe("reading comments", func() {
+		It("reads the comments of a repository's issues at the same time, so a long queue does not add up", func() {
+			first := h.createAs("o", nil, "First")
+			second := h.createAs("o", nil, "Second")
+			h.comment(first, "o", "please work on this")
+			h.comment(second, "o", "please work on this")
+
+			// Each issue's first comment read waits for the other's. A poll that reads one issue's
+			// comments after another's never lets the second arrive, and the wait gives up.
+			var (
+				mu      sync.Mutex
+				arrived = map[int]bool{}
+				both    = make(chan struct{})
+				gaveUp  bool
+			)
+
+			meet := func(number int) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					arrived[number] = true
+
+					if len(arrived) == 2 {
+						select {
+						case <-both:
+						default:
+							close(both)
+						}
+					}
+					mu.Unlock()
+
+					select {
+					case <-both:
+					case <-time.After(3 * time.Second):
+						mu.Lock()
+						gaveUp = true
+						mu.Unlock()
+					}
+
+					h.gh.Forward(w, r)
+				}
+			}
+			h.gh.Handle(fmt.Sprintf("GET /repos/o/r/issues/%d/comments", first), meet(first))
+			h.gh.Handle(fmt.Sprintf("GET /repos/o/r/issues/%d/comments", second), meet(second))
+
+			Expect(poll()).Error().NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			Expect(gaveUp).To(BeFalse(), "the second issue's comments were not read while the first's were pending")
+		})
+	})
+
 	Describe("routing a new issue", func() {
 		DescribeTable("puts a ticket in its first queue",
 			func(labels []string, want string) {
@@ -170,7 +278,8 @@ var _ = Describe("Poll", func() {
 			Expect(markers).To(HaveLen(1))
 			Expect(markers[0]).To(Equal(
 				"<!-- factory:handoff role=implementer run=run-1 " +
-					"from=factory:implement to=factory:implementing sha= -->"))
+					"from=factory:implement to=factory:implementing sha= -->\n\n" +
+					"The Implementer moved this issue from `factory:implement` to `factory:implementing`."))
 
 			Expect(h.gh.Summary()).To(ContainElements(
 				"DELETE /repos/o/r/issues/5/labels/factory:implement",
@@ -293,6 +402,27 @@ var _ = Describe("Poll", func() {
 			mint := h.runner.find("app-token", " token ")
 			Expect(mint).NotTo(BeEmpty())
 			h.expectAuthorizedAs(workflow.Reviewer)
+		})
+
+		It("claims a planning issue though the Planner's App cannot read pull requests", func() {
+			h.installed = map[workflow.Role][]string{workflow.Planner: {"o/r"}}
+			h.queue(map[string][]map[string]any{workflow.LabelPlan: {{"number": 1}}})
+			// The Planner has no Pull requests permission: GitHub answers its pull request reads with 403.
+			h.gh.Handle("GET /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") == "Bearer minted-token-"+string(workflow.Planner) {
+					w.WriteHeader(http.StatusForbidden)
+
+					return
+				}
+
+				h.gh.Forward(w, r)
+			})
+
+			code, err := Poll(context.Background(), h.deps, pollConfig(workflow.Planner))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(code).To(BeZero())
+			Expect(h.labels(1)).To(ContainElement(workflow.LabelPlanning))
+			Expect(h.runner.find("enqueue")).To(HaveLen(1))
 		})
 	})
 

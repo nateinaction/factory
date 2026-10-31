@@ -1,0 +1,16 @@
+---
+# Runs the telemetry role's serve tasks against tests/fake_tailscale, so tests/telemetry.test can
+# check which `tailscale serve` calls the role makes for a given `tailscale serve status` output.
+- name: Decide whether the backend's serves are already set up
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  environment:
+    PATH: "{{ lookup('env', 'FAKE_TAILSCALE_BIN') }}:{{ lookup('env', 'PATH') }}"
+  tasks:
+    - name: Run the role's serve tasks
+      ansible.builtin.include_role:
+        name: telemetry
+        tasks_from: serve

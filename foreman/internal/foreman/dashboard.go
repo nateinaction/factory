@@ -21,6 +21,7 @@ import (
 func redrawDashboard(
 	ctx context.Context, d Deps, cfg config.Config, c github.Client, perms permissions,
 	repo workflow.Repo, roles []workflow.Role, waiting map[workflow.Role]bool, role workflow.Role,
+	alerts alertInstruments,
 ) error {
 	issues, err := c.ListIssues(ctx, repo, github.StateAll, github.Newest)
 	if err != nil {
@@ -44,7 +45,7 @@ func redrawDashboard(
 
 	run := &commandRun{
 		d: d, cfg: cfg, c: c, perms: perms, repo: repo, role: role,
-		issues: issues, threads: threads, reports: reports,
+		issues: issues, threads: threads, reports: reports, alerts: alerts,
 	}
 	state, settle := run.run(ctx, state, number, found)
 
@@ -213,12 +214,14 @@ func retroLog(
 
 	threads := map[int]promotedThread{}
 
-	for _, issue := range issues {
-		if issue.IsPullRequest || issue.Comments == 0 {
-			continue
-		}
+	// The log spans every issue the repository has, so its reads overlap rather than add up.
+	logged := slices.DeleteFunc(slices.Clone(issues), func(issue workflow.Issue) bool {
+		return issue.IsPullRequest || issue.Comments == 0
+	})
+	reads := readComments(ctx, c, repo, logged)
 
-		comments, err := c.ListComments(ctx, workflow.IssueRef{Repo: repo, Number: issue.Number})
+	for i, issue := range logged {
+		comments, err := reads[i].items, reads[i].err
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the retro log of #%d: %w", issue.Number, err)
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -52,7 +53,7 @@ var _ = Describe("Run", func() {
 			Expect(oc).To(HaveLen(1))
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
-			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			Expect(baseURL(oc[0])).To(MatchRegexp(modelURLPattern()), "the model calls the proxy")
 			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.rolePaths(workflow.Implementer, 5).out))
 			h.expectNoSecretInFiles(work, "or-key")
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
@@ -146,10 +147,7 @@ var _ = Describe("Run", func() {
 			Expect(oc).NotTo(BeEmpty())
 			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-implementer"))
 
-			mint := h.runner.find("app-token", " token ", "--read-only")
-			Expect(mint).To(HaveLen(1))
-			Expect(appOf(mint[0])).To(Equal(string(workflow.Implementer)))
-			Expect(mint[0].Argv[len(mint[0].Argv)-3:]).To(Equal([]string{"--repo", "o/r", "--read-only"}))
+			Expect(h.runner.find("app-token")).To(BeEmpty(), "the factory half cannot mint; start hands it the token")
 			h.expectLeakFree("repo-token", "read-only-token", "or-key")
 		})
 
@@ -169,6 +167,13 @@ var _ = Describe("Run", func() {
 			Expect(h.runner.find("commit -m")).To(BeEmpty(), "committed a rejected file")
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty(), "pushed a rejected file")
 			Expect(h.gh.Bodies("POST", "/repos/o/r/pulls")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "invalid_output"),
+				HaveKeyWithValue("agent_role", "implementer"),
+				HaveKeyWithValue("repository", "o/r"),
+				HaveKeyWithValue("issue", "5"),
+			)))
 		})
 
 		It("rejects a factory marker in the model's text", func() {
@@ -179,6 +184,11 @@ var _ = Describe("Run", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("carries a factory marker")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "factory_marker"),
+				HaveKeyWithValue("issue", "5"),
+			)))
 		})
 
 		It("rejects a run whose model wrote no output file", func() {
@@ -187,6 +197,10 @@ var _ = Describe("Run", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(h.reportComments()).To(ConsistOf(ContainSubstring("cannot be read")))
 			Expect(h.runner.find("noreply.github.com push")).To(BeEmpty())
+			Expect(h.securityEvents()).To(ConsistOf(And(
+				HaveKeyWithValue("event", "output_rejected"),
+				HaveKeyWithValue("outcome", "unreadable_output"),
+			)))
 		})
 
 		It("answers the review's findings on the pull request", func() {
@@ -347,6 +361,7 @@ var _ = Describe("Run", func() {
 			Expect(h.logs.String()).To(And(
 				ContainSubstring("retro failed"), ContainSubstring("step cap")))
 			Expect(h.retroComments()).To(BeEmpty())
+			Expect(h.securityEvents()).To(BeEmpty(), "a dropped retro was reported as a failed run")
 		})
 
 		It("drops a retro over its own deadline and leaves the run's outcome alone", func() {
@@ -384,7 +399,7 @@ var _ = Describe("Run", func() {
 		})
 
 		It("fails closed when the proxy cannot bind", func() {
-			h.deps.Proxy = func(string, string, string) (Forwarder, error) {
+			h.deps.Proxy = func(string, string, string, *security.Tally) (Forwarder, error) {
 				return nil, errors.New("bind openrouter proxy: address already in use")
 			}
 
@@ -498,7 +513,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-reviewer"))
-			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			Expect(baseURL(oc[0])).To(MatchRegexp(modelURLPattern()), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
 
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))
@@ -938,6 +953,26 @@ var _ = Describe("Run", func() {
 			h.installed[workflow.Researcher] = []string{"o/r"}
 			h.writeToken(workflow.Researcher, "repo-token\n")
 			h.researchTicket()
+		})
+
+		It("works from the tokens start left, for the factory user cannot mint", func() {
+			h.denyMinting()
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
+
+			Expect(run(workflow.Researcher)).To(BeZero())
+			Expect(h.runner.find("github-app-token")).To(BeEmpty())
+		})
+
+		It("reads the ticket's comments though the Researcher's App cannot read pull requests", func() {
+			// The Researcher has no Pull requests permission: GitHub answers its pull request reads with 403.
+			h.gh.Status("GET /repos/o/r/pulls", http.StatusForbidden)
+			h.roleWrites(workflow.Researcher, 5, researcherRun)
+			h.roleWritesRetro(workflow.Researcher, validRetro)
+
+			Expect(run(workflow.Researcher)).To(BeZero())
+			Expect(h.gh.Bodies("POST", "/repos/o/r/issues/5/comments")).To(ContainElement(
+				ContainSubstring(workflow.ResearchMarker("research/emulate"))))
 		})
 
 		It("commits the findings, pushes research/<name>, posts the resolution and appends the decision", func() {

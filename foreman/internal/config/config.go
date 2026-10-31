@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -46,6 +47,11 @@ type Settings struct {
 	// FactoryRepo is the Ansible role config's factory repository, where a public repository's ready
 	// skill or factory group is filed. The edge copies it here so a run can file a promoted issue.
 	FactoryRepo string `mapstructure:"-"`
+	// TelemetryURL is the telemetry backend's trace API (Tempo's HTTP endpoint). `status` reads a
+	// run's usage from the run's root span there when it is set, because a worker's local record is
+	// not visible from the server. The Ansible-written config sets it on the server; a flag or this
+	// setting overrides it. Empty reads only the local record.
+	TelemetryURL string `mapstructure:"telemetry-url"`
 }
 
 // SettingsViper returns the settings source: the host layout as defaults, overridden by FACTORY_*
@@ -92,6 +98,12 @@ func SettingsFrom(v *viper.Viper) (Settings, error) {
 // the foreman package's tokenPath).
 func (s Settings) TokenPath(role workflow.Role, runID string) string {
 	return filepath.Join(s.TokenDir, "gh-token-"+string(role)+"-"+runID)
+}
+
+// ReadOnlyTokenPath is the read-only token file of one agent role's run, beside TokenPath's. The factory
+// user cannot read the Apps' keys, so `start` leaves it both tokens for the run.
+func (s Settings) ReadOnlyTokenPath(role workflow.Role, runID string) string {
+	return filepath.Join(s.TokenDir, "gh-token-ro-"+string(role)+"-"+runID)
 }
 
 // Budget is a run's step cap and wall-clock deadline: one agent role's run, or a retro.
@@ -155,6 +167,10 @@ type Config struct {
 	// FactoryRepo is the repository a public repository's skill or factory lesson is promoted to.
 	// Empty means no repository is configured, so such a promotion fails closed.
 	FactoryRepo string `json:"factory_repo" mapstructure:"factory_repo"`
+	// TelemetryURL is the host's telemetry backend (Tempo's HTTP API) where `status` reads a run's
+	// root span. Ansible writes it on the dagu server only: a worker's local record describes the runs
+	// it executed, while the server needs the backend to see them. Empty reads only the local record.
+	TelemetryURL string `json:"telemetry_url" mapstructure:"telemetry_url"`
 }
 
 // Unhosted reports whether no worker host takes the agent role. Its issues stay queued.
@@ -238,7 +254,11 @@ func validate(path string, c Config) error {
 		return err
 	}
 
-	return validateFactoryRepo(path, c.FactoryRepo)
+	if err := validateFactoryRepo(path, c.FactoryRepo); err != nil {
+		return err
+	}
+
+	return validateTelemetryURL(path, c.TelemetryURL)
 }
 
 // validateRoleCapacity rejects a capacity for an agent role the workflow does not know, and a
@@ -277,6 +297,21 @@ func validateUnhosted(path string, roles []workflow.Role) error {
 		if _, err := workflow.ParseRole(string(r)); err != nil {
 			return fmt.Errorf("config %s: unhosted roles: %w", path, err)
 		}
+	}
+
+	return nil
+}
+
+// validateTelemetryURL checks the configured telemetry backend is an HTTP endpoint. Empty is
+// allowed: a host without a backend reads only its local records.
+func validateTelemetryURL(path, backend string) error {
+	if backend == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(backend)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("config %s: telemetry URL %q is not an http(s) endpoint", path, backend)
 	}
 
 	return nil

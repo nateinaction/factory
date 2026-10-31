@@ -1,0 +1,31 @@
+[Unit]
+Description=OpenTelemetry Collector (foreman telemetry, loopback only)
+Documentation=https://opentelemetry.io/docs/collector/
+After=network-online.target
+Wants=network-online.target
+# Back off instead of looping forever on a persistent crash. Both keys belong in [Unit].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User={{ factory_collector_user }}
+Group={{ factory_collector_user }}
+ExecStart=/nix/var/nix/profiles/default/bin/otelcol-contrib --config=/etc/otelcol/config.yaml
+Restart=on-failure
+RestartSec=5
+
+StateDirectory=otelcol
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ factory_collector_state_dir }}
+# dagu writes each run's step logs 0600. The filelog receiver reads foreman's diagnostics from a run's
+# standard error, and this one capability lifts the file mode for reading only: the collector stays
+# unprivileged and can write nothing outside its state directory.
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

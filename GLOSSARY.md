@@ -60,6 +60,20 @@ _Avoid_: orchestrator, coordinator, workflow engine
 A host that runs agent role runs for the factory; it takes the agent roles it lists, or all of them.
 _Avoid_: runner, node, slot
 
+**Security event**:
+One structured log record for something the factory refused or detected, carrying a stable event name,
+an outcome and the host concerned, and never a token, a key or a request header. The egress proxy and
+the key proxy emit one for every request they refuse, and a run emits one for a forged marker, a
+rejected output, a refused dashboard command and its step cap; docs are in `foreman/docs/sandbox.md`.
+_Avoid_: security log, alert, audit line
+
+**Metric label**:
+A dimension a metric aggregates by: the agent role, repository, state, outcome, event or model. An
+issue number is a label only on the security-event and reaped-run metrics, the two low-volume signals
+whose alerts must name the issue a human needs to look at; every other metric keeps it out. A trace
+id is not a label on any metric. Issue numbers, SHAs and domains are otherwise span attributes.
+_Avoid_: metric tag, metric dimension
+
 **Ansible role**:
 A unit of host provisioning under `roles/`.
 _Avoid_: role (bare)

@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 )
 
 // publicAddress is a name-independent address no refusal rule covers: everything a spec stands up
@@ -81,7 +82,7 @@ func policy(allowed ...string) sandbox.Network {
 func start(n sandbox.Network, apiURL string) *Proxy {
 	GinkgoHelper()
 
-	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", nil)
+	p, err := StartWithLogger(GinkgoT().Context(), n, apiURL, testToken, "127.0.0.1:0", nil, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	return p
@@ -143,11 +144,19 @@ func (r staticResolver) LookupNetIP(context.Context, string, string) ([]netip.Ad
 	return r, nil
 }
 
+// resolverFunc adapts a function to a resolver, so a spec can change one name's answer.
+type resolverFunc func(context.Context, string, string) ([]netip.Addr, error)
+
+// LookupNetIP answers with whatever f returns.
+func (f resolverFunc) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return f(ctx, network, host)
+}
+
 // startWith binds a proxy on a free loopback port that reaches destinations through g.
 func startWith(n sandbox.Network, g gateway) *Proxy {
 	GinkgoHelper()
 
-	p, err := startProxy(GinkgoT().Context(), n, "", testToken, "127.0.0.1:0", nil, g)
+	p, err := startProxy(GinkgoT().Context(), n, "", testToken, "127.0.0.1:0", nil, g, nil)
 	Expect(err).NotTo(HaveOccurred())
 	DeferCleanup(p.Close)
 
@@ -257,7 +266,7 @@ var _ = Describe("Proxy", func() {
 		Expect(p.Domains()).To(ContainElement("127.0.0.1"))
 	})
 
-	It("refuses a denied CONNECT and still records the domain", func() {
+	It("refuses a denied CONNECT and lists the domain as refused", func() {
 		p := start(policy("api.example.com"), "")
 		DeferCleanup(p.Close)
 
@@ -267,7 +276,7 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-		Expect(p.Domains()).To(ContainElement("blocked.example"))
+		Expect(p.Refused()).To(ContainElement("blocked.example"))
 	})
 
 	It("forwards an absolute-form request through the same policy", func() {
@@ -455,7 +464,7 @@ var _ = Describe("Proxy", func() {
 	})
 
 	It("refuses to start without a run token", func() {
-		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "", "127.0.0.1:0", nil)
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", "", "127.0.0.1:0", nil, nil)
 		Expect(err).To(MatchError(ContainSubstring("token")))
 	})
 
@@ -504,7 +513,7 @@ var _ = Describe("Proxy", func() {
 
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		Expect(dials).To(BeEmpty(), "the proxy dialed a destination the allowlist refused")
-		Expect(p.Domains()).To(ContainElement("unlisted.example"))
+		Expect(p.Refused()).To(ContainElement("unlisted.example"))
 	})
 
 	It("refuses an origin-form path outside the API even with an API configured", func() {
@@ -564,7 +573,7 @@ var _ = Describe("Proxy", func() {
 
 		logger := slog.New(slog.NewTextHandler(&logged, nil))
 
-		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0", logger)
+		p, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0", logger, nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(p.Close)
@@ -581,11 +590,11 @@ var _ = Describe("Proxy", func() {
 		defer func() { _ = conn.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusTooManyRequests))
-		Expect(logged.String()).To(ContainSubstring("tunnel limit reached"))
+		Expect(logged.String()).To(ContainSubstring("refused_tunnel_limit"))
 	})
 
 	It("refuses to bind anywhere but loopback", func() {
-		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "0.0.0.0:0", nil)
+		_, err := StartWithLogger(GinkgoT().Context(), policy(), "", testToken, "0.0.0.0:0", nil, nil)
 		Expect(err).To(MatchError(ContainSubstring("loopback")))
 	})
 
@@ -600,7 +609,7 @@ var _ = Describe("Proxy", func() {
 
 		p, err := StartWithLogger(
 			GinkgoT().Context(), policy(), "", testToken, "127.0.0.1:0",
-			slog.New(slog.NewTextHandler(&logged, nil)),
+			slog.New(slog.NewTextHandler(&logged, nil)), nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -715,8 +724,39 @@ var _ = Describe("Proxy", func() {
 				_ = conn.Close()
 
 				Expect(resp.StatusCode).To(Equal(http.StatusForbidden), host)
-				Expect(p.Domains()).To(ContainElement(host))
+				Expect(p.Refused()).To(ContainElement(host))
 			}
+		})
+
+		It("refuses the telemetry collector's OTLP address and never connects to it", func() {
+			// The collector listens on loopback (OTLP gRPC 4317, HTTP 4318). A sandboxed run reaches
+			// the network only through this proxy, so the proxy refusing loopback keeps the run off it.
+			ln, err := (&net.ListenConfig{}).Listen(GinkgoT().Context(), "tcp", "127.0.0.1:0")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(ln.Close)
+
+			accepted := make(chan struct{}, 1)
+
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return // the listener closed at cleanup
+				}
+
+				accepted <- struct{}{}
+
+				_ = conn.Close() // test cleanup: a close error changes no assertion
+			}()
+
+			p := start(policy(), "")
+			DeferCleanup(p.Close)
+
+			resp, conn := connect(p.Address(), ln.Addr().String())
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Consistently(accepted, 200*time.Millisecond).ShouldNot(Receive())
 		})
 
 		It("refuses a plain HTTP request to every range that is not publicly routable", func() {
@@ -745,13 +785,97 @@ var _ = Describe("Proxy", func() {
 			_ = conn.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-			Expect(p.Domains()).To(ContainElement("internal.example"))
+			Expect(p.Refused()).To(ContainElement("internal.example"))
 
 			resp, conn = forward(p.Address(), "http://internal.example/thing")
 			// test cleanup: a close error changes no assertion
 			_ = conn.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+		})
+
+		It("keeps a host allowed when a later request to it is refused", func() {
+			echo, stop := echoServer()
+			DeferCleanup(stop)
+
+			_, port, err := net.SplitHostPort(echo)
+			Expect(err).NotTo(HaveOccurred())
+
+			lookups := 0
+
+			p := startWith(policy(), gateway{
+				resolve: resolverFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+					lookups++
+
+					if lookups == 1 {
+						return []netip.Addr{netip.MustParseAddr(publicAddress)}, nil
+					}
+
+					return []netip.Addr{netip.MustParseAddr("10.1.2.3")}, nil
+				}),
+				dial: loopbackGateway().dial,
+			})
+
+			target := net.JoinHostPort("flip.example", port)
+
+			resp, conn := connect(p.Address(), target)
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(p.Domains()).To(ContainElement("flip.example"))
+
+			// The same host now answers with an address the proxy refuses. The refusal must not erase
+			// the earlier allowed record.
+			resp, conn = connect(p.Address(), target)
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+
+			resp, conn = forward(p.Address(), "http://flip.example/thing")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(p.Domains()).To(ContainElement("flip.example"))
+			Expect(p.Refused()).To(ContainElement("flip.example"))
+		})
+
+		It("records a host only once a connection to it is made", func() {
+			p := startWith(policy(), gateway{
+				resolve: staticResolver{netip.MustParseAddr(publicAddress)},
+				dial: func(context.Context, string, string) (net.Conn, error) {
+					return nil, errors.New("test dial: connection refused")
+				},
+			})
+
+			resp, conn := connect(p.Address(), "unreachable.example:443")
+			// test cleanup: a close error changes no assertion
+			_ = conn.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+			Expect(p.Domains()).NotTo(ContainElement("unreachable.example"),
+				"a host the run never reached is recorded as allowed")
+			Expect(p.Refused()).To(BeEmpty(), "a dial failure is not a refusal")
+		})
+
+		It("bounds the refused hosts it remembers", func() {
+			p := start(policy("api.example.com"), "")
+			DeferCleanup(p.Close)
+
+			for i := range MaxRefusedHosts + 1 {
+				resp, conn := connect(p.Address(), fmt.Sprintf("refused-%d.example:443", i))
+				// test cleanup: a close error changes no assertion
+				_ = conn.Close()
+
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			}
+
+			Expect(p.Refused()).To(HaveLen(MaxRefusedHosts), "the refused host map grew without a limit")
+			Expect(p.Refusals()).To(Equal(map[security.Outcome]int{
+				security.RefusedByPolicy: MaxRefusedHosts + 1,
+			}), "the cap dropped a refusal from the tally")
 		})
 
 		It("dials the address it checked instead of resolving the name again", func() {

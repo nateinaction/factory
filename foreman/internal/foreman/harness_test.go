@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -101,7 +104,17 @@ func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
 
 // Handle records r and its attributes.
 func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	return c.handle(nil, r)
+}
+
+// handle records r with base attrs first, so a record's own attr wins over a derived logger's.
+func (c *logCapture) handle(base []slog.Attr, r slog.Record) error {
 	e := logEntry{level: r.Level, msg: r.Message, attrs: map[string]string{}}
+
+	for _, a := range base {
+		e.attrs[a.Key] = a.Value.String()
+	}
+
 	r.Attrs(func(a slog.Attr) bool {
 		e.attrs[a.Key] = a.Value.String()
 
@@ -116,20 +129,53 @@ func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs returns the same handler: the harness never logs through a derived logger.
-func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+// attrHandler is a derived logger's handler: every record it handles carries attrs too.
+type attrHandler struct {
+	capture *logCapture
+	attrs   []slog.Attr
+}
+
+// Enabled accepts every level, as the capture does.
+func (h *attrHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.capture.Enabled(ctx, l)
+}
+
+// Handle records r with the derived logger's attrs.
+func (h *attrHandler) Handle(_ context.Context, r slog.Record) error {
+	return h.capture.handle(h.attrs, r)
+}
+
+// WithAttrs derives one more level, keeping the attrs already added.
+func (h *attrHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &attrHandler{capture: h.capture, attrs: append(slices.Clone(h.attrs), attrs...)}
+}
+
+// WithGroup ignores groups: the harness never opens one.
+func (h *attrHandler) WithGroup(string) slog.Handler { return h }
+
+// WithAttrs returns a handler that adds attrs to every record the capture keeps.
+func (c *logCapture) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &attrHandler{capture: c, attrs: attrs}
+}
 
 // WithGroup returns the same handler: the harness never logs through a derived logger.
 func (c *logCapture) WithGroup(string) slog.Handler { return c }
 
 // String renders the captured records as "LEVEL message key=value ..." lines, for matching.
-func (c *logCapture) String() string {
+func (c *logCapture) String() string { return c.StringFrom(slog.LevelDebug) }
+
+// StringFrom renders only the records at level or above: what a logger set to level would write.
+func (c *logCapture) StringFrom(level slog.Level) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var b strings.Builder
 
 	for _, e := range c.entries {
+		if e.level < level {
+			continue
+		}
+
 		fmt.Fprintf(&b, "%s %s", e.level, e.msg)
 
 		for _, key := range slices.Sorted(maps.Keys(e.attrs)) {
@@ -240,6 +286,10 @@ func newHarness() *harness {
 		installed: map[workflow.Role][]string{workflow.Implementer: {"o/r"}, workflow.Reviewer: {"o/r"}},
 	}
 	h.runner.fn = h.defaultRun
+	// The host's rendered opencode config, which a run copies into its own home.
+	hostConfig := filepath.Join(dir, "home", ".config", "opencode")
+	Expect(os.MkdirAll(hostConfig, 0o700)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(hostConfig, "opencode.json"), []byte("{}"), 0o600)).To(Succeed())
 	// dagu answers an empty active-run history, so a poll sees every agent role idle.
 	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
 		if len(c.Argv) > 1 && c.Argv[1] == "history" {
@@ -417,8 +467,12 @@ func (h *harness) defaultRun(c proc.Cmd) (string, error) {
 	return "", nil
 }
 
-// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH.
-const devEnvJSON = `{"variables":{"PATH":"/nix/store/toolchain/bin"}}`
+// devEnvJSON is what `nix print-dev-env --json` reports in tests: one store path on PATH, among variables
+// of the other types nix reports (a plain variable and an array, whose value is not a string).
+const devEnvJSON = `{"variables":{` +
+	`"PATH":{"type":"exported","value":"/nix/store/toolchain/bin"},` +
+	`"BASH":{"type":"var","value":"/nix/store/bash/bin/bash"},` +
+	`"buildInputs":{"type":"array","value":["/nix/store/a","/nix/store/b"]}}}`
 
 // tokenHelper answers github-app-token: an App lists and mints only where it is installed.
 func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
@@ -436,6 +490,25 @@ func (h *harness) tokenHelper(c proc.Cmd) (string, error) {
 	}
 
 	return "minted-token-" + appOf(c) + "\n", nil
+}
+
+// securityEvents is every security event the harness captured, as its attributes.
+func (h *harness) securityEvents() []map[string]string {
+	GinkgoHelper()
+
+	h.logs.mu.Lock()
+	entries := slices.Clone(h.logs.entries)
+	h.logs.mu.Unlock()
+
+	var events []map[string]string
+
+	for _, e := range entries {
+		if e.msg == "security event" {
+			events = append(events, e.attrs)
+		}
+	}
+
+	return events
 }
 
 // expectLeakFree fails the spec when a secret appears in any argv.
@@ -526,6 +599,26 @@ const validConfig = `{"roles":["implementer","reviewer"],"agents":{` +
 // writeToken leaves a token for the factory half of the agent role.
 func (h *harness) writeToken(role workflow.Role, token string) {
 	Expect(os.WriteFile(h.deps.Settings.TokenPath(role, h.deps.RunID), []byte(token), 0o640)).To(Succeed())
+	Expect(os.WriteFile(h.deps.Settings.ReadOnlyTokenPath(role, h.deps.RunID),
+		[]byte("read-only-token-"+string(role)), 0o640)).To(Succeed())
+}
+
+// writeFactoryToken leaves the Curator's token for the factory repository, as start does.
+func (h *harness) writeFactoryToken(role workflow.Role) {
+	Expect(os.WriteFile(h.deps.Settings.TokenPath(role, h.deps.RunID)+".factory",
+		[]byte("minted-token-"+string(role)), 0o640)).To(Succeed())
+}
+
+// denyMinting makes every call to the token helper fail, as it does for the factory user: only the
+// dagu user can read the Apps' keys, so the factory half works from the tokens start leaves it.
+func (h *harness) denyMinting() {
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if strings.Contains(joined(c), "github-app-token") {
+			return "", &proc.ExitError{Program: "github-app-token", Code: 13}
+		}
+
+		return base(c)
+	})
 }
 
 // queue creates the issues a poll of o/r should find: each label maps to the issues carrying it.
@@ -886,6 +979,25 @@ func baseURL(c proc.Cmd) string {
 	return cfg.Provider.Openrouter.Options.BaseURL
 }
 
+// modelURL is the base URL the model is given for an egress proxy at hostURL: the proxy's own
+// address, or srt's bridge on Linux.
+func modelURL(hostURL string) string {
+	u, err := modelBaseURL(runtime.GOOS, hostURL)
+	Expect(err).NotTo(HaveOccurred())
+
+	return u
+}
+
+// modelURLPattern matches the base URL the model is given for a real egress proxy, whose port the
+// spec cannot know: the proxy's loopback address, or srt's bridge on Linux.
+func modelURLPattern() string {
+	if runtime.GOOS == "linux" {
+		return `^` + regexp.QuoteMeta("http://"+srtProxyBridge) + `/api/v1$`
+	}
+
+	return `^http://127\.0\.0\.1:\d+/api/v1$`
+}
+
 // fakeProxy is a stand-in for the run's OpenRouter proxy.
 type fakeProxy struct {
 	url    string
@@ -912,6 +1024,7 @@ type fakeEgress struct {
 	url     string
 	address string
 	domains []string
+	refused []string
 	policy  sandbox.Network
 	closed  bool
 }
@@ -924,6 +1037,9 @@ func (p *fakeEgress) Address() string { return p.address }
 
 // Domains is every domain the run contacted.
 func (p *fakeEgress) Domains() []string { return p.domains }
+
+// Refused is every domain the run was refused.
+func (p *fakeEgress) Refused() []string { return p.refused }
 
 // Close records that the run stopped the proxy.
 func (p *fakeEgress) Close() error {
@@ -1001,6 +1117,24 @@ func (h *harness) answerOpencode(outs ...string) {
 	})
 }
 
+// answerOpencodeStreams makes every opencode process print stdout on its standard output and, when
+// given, write stderr to the writer foreman handed it.
+func (h *harness) answerOpencodeStreams(stdout, stderr string) {
+	h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+		if !isModel(c) {
+			return base(c)
+		}
+
+		if c.Stderr != nil {
+			if _, err := io.WriteString(c.Stderr, stderr); err != nil {
+				return "", fmt.Errorf("write stderr: %w", err)
+			}
+		}
+
+		return stdout, nil
+	})
+}
+
 // runImpl runs the Implementer on issue 5 against the emulator, with a model that writes a valid
 // first-run output file.
 func (h *harness) runImpl(agent config.AgentConfig) (int, error) {
@@ -1022,6 +1156,20 @@ func (h *harness) usageLines() []map[string]any {
 	}
 
 	return out
+}
+
+// usageRecord reads the out-of-band usage record the run left for status.
+func (h *harness) usageRecord(runID string) map[string]any {
+	path, err := usageRecordPath(h.deps.Settings.WorkRoot, runID)
+	Expect(err).NotTo(HaveOccurred())
+
+	raw, err := os.ReadFile(path)
+	Expect(err).NotTo(HaveOccurred())
+
+	var m map[string]any
+	Expect(json.Unmarshal(raw, &m)).To(Succeed())
+
+	return m
 }
 
 // testRepo parses a repository name the way the command edge would.

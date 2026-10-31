@@ -1,0 +1,25 @@
+[Unit]
+Description=Loki (foreman telemetry diagnostics, loopback only)
+After=network-online.target
+Wants=network-online.target
+# Back off instead of looping forever on a persistent crash. Both keys belong in [Unit].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=loki
+ExecStart=/nix/var/nix/profiles/default/bin/loki -config.file=/etc/loki/loki.yaml
+Environment=GOMEMLIMIT={{ (factory_telemetry_memory_max_mib.loki * 0.8) | int }}MiB
+MemoryMax={{ factory_telemetry_memory_max_mib.loki }}M
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

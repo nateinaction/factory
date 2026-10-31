@@ -19,6 +19,7 @@ An App never uses another App's directory: a missing credential, an App that
 is not installed on the repository, or any other failure exits non-zero and
 prints nothing on stdout.
 """
+
 import argparse
 import base64
 import json
@@ -68,7 +69,9 @@ class OnceSwitch(argparse.Action):
     """Set a switch, refusing a repeat for the same reason as Once."""
 
     def __init__(self, option_strings, dest, **kwargs):
-        super().__init__(option_strings, dest, nargs=0, const=True, default=False, **kwargs)
+        super().__init__(
+            option_strings, dest, nargs=0, const=True, default=False, **kwargs
+        )
 
     def __call__(self, parser, namespace, values, option_string=None):
         if getattr(namespace, self.dest):
@@ -79,26 +82,50 @@ class OnceSwitch(argparse.Action):
 def build_parser():
     """The command line; argparse owns help, missing flags and flags a command does not take."""
     p = argparse.ArgumentParser(
-        prog="github-app-token", description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False,
+        prog="github-app-token",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     cmds = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
     token = cmds.add_parser(
-        "token", help="print a token for one repository", allow_abbrev=False,
+        "token",
+        help="print a token for one repository",
+        allow_abbrev=False,
         description="Print a fresh, uncached token of an App, limited to one repository.",
     )
-    token.add_argument("--app", action=Once, required=True, metavar="A",
-                       help="the agent role whose App mints the token")
-    token.add_argument("--repo", action=Once, required=True, metavar="OWNER/NAME",
-                       help="the only repository the token may touch")
-    token.add_argument("--read-only", action=OnceSwitch,
-                       help="restrict the token to the reads the agent role's App holds")
+    token.add_argument(
+        "--app",
+        action=Once,
+        required=True,
+        metavar="A",
+        help="the agent role whose App mints the token",
+    )
+    token.add_argument(
+        "--repo",
+        action=Once,
+        required=True,
+        metavar="OWNER/NAME",
+        help="the only repository the token may touch",
+    )
+    token.add_argument(
+        "--read-only",
+        action=OnceSwitch,
+        help="restrict the token to the reads the agent role's App holds",
+    )
     repositories = cmds.add_parser(
-        "repositories", help="list where the App is installed", allow_abbrev=False,
+        "repositories",
+        help="list where the App is installed",
+        allow_abbrev=False,
         description="Print OWNER/NAME for every repository an App is installed on.",
     )
-    repositories.add_argument("--app", action=Once, required=True, metavar="A",
-                              help="the agent role whose App is listed")
+    repositories.add_argument(
+        "--app",
+        action=Once,
+        required=True,
+        metavar="A",
+        help="the agent role whose App is listed",
+    )
     return p
 
 
@@ -122,18 +149,26 @@ def jwt(app):
     signing_input = f"{head}.{body}".encode()
     sig = subprocess.run(
         ["openssl", "dgst", "-sha256", "-sign", os.path.join(d, "private-key.pem")],
-        input=signing_input, capture_output=True, check=True, timeout=10,
+        input=signing_input,
+        capture_output=True,
+        check=True,
+        timeout=10,
     ).stdout
     return f"{head}.{body}.{b64(sig)}"
 
 
 def call(method, path, bearer, body=None):
     req = urllib.request.Request(
-        API + path, method=method,
+        API + path,
+        method=method,
         data=None if body is None else json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {bearer}", "Accept": "application/vnd.github+json",
-                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "github-app-token",
-                 **({} if body is None else {"Content-Type": "application/json"})},
+        headers={
+            "Authorization": f"Bearer {bearer}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "github-app-token",
+            **({} if body is None else {"Content-Type": "application/json"}),
+        },
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
@@ -143,7 +178,12 @@ def installation_token(app, installation_id, repo_name=None, read_only=False):
     body = {} if repo_name is None else {"repositories": [repo_name]}
     if read_only:
         body["permissions"] = read_only_permissions(app)
-    r = call("POST", f"/app/installations/{installation_id}/access_tokens", jwt(app), body or None)
+    r = call(
+        "POST",
+        f"/app/installations/{installation_id}/access_tokens",
+        jwt(app),
+        body or None,
+    )
     return r["token"]
 
 
@@ -173,7 +213,9 @@ def installed_repositories(app):
     """Every repository the App is installed on, across its installations."""
     installations = listing("/app/installations", jwt(app))
     if len(installations) > MAX_INSTALLATIONS:
-        raise RuntimeError(f"{len(installations)} installations are over the {MAX_INSTALLATIONS} listed")
+        raise RuntimeError(
+            f"{len(installations)} installations are over the {MAX_INSTALLATIONS} listed"
+        )
     names = []
     for inst in installations:
         names.extend(installation_repositories(installation_token(app, inst["id"])))
@@ -181,7 +223,10 @@ def installed_repositories(app):
 
 
 def installation_repositories(token):
-    return [x["full_name"] for x in listing("/installation/repositories", token, "repositories")]
+    return [
+        x["full_name"]
+        for x in listing("/installation/repositories", token, "repositories")
+    ]
 
 
 def main(argv):
@@ -195,7 +240,11 @@ def main(argv):
 
 try:
     main(sys.argv[1:])
-except urllib.error.HTTPError as e:  # fail closed; GitHub's error body says why and holds no secret
-    sys.exit(f"github-app-token: HTTPError {e.code}: {e.read().decode(errors='replace')[:500]}")
-except Exception as e:  # fail closed: no credential rather than a wrong one
+except (
+    urllib.error.HTTPError
+) as e:  # fail closed; GitHub's error body says why and holds no secret
+    sys.exit(
+        f"github-app-token: HTTPError {e.code}: {e.read().decode(errors='replace')[:500]}"
+    )
+except Exception as e:  # fail closed: no credential rather than a wrong one  # noqa: BLE001
     sys.exit(f"github-app-token: {type(e).__name__}: {e}")

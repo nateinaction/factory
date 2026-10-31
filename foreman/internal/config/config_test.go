@@ -196,6 +196,26 @@ var _ = Describe("Load", func() {
 		Expect(load("../nope")).To(MatchError(ContainSubstring("factory repo")))
 	})
 
+	It("reads the server's telemetry URL, and rejects one that is not an HTTP endpoint", func() {
+		load := func(telemetryURL string) error {
+			raw, err := json.Marshal(map[string]any{
+				"roles": []workflow.Role{workflow.Implementer}, "agents": every(),
+				"dead_run_margin_minutes": 10, "review_round_limit": 3, "ci_pending_deadline_minutes": 60,
+				"telemetry_url": telemetryURL,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = config.Load(writeConfig(raw))
+
+			return err
+		}
+
+		Expect(load("http://127.0.0.1:3200")).To(Succeed())
+		Expect(load("")).To(Succeed(), "a worker has no backend, and reads only its local records")
+		Expect(load("not a URL")).To(MatchError(ContainSubstring("telemetry URL")))
+		Expect(load("ftp://127.0.0.1:3200")).To(MatchError(ContainSubstring("telemetry URL")))
+	})
+
 	It("reads the dead-run margin as a duration", func() {
 		raw, err := json.Marshal(map[string]any{
 			"roles": []workflow.Role{workflow.Implementer}, "agents": every(),

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Write the two host health values node_exporter cannot read on a Raspberry Pi: the SoC temperature
+# and the firmware's throttling bits. The output is Prometheus text for node_exporter's textfile
+# collector; the host's collector keeps only these families and the memory and filesystem ones, and
+# forwards them to the telemetry backend.
+#
+# The inputs are overridable so the Ansible spec can run this without a Pi. A failed read publishes
+# nothing, so the last good file keeps being served: readers see a stale value rather than a partial
+# one until a read succeeds.
+set -uo pipefail
+
+textfile="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile}"
+thermal="${THERMAL_ZONE:-/sys/class/thermal/thermal_zone0/temp}"
+vcgencmd="${VCGENCMD:-}"
+out="$textfile/factory_host.prom"
+
+if [ -z "$vcgencmd" ]; then
+  if command -v vcgencmd >/dev/null 2>&1; then
+    vcgencmd="$(command -v vcgencmd)"
+  else
+    vcgencmd=/usr/bin/vcgencmd
+  fi
+fi
+
+die() {
+  echo "factory-host-health: $*" >&2
+  exit 1
+}
+
+[ -r "$thermal" ] || die "cannot read $thermal"
+read -r millidegrees <"$thermal" || die "cannot read $thermal"
+case "$millidegrees" in
+  '' | *[!0-9]*) die "$thermal does not hold millidegrees Celsius: $millidegrees" ;;
+esac
+millidegrees=$((10#$millidegrees))
+
+[ -x "$vcgencmd" ] || die "$vcgencmd is not executable"
+raw="$("$vcgencmd" get_throttled 2>/dev/null)" || die "$vcgencmd get_throttled failed"
+case "$raw" in
+  throttled=0x*) mask=$((0x${raw#throttled=0x})) ;;
+  *) die "$vcgencmd get_throttled printed an unexpected value: $raw" ;;
+esac
+
+# Bit n is the state now; bit n+16 is that state since boot. The four firmware bits.
+bits="0:under_voltage 1:arm_frequency_capped 2:throttled 3:soft_temperature_limit"
+
+tmp="$(mktemp "$textfile/.factory_host.prom.XXXXXX")" || die "cannot create a file in $textfile"
+trap 'rm -f "$tmp"' EXIT
+
+{
+  printf 'factory_host_temperature_celsius %d.%03d\n' "$((millidegrees / 1000))" "$((millidegrees % 1000))"
+  for entry in $bits; do
+    bit="${entry%%:*}"
+    kind="${entry#*:}"
+    printf 'factory_host_throttled{kind="%s",state="now"} %d\n' "$kind" "$(((mask >> bit) & 1))"
+    printf 'factory_host_throttled{kind="%s",state="since_boot"} %d\n' "$kind" "$(((mask >> (bit + 16)) & 1))"
+  done
+} >"$tmp" || die "cannot write $tmp"
+
+# mktemp makes the file 0600; node_exporter runs as a DynamicUser and must read it.
+chmod 0644 "$tmp" || die "cannot make $tmp readable"
+# Same directory, so the rename is atomic: node_exporter reads either the old file or the new one.
+mv "$tmp" "$out" || die "cannot replace $out"
+trap - EXIT

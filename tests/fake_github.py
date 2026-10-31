@@ -10,6 +10,7 @@ installation listing is full on its last allowed page, App 4's one installation 
 a full repository listing on its last allowed page, and App 5 has more installations
 than the tool lists at all.
 """
+
 import base64
 import json
 import sys
@@ -43,7 +44,9 @@ INSTALLED = {
 
 def iss(auth):
     claims = auth.split(" ", 1)[1].split(".")[1]
-    return json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))["iss"]
+    return json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))[
+        "iss"
+    ]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -60,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query)
         size = int(query.get("per_page", [PAGE_SIZE])[0])
         start = (int(query.get("page", ["1"])[0]) - 1) * size
-        return items[start:start + size]
+        return items[start : start + size]
 
     def do_GET(self):
         auth = self.headers["Authorization"]
@@ -69,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
             app = iss(auth)
             return self.reply(200, [{"id": i} for i in self.page(list(INSTALLED[app]))])
         if path.startswith("/repos/") and path.endswith("/installation"):
-            repo = path[len("/repos/"):-len("/installation")]
+            repo = path[len("/repos/") : -len("/installation")]
             app = iss(auth)
             for inst, repos in INSTALLED[app].items():
                 if repo in repos:
@@ -85,16 +88,30 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or "null")
         parts = self.path.split("/")
-        if len(parts) == 5 and parts[1:3] == ["app", "installations"] and parts[4] == "access_tokens":
+        if (
+            len(parts) == 5
+            and parts[1:3] == ["app", "installations"]
+            and parts[4] == "access_tokens"
+        ):
             app = iss(self.headers["Authorization"])
-            scope = ",".join(body["repositories"]) if body and "repositories" in body else "all"
+            scope = (
+                ",".join(body["repositories"])
+                if body and "repositories" in body
+                else "all"
+            )
             suffix = ""
             permissions = (body or {}).get("permissions")
             if permissions is not None:
                 # A read-only token asks only for reads, and only for reads its App holds.
                 held = HELD_READS.get(app, set())
-                if not permissions or any(v != "read" for v in permissions.values()) or not set(permissions) <= held:
-                    return self.reply(422, {"message": "not a read-only token request this App holds"})
+                if (
+                    not permissions
+                    or any(v != "read" for v in permissions.values())
+                    or not set(permissions) <= held
+                ):
+                    return self.reply(
+                        422, {"message": "not a read-only token request this App holds"}
+                    )
                 suffix = "-ro-" + "+".join(sorted(permissions))
             return self.reply(201, {"token": f"tok-{app}-{parts[3]}-{scope}{suffix}"})
         self.reply(500, {"message": "unexpected " + self.path})

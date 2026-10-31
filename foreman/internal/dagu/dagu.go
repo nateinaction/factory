@@ -5,6 +5,7 @@ package dagu
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -113,7 +114,7 @@ func ParseHistory(out []byte) ([]Run, error) {
 
 // HistoryArgv is the command that lists recent runs, newest first.
 func HistoryArgv(binary string, limit int) []string {
-	return []string{binary, "history", "--format", "json", "--limit", fmt.Sprint(limit)}
+	return []string{binary, "history", "--format", "json", "--limit", strconv.Itoa(limit)}
 }
 
 // ActiveHistoryArgv is the command that lists only the runs dagu can still move: the ones that keep
@@ -121,7 +122,7 @@ func HistoryArgv(binary string, limit int) []string {
 func ActiveHistoryArgv(binary string, limit int) []string {
 	return []string{
 		binary, "history", "--status", strings.Join(ActiveStatuses(), ","),
-		"--format", "json", "--limit", fmt.Sprint(limit),
+		"--format", "json", "--limit", strconv.Itoa(limit),
 	}
 }
 

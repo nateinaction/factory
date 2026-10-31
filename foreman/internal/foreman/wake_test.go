@@ -7,10 +7,15 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -204,6 +209,26 @@ var _ = Describe("waking on a comment", func() {
 
 		code, pollErr := Poll(context.Background(), h.deps,
 			pollConfig(workflow.Implementer, workflow.Reviewer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		Expect(h.labels(1)).To(ConsistOf(workflow.LabelDone))
+		Expect(h.runner.find("enqueue")).To(BeEmpty())
+	})
+
+	It("leaves a done issue where it is when no App that can read pull requests is installed", func() {
+		h.queue(map[string][]map[string]any{workflow.LabelDone: {{"number": 1}}})
+		transition(workflow.Transition{
+			Role: workflow.Reviewer, RunID: "old", From: workflow.Reviewing, To: workflow.Done,
+		})
+
+		pr, err := emulator.CreatePR(context.Background(), "o/r", workflow.BranchName(1), "Add x", "Do x")
+		Expect(err).NotTo(HaveOccurred())
+		h.comment(pr.Number, "o", "please also handle the empty case")
+
+		h.installed = map[workflow.Role][]string{workflow.Planner: {"o/r"}}
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Planner))
 		Expect(pollErr).NotTo(HaveOccurred())
 		Expect(code).To(BeZero())
 
@@ -422,6 +447,62 @@ var _ = Describe("dead runs", func() {
 		Expect(h.labels(1)).To(ConsistOf(workflow.LabelImplementing))
 		Expect(h.markerComments(1)).To(BeEmpty())
 		Expect(h.logs.String()).To(ContainSubstring("cannot mint the dead run's own token"))
+	})
+
+	It("records one reaped run by agent role and repository", func() {
+		reader := sdkmetric.NewManualReader()
+		h.deps.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+		h.ensureIssue(1)
+		addLabel(1)
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+		Expect(h.labels(1)).To(ContainElement(workflow.LabelFailed))
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+
+		points := metricPoints(rm, telemetry.MetricRunsReaped)
+		Expect(points).To(HaveLen(1))
+
+		point, ok := pointWith(points,
+			attribute.String(telemetry.AttrAgentRole, string(workflow.Implementer)),
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, 1),
+		)
+		Expect(ok).To(BeTrue(), "the point carries the reaped run's agent role, repository and issue")
+		Expect(point.Value).To(Equal(int64(1)))
+	})
+
+	It("records no reaped run when the dead run cannot be marked failed", func() {
+		reader := sdkmetric.NewManualReader()
+		h.deps.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+		h.ensureIssue(1)
+		addLabel(1)
+		h.gh.Status("POST /repos/o/r/issues/1/labels", http.StatusInternalServerError)
+
+		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		h.gh.JSON("GET /repos/o/r/issues/1/timeline", []map[string]any{{
+			"event": "labeled", "label": map[string]string{"name": workflow.LabelImplementing},
+			"created_at": old,
+		}})
+
+		code, pollErr := Poll(context.Background(), h.deps, pollConfig(workflow.Implementer))
+		Expect(pollErr).NotTo(HaveOccurred())
+		Expect(code).To(BeZero())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(context.Background(), &rm)).To(Succeed())
+		Expect(metricPoints(rm, telemetry.MetricRunsReaped)).To(BeEmpty())
 	})
 
 	It("does not fail a run whose slow retro outlasts the deadline plus margin", func() {

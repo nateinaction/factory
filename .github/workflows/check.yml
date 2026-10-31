@@ -3,20 +3,33 @@ on:
   push:
     branches: [main]
   pull_request:
+# Read the repository and nothing else; no job here writes to it.
+permissions:
+  contents: read
 jobs:
   lint-and-vulncheck:
     name: pre-commit hooks and govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # gitleaks reads the whole history.
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
       # The sandbox acceptance specs run the real srt (bubblewrap). Ubuntu 24.04 runners restrict
       # unprivileged user namespaces, which makes bwrap fail setting up loopback.
       - name: allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The same hooks the git hook runs, from .pre-commit-config.yaml.
       - name: pre-commit
+        # no-commit-to-branch would fail every run on main.
+        env:
+          SKIP: no-commit-to-branch
         run: nix develop --command pre-commit run --all-files
+      # The history, where the pre-commit hook scans only what a commit stages.
+      - name: gitleaks
+        run: nix develop --command gitleaks git --redact --no-banner .
       # Needs the vulnerability database, so it runs in CI rather than the hook.
       - name: govulncheck
         working-directory: foreman

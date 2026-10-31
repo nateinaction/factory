@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus node exporter (host health, loopback only)
+Documentation=https://github.com/prometheus/node_exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/nix/var/nix/profiles/default/bin/node_exporter --web.listen-address={{ factory_host_health_host }}:{{ factory_host_health_port }} --collector.disable-defaults --collector.meminfo --collector.filesystem --collector.textfile --collector.textfile.directory={{ factory_host_health_textfile_dir }}
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

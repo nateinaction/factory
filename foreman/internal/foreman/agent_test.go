@@ -3,6 +3,9 @@ package foreman
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +14,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/config"
+	"github.com/nateinaction/factory/foreman/internal/opencode"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/prompt"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -35,6 +41,24 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(joined(c)).NotTo(ContainSubstring("--model"))
 			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DISABLE_PROJECT_CONFIG", "1"))
 			Expect(c.Env).To(HaveKeyWithValue("OPENCODE_DISABLE_EXTERNAL_SKILLS", "1"))
+		}
+	})
+
+	It("hands the model no OTEL_* variable, and replaces the inherited environment", func() {
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid:4318")
+		GinkgoT().Setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=secret")
+
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+		calls := h.opencodeCalls()
+		Expect(calls).NotTo(BeEmpty())
+
+		for _, c := range calls {
+			Expect(c.ReplaceEnv).To(BeTrue(), "the model must not inherit foreman's environment")
+
+			for name := range c.Env {
+				Expect(name).NotTo(HavePrefix("OTEL_"))
+			}
 		}
 	})
 
@@ -126,6 +150,12 @@ var _ = Describe("the opencode adapter", func() {
 		_, err := h.runImpl(agent)
 		Expect(err).To(MatchError(ContainSubstring("step cap")))
 		Expect(h.runCalls()).To(HaveLen(1), "a step cap is not retried")
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "run_capped"),
+			HaveKeyWithValue("outcome", "step_cap"),
+			HaveKeyWithValue("agent_role", "implementer"),
+			HaveKeyWithValue("issue", "5"),
+		)))
 	})
 
 	It("keeps a run that stays below its step cap", func() {
@@ -196,10 +226,39 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(h.sleeps).To(HaveLen(2))
 	})
 
-	It("shows a permission denial in the log", func() {
+	It("logs a permission denial at debug, where an operator can find it", func() {
 		h.answerOpencode(`{"type":"permission","sessionID":"ses_1","permission":"bash","action":"deny"}` + "\n")
 		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
-		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`), "a denial must reach the dagu run log")
+		Expect(h.logs.String()).To(ContainSubstring(`"action":"deny"`))
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring(`"action":"deny"`),
+			"a denial is transcript, so it stays below the default level")
+	})
+
+	It("keeps the transcript out of the default info-level diagnostics", func() {
+		h.answerOpencode(`{"type":"text","part":{"text":"private repository code"}}` + "\n")
+		Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+		Expect(h.logs.String()).To(ContainSubstring("private repository code"), "the transcript is still logged")
+		Expect(h.logs.StringFrom(slog.LevelInfo)).NotTo(ContainSubstring("private repository code"))
+	})
+
+	It("keeps a tool's forged and raw stderr out of the shipped diagnostics", func() {
+		forged := `{"time":"2026-10-29T00:00:00Z","level":"ERROR","msg":"forged",` +
+			`"trace_id":"0123456789abcdef0123456789abcdef"}`
+		raw := "private repository code"
+
+		h.answerOpencodeStreams("", forged+"\n"+raw+"\n")
+		_, _ = h.runImpl(testAgent())
+
+		shipped := h.logs.StringFrom(slog.LevelInfo)
+		Expect(shipped).NotTo(ContainSubstring("forged"))
+		Expect(shipped).NotTo(ContainSubstring(raw))
+		Expect(h.out.String()).NotTo(ContainSubstring("forged"))
+		Expect(h.out.String()).NotTo(ContainSubstring(raw))
+
+		// The debug sink still keeps the text for an operator, as one attribute of foreman's own
+		// record: it can neither choose the record's level nor forge a trace id.
+		Expect(h.logs.String()).To(ContainSubstring("DEBUG agent stderr"))
+		Expect(h.logs.StringFrom(slog.LevelError)).NotTo(ContainSubstring(forged))
 	})
 
 	It("removes the key from what it echoes to the log", func() {
@@ -218,6 +277,45 @@ var _ = Describe("the opencode adapter", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(h.logs.String()).NotTo(ContainSubstring(testToken))
 		Expect(h.out.String()).NotTo(ContainSubstring(testToken))
+	})
+
+	DescribeTable("redacts every secret the run holds from both of the model's streams",
+		func(secret string, onStdout bool) {
+			line := "echo " + secret + " done\n"
+			if onStdout {
+				h.answerOpencodeStreams(line, "")
+			} else {
+				h.answerOpencodeStreams("", line)
+			}
+
+			// The run's outcome is not under test, only what reached a log.
+			_, _ = h.runImpl(testAgent())
+			Expect(h.logs.String()).NotTo(ContainSubstring(secret))
+			Expect(h.out.String()).NotTo(ContainSubstring(secret))
+			Expect(h.logs.String()).To(ContainSubstring("[redacted]"))
+		},
+		Entry("OpenRouter key on stdout", "or-key", true),
+		Entry("OpenRouter key on stderr", "or-key", false),
+		Entry("proxy token on stdout", testToken, true),
+		Entry("proxy token on stderr", testToken, false),
+		Entry("read-only GitHub token on stdout", "read-only-token-implementer", true),
+		Entry("read-only GitHub token on stderr", "read-only-token-implementer", false),
+	)
+
+	It("redacts a secret that arrives split across two stderr writes", func() {
+		h.runner.wrap(func(c proc.Cmd, base func(proc.Cmd) (string, error)) (string, error) {
+			if !isModel(c) {
+				return base(c)
+			}
+
+			_, _ = io.WriteString(c.Stderr, "token run-prox")
+			_, _ = io.WriteString(c.Stderr, "y-token end\n")
+
+			return "", nil
+		})
+		_, _ = h.runImpl(testAgent())
+		Expect(h.logs.String()).NotTo(ContainSubstring("run-proxy-token"))
+		Expect(h.logs.String()).To(ContainSubstring("token [redacted] end"))
 	})
 
 	It("mints a fresh random proxy token for each run", func() {
@@ -240,13 +338,18 @@ var _ = Describe("the opencode adapter", func() {
 					Input: &input, Output: &output, Cached: &cached, Cost: &cost,
 				},
 			}
-			h.deps.Proxy = func(key, _, _ string) (Forwarder, error) {
+			h.deps.Proxy = func(key, _, _ string, _ *security.Tally) (Forwarder, error) {
 				proxy.key = key
 
 				return proxy, nil
 			}
-			egress := &fakeEgress{url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"}}
-			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string) (EgressProxy, error) { return egress, nil }
+			egress := &fakeEgress{
+				url: proxy.url, address: "127.0.0.1:9", domains: []string{"api.example.com"},
+				refused: []string{"blocked.example"},
+			}
+			h.deps.Egress = func(_ context.Context, _ sandbox.Network, _, _ string, _ *security.Tally) (EgressProxy, error) {
+				return egress, nil
+			}
 
 			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
 			lines := h.usageLines()
@@ -259,9 +362,11 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(proxy.key).To(Equal("or-key"), "the proxy never got the key")
 			Expect(proxy.closed).To(BeTrue(), "the proxy outlived the run")
 			Expect(egress.closed).To(BeTrue(), "the egress proxy outlived the run")
-			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
+			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(modelURL(egress.url)))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
 			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
+			Expect(lines[0]).To(HaveKeyWithValue("refused_domains", []any{"blocked.example"}),
+				"refused domains are listed apart from allowed ones")
 		})
 
 		It("is one JSON line per run, summed over the run and its retro", func() {
@@ -293,6 +398,83 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(lines[0]["missing"]).To(HaveLen(6))
 		})
 
+		It("carries the duration, the attempts and the outcome of a run that succeeds", func() {
+			// A clock that moves one second per reading makes the duration a whole number of seconds.
+			tick := time.Date(2026, 10, 28, 10, 0, 0, 0, time.UTC)
+			h.deps.Now = func() time.Time { tick = tick.Add(time.Second); return tick }
+
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("attempts", 1.0), HaveKeyWithValue("outcome", "handed_off"),
+				Not(HaveKey("failure_kind")),
+			))
+			Expect(lines[0]["duration_ms"]).To(BeNumerically(">=", 1000))
+			duration, isNumber := lines[0]["duration_ms"].(float64)
+			Expect(isNumber).To(BeTrue(), "duration_ms is not a number")
+			Expect(math.Mod(duration, 1000)).To(BeZero())
+			Expect(lines[0]["missing"]).NotTo(ContainElements("duration_ms", "attempts"))
+		})
+
+		It("counts the attempts of a model that is retried and then succeeds", func() {
+			h.answerOpencode(errStream("APIError", 429), okStream("ses_1"))
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("attempts", 2.0), HaveKeyWithValue("outcome", "handed_off"),
+				Not(HaveKey("failure_kind")),
+			))
+		})
+
+		DescribeTable("names the failure kind of a run that fails",
+			func(stream string, attempts float64, kind string, agent func(config.AgentConfig) config.AgentConfig) {
+				h.answerOpencode(stream)
+				_, err := h.runImpl(agent(testAgent()))
+				Expect(err).To(HaveOccurred())
+
+				lines := h.usageLines()
+				Expect(lines).To(HaveLen(1))
+				Expect(lines[0]).To(SatisfyAll(
+					HaveKeyWithValue("outcome", "failed"), HaveKeyWithValue("failure_kind", kind),
+					HaveKeyWithValue("attempts", attempts),
+				))
+			},
+			Entry("rate limit", errStream("APIError", 429), 3.0, "rate limit", same),
+			Entry("server", errStream("APIError", 503), 3.0, "server error", same),
+			Entry("timeout", errStream("TimeoutError", 0), 3.0, "timeout", same),
+			Entry("step cap", stepsStream(3), 1.0, "step cap", func(a config.AgentConfig) config.AgentConfig {
+				a.Steps = 3
+
+				return a
+			}),
+			Entry("other", errStream("APIError", 400), 1.0, "model error", same),
+		)
+
+		It("lists the attempts as missing for a run that failed before the model ran", func() {
+			h.deps.Settings.KeyFile = filepath.Join(h.dir, "no-such-key")
+			_, err := h.runImpl(testAgent())
+			Expect(err).To(HaveOccurred())
+
+			lines := h.usageLines()
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(SatisfyAll(
+				HaveKeyWithValue("outcome", "failed"), HaveKeyWithValue("failure_kind", "model error"),
+				Not(HaveKey("attempts")),
+			))
+			Expect(lines[0]["missing"]).To(ContainElement("attempts"))
+		})
+
+		It("reports a review that found problems as rework", func() {
+			h.reviewerGH(nil)
+			h.roleWrites(workflow.Reviewer, 5, blockingReview)
+			Expect(Run(context.Background(), h.deps, workflow.Reviewer, testRef(5), testAgent(), testRetro(), 3)).
+				To(Equal(workflow.ReviewFindings))
+			Expect(h.usageLines()).To(ConsistOf(HaveKeyWithValue("outcome", "rework")))
+		})
+
 		It("is still logged when the run fails", func() {
 			h.answerOpencode(okStream("ses_1") + errStream("APIError", 400))
 			_, err := h.runImpl(testAgent())
@@ -302,6 +484,32 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(lines).To(HaveLen(1))
 			// The failed run and the retro that follows it both spent a step of 1000 input tokens.
 			Expect(lines[0]).To(HaveKeyWithValue("input_tokens", 2000.0))
+		})
+	})
+
+	Describe("the out-of-band usage record", func() {
+		It("is what status reads, the same record the stdout line carries", func() {
+			Expect(h.runImpl(testAgent())).Error().NotTo(HaveOccurred())
+
+			Expect(h.usageRecord("run-1")).To(Equal(h.usageLines()[0]),
+				"status reads a different record from the one the run logged")
+		})
+
+		It("is written even when the run fails", func() {
+			h.answerOpencode(okStream("ses_1") + errStream("APIError", 400))
+			_, err := h.runImpl(testAgent())
+			Expect(err).To(HaveOccurred())
+
+			Expect(h.usageRecord("run-1")).To(HaveKeyWithValue("outcome", "failed"))
+		})
+
+		It("is not written for a run id that could leave the usage directory", func() {
+			h.deps.RunID = "../../escape"
+			h.deps.recordUsage(opencode.UsageReport{Event: "usage"})
+
+			_, err := os.Stat(filepath.Join(h.deps.Settings.WorkRoot, "escape.json"))
+			Expect(os.IsNotExist(err)).To(BeTrue(), "a run id escaped the usage directory")
+			Expect(h.logs.String()).To(ContainSubstring("usage record"))
 		})
 	})
 
@@ -338,3 +546,6 @@ var _ = Describe("the opencode adapter", func() {
 			ContainSubstring("#5"), ContainSubstring("work")))
 	})
 })
+
+// same leaves an agent role's config as it is.
+func same(a config.AgentConfig) config.AgentConfig { return a }

@@ -8,14 +8,20 @@ skills="$root/roles/agent/files/skills"
 ref="49dd158d1076134a641b33efb035946536778336"
 
 failures=0
-fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL $1" >&2
+  failures=$((failures + 1))
+}
 pass() { echo "ok   $1"; }
 
 # fork <name> <upstream path>: the skill exists, its name matches its directory, and its header
 # names the upstream path and the pinned ref.
 fork() {
   local name="$1" upstream="$2" file="$skills/$1/SKILL.md"
-  if [ ! -f "$file" ]; then fail "$name: no SKILL.md"; return; fi
+  if [ ! -f "$file" ]; then
+    fail "$name: no SKILL.md"
+    return
+  fi
   grep -q "^name: $name\$" "$file" || fail "$name: frontmatter name differs from its directory"
   grep -q "Forked from mattpocock/skills $upstream at $ref" "$file" ||
     fail "$name: no provenance header for $upstream at $ref"

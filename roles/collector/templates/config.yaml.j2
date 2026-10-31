@@ -1,0 +1,211 @@
+# {{ ansible_managed }}
+# Receives foreman's OTLP on loopback, ships the run diagnostics dagu writes, keeps only allowlisted
+# attributes, derives run counts and durations from spans, and forwards to the telemetry backend once
+# one is named.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: {{ factory_collector_host }}:{{ factory_collector_grpc_port }}
+      http:
+        endpoint: {{ factory_collector_host }}:{{ factory_collector_http_port }}
+{% if factory_host_health | bool %}
+  # The host's own health, scraped on loopback. node_exporter supplies memory and filesystem use;
+  # its textfile collector carries the SoC temperature and the firmware's throttling bits, which a
+  # timer on the host writes. Keeping only the named families bounds cardinality and traffic.
+  prometheus/host_health:
+    config:
+      scrape_configs:
+        - job_name: host_health
+          scrape_interval: {{ factory_host_health_scrape_interval }}
+          static_configs:
+            - targets: ["{{ factory_host_health_host }}:{{ factory_host_health_port }}"]
+          metric_relabel_configs:
+            - action: keep
+              source_labels: [__name__]
+              regex: "{{ factory_host_health_metrics | join('|') }}"
+{% endif %}
+{% if factory_dagu_logs_dir | length > 0 %}
+  # Foreman's diagnostics and security events are on the DAG step's standard error, which dagu writes
+  # under its logs directory as one JSON record per line. The record carries the trace id start hands
+  # the factory half, so a run's diagnostics can be found from its trace id. The collector's unit
+  # grants CAP_DAC_READ_SEARCH, because dagu writes these files 0600.
+  filelog/foreman:
+    include:
+      - {{ factory_dagu_logs_dir }}/factory-*/dag-run_*/run_*/*.err
+      - {{ factory_dagu_logs_dir }}/factory-*/*/*/*.stderr.log
+    start_at: end
+    include_file_path: true
+    # The receiver follows a symlink, and the capability can read what it points at. Each record
+    # carries the real path of the file it came from, so the filter below drops anything that
+    # resolves outside the log directory: a link the agent user creates there cannot publish a
+    # root-only file to Loki. The log directory itself must not be reached through a symlink, or
+    # every record resolves elsewhere; the filter then drops all of them rather than leaking one.
+    include_file_path_resolved: true
+    storage: file_storage/offsets
+    operators:
+      - type: filter
+        expr: >-
+          attributes["log.file.path_resolved"] == nil or not
+          hasPrefix(attributes["log.file.path_resolved"], "{{ factory_dagu_logs_dir }}/")
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes
+        # A line that is not a JSON record is dropped, never shipped as raw text: the model process's
+        # standard error is logged at debug through the collector's allowlist, but any other writer on
+        # dagu's stderr must not be able to leak private text into Loki.
+        on_error: drop
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999999999Z07:00"
+        severity:
+          parse_from: attributes.level
+      # The record's trace_id and span_id become the log record's own trace context, which is what
+      # Loki stores so Tempo can link a trace to its diagnostics.
+      - type: trace_parser
+        trace_id:
+          parse_from: attributes.trace_id
+        span_id:
+          parse_from: attributes.span_id
+      - type: move
+        from: attributes.msg
+        to: body
+{% endif %}
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: {{ factory_collector_memory_limit_mib }}
+  # Every metric names the host that produced it, so the dashboard joins a run's duration to that
+  # host's health. The inventory name is the OS hostname base sets, which a run's span also carries.
+  # Host health's own labels are generic Prometheus names (mountpoint, kind, state), so they are
+  # renamed into the factory namespace: the redaction allowlist then admits only host health's own
+  # labels, and an unrelated new attribute called "state" is still dropped.
+  transform/host:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["host.name"], "{{ inventory_hostname }}")
+      - context: datapoint
+        conditions:
+          - metric.name == "factory_host_throttled"
+        statements:
+          - set(datapoint.attributes["factory.host_health.kind"], datapoint.attributes["kind"])
+          - set(datapoint.attributes["factory.host_health.state"], datapoint.attributes["state"])
+          - delete_key(datapoint.attributes, "kind")
+          - delete_key(datapoint.attributes, "state")
+      - context: datapoint
+        conditions:
+          - metric.name == "node_filesystem_size_bytes" or metric.name == "node_filesystem_avail_bytes"
+        statements:
+          - set(datapoint.attributes["factory.host_health.mountpoint"], datapoint.attributes["mountpoint"])
+          - set(datapoint.attributes["factory.host_health.device"], datapoint.attributes["device"])
+          - set(datapoint.attributes["factory.host_health.fstype"], datapoint.attributes["fstype"])
+          - delete_key(datapoint.attributes, "mountpoint")
+          - delete_key(datapoint.attributes, "device")
+          - delete_key(datapoint.attributes, "fstype")
+  # Anything not in allowed_keys is redacted, so a new attribute is dropped until it is added to
+  # factory_collector_allowed_attributes. summary: info logs which keys were dropped, never values.
+  redaction:
+    allow_all_keys: false
+    allowed_keys:
+{% for key in factory_collector_allowed_attributes %}
+      - {{ key }}
+{% endfor %}
+    summary: info
+  batch:
+    send_batch_size: {{ factory_collector_batch_size }}
+    send_batch_max_size: {{ factory_collector_batch_size }}
+    timeout: 5s
+
+connectors:
+  # Run counts and duration histograms come from spans, so a short-lived foreman process needs no
+  # scrape endpoint. Its dimensions are only what the allowlist already admits.
+  spanmetrics:
+    dimensions:
+      - name: factory.agent_role
+      - name: factory.outcome
+    # Lets Grafana jump from a metric to the trace behind it.
+    exemplars:
+      enabled: true
+
+exporters:
+  nop: {}
+{% if factory_collector_backend_host | length > 0 %}
+  # Traces, metrics and diagnostics each go to their own backend port (tempo, prometheus, loki).
+  # Each buffers locally, within a fixed size, while the backend is unreachable. The file storage
+  # keeps the buffer across a collector restart.
+  otlp_grpc/traces:
+    endpoint: {{ factory_collector_backend_host }}:{{ factory_telemetry_tempo_otlp_port }}
+    tls:
+      insecure: true # the tailnet encrypts
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+  otlp_http/metrics:
+    endpoint: http://{{ factory_collector_backend_host }}:{{ factory_telemetry_prometheus_port }}/api/v1/otlp
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+  otlp_http/logs:
+    endpoint: http://{{ factory_collector_backend_host }}:{{ factory_telemetry_loki_port }}/otlp
+    sending_queue:
+      enabled: true
+      queue_size: {{ factory_collector_queue_size }}
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0s
+{% endif %}
+
+extensions:
+{% if factory_dagu_logs_dir | length > 0 %}
+  # The filelog receiver's read positions, so a collector restart resumes rather than reshipping.
+  file_storage/offsets:
+    directory: {{ factory_collector_state_dir }}/offsets
+    # StateDirectory makes the parent; the offsets directory below it must exist before the collector
+    # starts, or it refuses the config and crash-loops.
+    create_directory: true
+{% endif %}
+{% if factory_collector_backend_host | length > 0 %}
+  file_storage/queue:
+    directory: {{ factory_collector_state_dir }}/queue
+    create_directory: true
+{% endif %}
+
+service:
+{% if factory_dagu_logs_dir | length > 0 or factory_collector_backend_host | length > 0 %}
+  extensions:
+{% if factory_dagu_logs_dir | length > 0 %}
+    - file_storage/offsets
+{% endif %}
+{% if factory_collector_backend_host | length > 0 %}
+    - file_storage/queue
+{% endif %}
+{% endif %}
+  telemetry:
+    metrics:
+      level: none # no self-metrics endpoint: the collector serves nothing but OTLP
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [spanmetrics, nop{% if factory_collector_backend_host | length > 0 %}, otlp_grpc/traces{% endif %}]
+    metrics:
+      receivers: [otlp, spanmetrics{% if factory_host_health | bool %}, prometheus/host_health{% endif %}]
+      processors: [memory_limiter, transform/host, redaction, batch]
+      exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/metrics{% endif %}]
+    logs:
+      receivers: [otlp{% if factory_dagu_logs_dir | length > 0 %}, filelog/foreman{% endif %}]
+      processors: [memory_limiter, redaction, batch]
+      exporters: [nop{% if factory_collector_backend_host | length > 0 %}, otlp_http/logs{% endif %}]

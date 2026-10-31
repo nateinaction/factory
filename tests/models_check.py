@@ -69,7 +69,11 @@ def allowed(rule) -> set:
     """The patterns a granular rule allows, ignoring its catch-all."""
     if isinstance(rule, str):
         return {"*"} if rule == "allow" else set()
-    return {pattern for pattern, action in rule.items() if action == "allow" and pattern != "*"}
+    return {
+        pattern
+        for pattern, action in rule.items()
+        if action == "allow" and pattern != "*"
+    }
 
 
 def command_permission(rule, command: str) -> str:
@@ -96,14 +100,18 @@ def assert_common(role: str) -> None:
     # Every external path is denied in the rendered config. foreman's per-run inline config is the
     # only place that names the run's own scratch directory, so no work-root wildcard may appear here.
     external = OC["permission"]["external_directory"]
-    assert external == {"*": "deny"}, role + ": external directories are not denied by default"
+    assert external == {"*": "deny"}, (
+        role + ": external directories are not denied by default"
+    )
 
 
 def assert_skills(role: str) -> None:
     """The role loads exactly its skills; every other skill is denied."""
     skills = permissions(role)["skill"]
     assert skills["*"] == "deny", role + ": skills are not denied by default"
-    assert allowed(skills) == SKILLS[role], role + ": skills differ: " + str(sorted(allowed(skills)))
+    assert allowed(skills) == SKILLS[role], (
+        role + ": skills differ: " + str(sorted(allowed(skills)))
+    )
 
 
 def assert_edits(role: str) -> None:
@@ -115,14 +123,24 @@ def assert_edits(role: str) -> None:
     assert edit["*"] == "deny", role + ": edit does not deny by default"
     patterns = allowed(edit)
     if role == "planner":
-        assert any(p.endswith("planner-output.json") for p in patterns), "planner: no output file"
+        assert any(p.endswith("planner-output.json") for p in patterns), (
+            "planner: no output file"
+        )
     if role == "researcher":
-        assert "docs/research/**" in patterns, "researcher: docs/research is not editable"
-        assert any(p.endswith("researcher-output.json") for p in patterns), "researcher: no output file"
+        assert "docs/research/**" in patterns, (
+            "researcher: docs/research is not editable"
+        )
+        assert any(p.endswith("researcher-output.json") for p in patterns), (
+            "researcher: no output file"
+        )
     if role == "curator":
-        assert any(p.endswith("curator-output.json") for p in patterns), "curator: no output file"
+        assert any(p.endswith("curator-output.json") for p in patterns), (
+            "curator: no output file"
+        )
     output = [p for p in patterns if p.endswith(".json")]
-    assert output == sorted(output) and all(OUTPUT_FILE[role] in p for p in output), role + ": extra output"
+    assert output == sorted(output) and all(OUTPUT_FILE[role] in p for p in output), (
+        role + ": extra output"
+    )
 
 
 READ_ONLY_GH = (
@@ -187,9 +205,13 @@ def assert_shell(role: str) -> None:
 
     for key, action in bash.items():
         if key.startswith("gh ") and action == "allow":
-            assert key.removesuffix("*").rstrip() in READ_ONLY_GH, role + ": gh write allowed: " + key
+            assert key.removesuffix("*").rstrip() in READ_ONLY_GH, (
+                role + ": gh write allowed: " + key
+            )
     for command in WRITE_COMMANDS:
-        assert command_permission(bash, command) == "deny", role + ": write allowed: " + command
+        assert command_permission(bash, command) == "deny", (
+            role + ": write allowed: " + command
+        )
     for command in READ_COMMANDS:
         effect = command_permission(bash, command)
         if effect == "deny" and role in ("implementer", "reviewer"):
@@ -197,10 +219,14 @@ def assert_shell(role: str) -> None:
         if (
             command.startswith("gh ")
             and role in ("planner", "curator")
-            and any(word in command for word in (" view", " list", "--method GET", "-X GET"))
+            and any(
+                word in command for word in (" view", " list", "--method GET", "-X GET")
+            )
             and effect != "allow"
         ):
-            raise AssertionError(role + ": a read-only gh command is denied: " + command)
+            raise AssertionError(
+                role + ": a read-only gh command is denied: " + command
+            )
 
 
 def assert_steps(role: str) -> None:
@@ -208,7 +234,9 @@ def assert_steps(role: str) -> None:
     steps, minutes = LIMITS[role]
     assert OC["agent"][role]["steps"] == steps, role + ": opencode step cap"
     assert CFG["agents"][role]["steps"] == steps, role + ": foreman step cap"
-    assert CFG["agents"][role]["deadline_minutes"] == minutes, role + ": foreman deadline"
+    assert CFG["agents"][role]["deadline_minutes"] == minutes, (
+        role + ": foreman deadline"
+    )
 
 
 def assert_no_ask() -> None:
@@ -239,9 +267,13 @@ def main(out: str) -> None:
         alias = OC["agent"][role]["model"].removeprefix("openrouter/")
         model = aliases[alias]
         assert model["id"] == CFG["agents"][role]["model"], role + ": model differs"
-        assert model["limit"]["input"] == CFG["agents"][role]["context_cap"] == 200000, role + ": cap"
+        assert (
+            model["limit"]["input"] == CFG["agents"][role]["context_cap"] == 200000
+        ), role + ": cap"
     family = lambda r: CFG["agents"][r]["model"].split("/")[0]
-    assert family("reviewer") != family("implementer"), "reviewer and implementer share a model family"
+    assert family("reviewer") != family("implementer"), (
+        "reviewer and implementer share a model family"
+    )
     on = sorted(r for r in ROLES if CFG["agents"][r]["compaction"])
     assert on == ["implementer", "researcher"], "compaction on for " + str(on)
     assert "model" not in OC, "a global model would let an agent role fall back to it"
@@ -257,10 +289,14 @@ def main(out: str) -> None:
     for role in ROLES:
         retro = {"steps": RETRO[0], "deadline_minutes": RETRO[1]}
         assert CFG["agents"][role]["retro"] == retro, role + ": retro budget"
-    assert "retro" not in CFG and "retro_by_role" not in CFG, "a retro budget outside the agent roles"
+    assert "retro" not in CFG and "retro_by_role" not in CFG, (
+        "a retro budget outside the agent roles"
+    )
     assert CFG["dead_run_margin_minutes"] == DEAD_RUN_MARGIN, "dead-run margin"
     assert CFG["review_round_limit"] == REVIEW_ROUND_LIMIT, "review round limit"
-    assert CFG["ci_pending_deadline_minutes"] == CI_PENDING_DEADLINE_MINUTES, "CI pending deadline"
+    assert CFG["ci_pending_deadline_minutes"] == CI_PENDING_DEADLINE_MINUTES, (
+        "CI pending deadline"
+    )
     for role in ROLES:
         egress = CFG["agents"][role]["egress"]["allowed_domains"]
         assert isinstance(egress, list), role + ": egress is not a list"

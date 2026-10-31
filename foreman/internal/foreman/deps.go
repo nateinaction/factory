@@ -12,11 +12,16 @@ import (
 	"regexp"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/github"
 	"github.com/nateinaction/factory/foreman/internal/openrouter"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/security"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -63,8 +68,10 @@ type EgressProxy interface {
 	URL() string
 	// Address is the loopback host:port srt settings point at.
 	Address() string
-	// Domains is every host the run was refused or reached: the proxy records a refusal too.
+	// Domains is every host the proxy allowed.
 	Domains() []string
+	// Refused is every host the proxy refused, listed apart from the allowed ones.
+	Refused() []string
 	// Close stops the proxy.
 	Close() error
 }
@@ -81,6 +88,10 @@ type Deps struct {
 	Out io.Writer
 	// Log receives diagnostics as leveled, structured records. The edge builds it; nil logs nowhere.
 	Log *slog.Logger
+	// Tracer opens spans; nil opens no-op spans, as a spec that ignores telemetry does.
+	Tracer trace.Tracer
+	// Meter records instruments; nil records nothing.
+	Meter metric.Meter
 	// Host names this worker host in the usage report; empty is reported as missing.
 	Host string
 	// RunID is the dagu run id recorded in transition markers; empty is recorded as unknown.
@@ -91,10 +102,17 @@ type Deps struct {
 	Token func() (string, error)
 	// Now reads the clock for elapsed-time reports; nil reads the wall clock.
 	Now func() time.Time
-	// Proxy starts the run's OpenRouter proxy on addr; nil starts the real one.
-	Proxy func(key, token, addr string) (Forwarder, error)
-	// Egress starts the run's egress proxy; nil starts the real one.
-	Egress func(ctx context.Context, policy sandbox.Network, apiURL, token string) (EgressProxy, error)
+	// Proxy starts the run's OpenRouter proxy on addr, raising its refusals through refusals; nil starts
+	// the real one.
+	Proxy func(key, token, addr string, refusals *security.Tally) (Forwarder, error)
+	// Egress starts the run's egress proxy, raising its refusals through refusals; nil starts the real
+	// one.
+	Egress func(
+		ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+	) (EgressProxy, error)
+	// handed is set in the factory half: the tokens `start` left for the run, which are the only ones it
+	// can have, since only the dagu user reads the Apps' keys.
+	handed *handedTokens
 }
 
 // client returns a GitHub client for token.
@@ -128,6 +146,16 @@ func (d Deps) log() *slog.Logger {
 	return d.Log
 }
 
+// tracer returns d's tracer. A Deps built without one traces nowhere.
+func (d Deps) tracer() trace.Tracer {
+	return telemetry.TracerOr(d.Tracer)
+}
+
+// meter returns d's meter. A Deps built without one records nowhere.
+func (d Deps) meter() metric.Meter {
+	return telemetry.MeterOr(d.Meter)
+}
+
 // runID is the id transition markers record: the dagu run's id, or a placeholder outside dagu.
 func (d Deps) runID() string {
 	if d.RunID == "" {
@@ -149,6 +177,16 @@ func (d Deps) tokenPath(role workflow.Role) (string, error) {
 	}
 
 	return d.Settings.TokenPath(role, id), nil
+}
+
+// readOnlyTokenPath is the run's own read-only token file, vetted as tokenPath is.
+func (d Deps) readOnlyTokenPath(role workflow.Role) (string, error) {
+	id := d.runID()
+	if !validRunID.MatchString(id) {
+		return "", fmt.Errorf("token file: run id %q is not a plain name", id)
+	}
+
+	return d.Settings.ReadOnlyTokenPath(role, id), nil
 }
 
 // writeLine writes text and a newline.

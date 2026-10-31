@@ -41,6 +41,12 @@ func (e *exitError) Unwrap() error {
 // issue.
 const roleArgCount = 3
 
+// The two verbs that run one agent role.
+const (
+	startVerb = "start"
+	runVerb   = "run"
+)
+
 // logsArgCount is how many positional arguments `logs` takes: repository, issue.
 const logsArgCount = 2
 
@@ -54,7 +60,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(*cobra.Command, []string) error {
-			return errors.New("a command is required: poll, start, run, status or logs")
+			return errors.New("a command is required: poll, start, run, status, logs or history")
 		},
 		PersistentPreRunE: func(*cobra.Command, []string) error {
 			s, err := config.SettingsFrom(settings)
@@ -76,7 +82,10 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 		return nil, fmt.Errorf("bind settings flags: %w", err)
 	}
 
-	root.AddCommand(pollCommand(d), roleCommand(d, "start"), roleCommand(d, "run"), statusCommand(d), logsCommand(d))
+	root.AddCommand(
+		pollCommand(d), roleCommand(d, startVerb), roleCommand(d, runVerb), statusCommand(d), logsCommand(d),
+		historyCommand(d),
+	)
 
 	return root, nil
 }
@@ -91,10 +100,11 @@ const sudoRunArgs = roleArgCount + 1
 // itself, and no other verb or an extra positional can run as the factory user.
 //
 // Refusing every flag is enough only because the settings a flag names also come from FACTORY_*
-// environment variables, and sudo's env_reset drops them: the sudoers file keeps DAG_RUN_ID and
-// nothing else, so a caller cannot pass an override in the environment instead.
+// environment variables, and sudo's env_reset drops them: the sudoers file keeps only DAG_RUN_ID and
+// TRACEPARENT, which name a run and link its trace, so a caller cannot pass an override in the
+// environment instead.
 func sudoRun(args []string) bool {
-	if len(args) != sudoRunArgs || args[0] != "run" {
+	if len(args) != sudoRunArgs || args[0] != runVerb {
 		return false
 	}
 
@@ -144,6 +154,7 @@ func addSettingsFlags(fs *pflag.FlagSet) {
 	fs.String("token-helper", "", "the GitHub App token helper")
 	fs.String("dagu", "", "the dagu binary")
 	fs.String("dag-prefix", "", "prefix of an agent role's dagu DAG")
+	fs.String("telemetry-url", "", "the telemetry backend's trace API, which status reads usage from")
 }
 
 // pollCommand is `foreman poll`: claim up to each agent role's free run capacity and queue the runs.
@@ -167,10 +178,16 @@ func pollCommand(d *foreman.Deps) *cobra.Command {
 
 // roleCommand is `foreman start` or `foreman run`: one agent role on one issue.
 func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
+	args := cobra.ExactArgs(roleArgCount)
+	if verb == startVerb {
+		// The DAG appends its TRACEPARENT parameter after the issue; a hand-run start omits it.
+		args = cobra.RangeArgs(roleArgCount, roleArgCount+1)
+	}
+
 	return &cobra.Command{
 		Use:   verb + " <agent-role> <owner/repo> <issue>",
 		Short: roleShort(verb),
-		Args:  cobra.ExactArgs(roleArgCount),
+		Args:  args,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			role, err := workflow.ParseRole(args[0])
 			if err != nil {
@@ -189,7 +206,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 
 			var code int
 
-			if verb == "start" {
+			if verb == startVerb {
 				code, err = foreman.Start(cmd.Context(), *d, cfg, role, ref)
 			} else {
 				d.Settings.FactoryRepo = cfg.FactoryRepo
@@ -206,7 +223,7 @@ func roleCommand(d *foreman.Deps, verb string) *cobra.Command {
 
 // roleShort is the one-line description of start or run.
 func roleShort(verb string) string {
-	if verb == "start" {
+	if verb == startVerb {
 		return "on the worker: give factory a token, run, record the outcome"
 	}
 
@@ -254,6 +271,31 @@ func logsCommand(d *foreman.Deps) *cobra.Command {
 	cmd.Flags().BoolVar(&follow, "follow", false, "keep printing new output until the run ends")
 
 	return cmd
+}
+
+// historyCommand is `foreman history`: each issue's lifecycle in one assigned repository, read from
+// GitHub.
+func historyCommand(d *foreman.Deps) *cobra.Command {
+	return &cobra.Command{
+		Use:   "history <owner/repo>",
+		Short: "show each issue's time in every state, human gate wait, rework rounds and outcome, from GitHub",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := workflow.ParseRepo(args[0])
+			if err != nil {
+				return err
+			}
+
+			cfg, err := config.Load(d.Settings.ConfigFile)
+			if err != nil {
+				return &exitError{code: 1, err: err}
+			}
+
+			code, err := foreman.History(cmd.Context(), *d, cfg, repo)
+
+			return result(code, err)
+		},
+	}
 }
 
 // result carries a command's exit code through cobra. A failure without a code exits 1.

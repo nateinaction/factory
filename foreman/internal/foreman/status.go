@@ -1,6 +1,7 @@
 package foreman
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,10 +28,10 @@ const (
 	StatusRunLimit = 200
 	// UsageRunLimit bounds how many recent runs status reads usage from.
 	UsageRunLimit = 5
-	// UsageLineLimit bounds how many usage records status prints.
-	UsageLineLimit = 10
-	// UsageLogBytes bounds how much of one run log status reads for usage.
-	UsageLogBytes = 8 << 20
+	// UsageRecordLimit bounds how many usage records status reports.
+	UsageRecordLimit = 10
+	// UsageRecordBytes bounds how much of one usage record status reads.
+	UsageRecordBytes = 64 << 10
 )
 
 // Names a run's parameters and its usage line carry.
@@ -39,8 +40,6 @@ const (
 	paramRepo = "REPO"
 	// paramIssue is the run parameter naming the issue.
 	paramIssue = "ISSUE"
-	// usageEvent marks the one usage line a run writes.
-	usageEvent = "usage"
 	// noValue stands in for a field the report could not read.
 	noValue = "-"
 	// noRows is a section with nothing to show.
@@ -135,8 +134,12 @@ func runIssue(run dagu.Run) int {
 }
 
 // Status is `foreman status`: a read-only report of active runs, the queues, agent roles with no
-// host, and recent usage. It reads dagu's state and logs plus the config's deadlines for each agent
-// role, and talks to nothing else.
+// host, and recent usage. It reads dagu's state, the configuration's deadlines for each agent role,
+// and the usage a run leaves behind. With a telemetry backend configured it reads the root span of
+// the trace the run's TRACEPARENT names, which is the only record a server can see for a run on
+// another host; without one, or for a run the backend has not seen, it reads the local record under
+// this host's work root. It never reads a run's stdout, so a line there cannot forge a usage figure.
+// It talks to nothing else.
 func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	runs, err := readHistory(ctx, d)
 	if err != nil {
@@ -144,7 +147,7 @@ func Status(ctx context.Context, d Deps, cfg config.Config) (int, error) {
 	}
 
 	items := factoryRuns(runs, d.Settings.DAGPrefix)
-	report := statusReport{now: d.now(), runs: items, usage: recentUsage(ctx, d, items), cfg: cfg}
+	report := statusReport{now: d.now(), runs: items, usage: recentUsage(ctx, d, cfg, items), cfg: cfg}
 
 	if _, err := io.WriteString(d.Out, report.render()); err != nil {
 		return 1, fmt.Errorf("write status: %w", err)
@@ -159,79 +162,82 @@ type usageRecord struct {
 	report opencode.UsageReport
 }
 
-// recentUsage reads the usage line of the newest runs. It is best effort: a run whose log has been
-// cleaned up is skipped with a warning, because a read-only report must not fail over history.
-func recentUsage(ctx context.Context, d Deps, runs []factoryRun) []usageRecord {
-	records := make([]usageRecord, 0, UsageLineLimit)
+// recentUsage reads the newest runs' usage: from the telemetry backend when one is configured, so a
+// run a worker host executed is visible from the server, and from the local out-of-band record
+// otherwise. It never reads a run's stdout: a line there that mimics a record must not be reported.
+// It is best effort: a run with no readable record is skipped with a warning, because a read-only
+// report must not fail over history.
+func recentUsage(ctx context.Context, d Deps, cfg config.Config, runs []factoryRun) []usageRecord {
+	records := make([]usageRecord, 0, UsageRecordLimit)
 
 	for _, run := range firstRuns(runs, UsageRunLimit) {
-		if len(records) >= UsageLineLimit {
+		if len(records) >= UsageRecordLimit {
 			break
 		}
 
-		_, refs, err := readRunStatus(ctx, d, run.Run)
-		if err != nil {
-			d.log().Warn("usage scan: cannot read run status", "run", run.RunID, "error", err)
-			continue
-		}
-
-		records = append(records, usageInLogs(d, run, refs)...)
-	}
-
-	return firstRecords(records, UsageLineLimit)
-}
-
-// usageInLogs reads the usage lines from a run's standard output.
-func usageInLogs(d Deps, run factoryRun, refs []dagu.LogRef) []usageRecord {
-	var records []usageRecord
-
-	for _, ref := range refs {
-		if ref.Stream != dagu.StreamStdout {
-			continue
-		}
-
-		raw, err := readLogBounded(ref.Path, UsageLogBytes)
-		if err != nil {
-			d.log().Warn("usage scan: cannot read log", "path", ref.Path, "error", err)
-			continue
-		}
-
-		for _, report := range parseUsageLog(raw) {
-			records = append(records, usageRecord{run: run, report: report})
+		if record, ok := usageFor(ctx, d, cfg, run); ok {
+			records = append(records, record)
 		}
 	}
 
-	return records
+	return firstRecords(records, UsageRecordLimit)
 }
 
-// readLogBounded reads at most limit bytes of a log file.
-func readLogBounded(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // the path is dagu's own log file, named in dagu's status output
+// usageFor reads one run's usage, preferring the backend's copy of the run's root span. The
+// host's setting wins over the Ansible-written config, so a flag or environment variable can point
+// one invocation at another backend.
+func usageFor(ctx context.Context, d Deps, cfg config.Config, run factoryRun) (usageRecord, bool) {
+	backendURL := cmp.Or(d.Settings.TelemetryURL, cfg.TelemetryURL)
+	if backendURL != "" {
+		if record, ok := traceUsage(ctx, d, cfg, run, backendURL); ok {
+			return record, true
+		}
+	}
+
+	return readUsageRecord(d, run)
+}
+
+// readUsageRecord reads one run's out-of-band record. A record that is missing (a run from before
+// records, or one started by hand) or unreadable is skipped, not guessed.
+func readUsageRecord(d Deps, run factoryRun) (usageRecord, bool) {
+	path, err := usageRecordPath(d.Settings.WorkRoot, run.RunID)
 	if err != nil {
-		return nil, fmt.Errorf("open log: %w", err)
+		d.log().Warn("usage record: cannot name the record", "run", run.RunID, "error", err)
+
+		return usageRecord{}, false
+	}
+
+	raw, err := readFileBounded(path, UsageRecordBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return usageRecord{}, false // this run left no record
+	}
+
+	if err != nil {
+		d.log().Warn("usage record: cannot read the record", "run", run.RunID, "error", err)
+
+		return usageRecord{}, false
+	}
+
+	var report opencode.UsageReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		d.log().Warn("usage record: cannot parse the record", "run", run.RunID, "error", err)
+
+		return usageRecord{}, false
+	}
+
+	return usageRecord{run: run, report: report}, true
+}
+
+// readFileBounded reads at most limit bytes of a file.
+func readFileBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // the path is under the configured work root, built from a vetted name
+	if err != nil {
+		return nil, fmt.Errorf("open record: %w", err)
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(f, limit))
 
-	return raw, errors.Join(wrapErr("read log", err), wrapErr("close log", f.Close()))
-}
-
-// parseUsageLog keeps the usage lines in a run's log. Every other line is ordinary log text.
-func parseUsageLog(raw []byte) []opencode.UsageReport {
-	var reports []opencode.UsageReport
-
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		var report opencode.UsageReport
-		if json.Unmarshal([]byte(line), &report) != nil {
-			continue // the run's ordinary output
-		}
-
-		if report.Event == usageEvent {
-			reports = append(reports, report)
-		}
-	}
-
-	return reports
+	return raw, errors.Join(wrapErr("read record", err), wrapErr("close record", f.Close()))
 }
 
 // firstRuns keeps at most n runs.
@@ -369,7 +375,8 @@ func renderNoHost(runs []factoryRun, cfg config.Config) string {
 func renderUsage(records []usageRecord) string {
 	rows := make([][]string, 0, 1+len(records))
 	rows = append(rows, []string{
-		"REPOSITORY", "ISSUE/PR", headerRole, "MODEL", "HOST", "INPUT", "OUTPUT", "CACHED", "PEAK/CAP", "COST", "STARTED",
+		"REPOSITORY", "ISSUE/PR", headerRole, "MODEL", "HOST", "INPUT", "OUTPUT", "CACHED", "PEAK/CAP", "COST",
+		"DURATION", "ATTEMPTS", "OUTCOME", "STARTED",
 	})
 
 	for _, record := range records {
@@ -390,7 +397,8 @@ func usageRow(record usageRecord) []string {
 	return []string{
 		orNoValue(u.Repository), issueLabel(u.Issue), string(u.AgentRole), orNoValue(u.Model),
 		orNoValue(u.WorkerHost), intField(u.Input), intField(u.Output), intField(u.Cached),
-		peakField(u), costField(u.Cost), orNoValue(record.run.StartedAt),
+		peakField(u), costField(u.Cost), durationField(u.DurationMS), intField(u.Attempts),
+		orNoValue(string(u.Outcome)), orNoValue(record.run.StartedAt),
 	}
 }
 
@@ -464,6 +472,15 @@ func peakField(u opencode.UsageReport) string {
 	}
 
 	return fmt.Sprintf("%d/%d", *u.PeakContext, u.ContextCap)
+}
+
+// durationField is the run's wall-clock time, or a dash when the run could not measure it.
+func durationField(ms *int64) string {
+	if ms == nil {
+		return noValue
+	}
+
+	return (time.Duration(*ms) * time.Millisecond).String()
 }
 
 // costField is the run's cost, or a dash when the adapter could not report it.

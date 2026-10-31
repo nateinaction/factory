@@ -5,15 +5,21 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/config"
 	"github.com/nateinaction/factory/foreman/internal/ghtest"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -407,6 +413,57 @@ var _ = Describe("the dashboard's writer commands", func() {
 		Expect(theDashboardOf("o/r").Body).To(ContainSubstring("## Promoted (0)"))
 		Expect(graphql.minimizedComments()).To(HaveLen(1), "did not minimize the non-writer's command")
 		Expect(h.logs.String()).To(ContainSubstring("a non-writer's dashboard command"))
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "dashboard_command_refused"),
+			HaveKeyWithValue("outcome", "unauthorized_author"),
+			HaveKeyWithValue("repository", "o/r"),
+			HaveKeyWithValue("issue", strconv.Itoa(dashboard.Number)),
+		)))
+	})
+
+	It("records a non-writer's command in the security metric", func() {
+		h.graphql(true)
+
+		reader := sdkmetric.NewManualReader()
+		h.deps.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")
+
+		dashboard := ready(skillGroup, pollConfig(workflow.Implementer, workflow.Reviewer))
+
+		h.comment(dashboard.Number, "factory", "promote "+skillGroup.String())
+		Expect(poll(pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+
+		var rm metricdata.ResourceMetrics
+		Expect(reader.Collect(ctx, &rm)).To(Succeed())
+
+		// The Reviewer's App is the one polling o/r here, so the command's event is its run.
+		point, ok := pointWith(metricPoints(rm, telemetry.MetricSecurityEvents),
+			attribute.String(telemetry.AttrAgentRole, string(workflow.Reviewer)),
+			attribute.String(telemetry.AttrRepo, "o/r"),
+			attribute.Int(telemetry.AttrIssue, dashboard.Number),
+			attribute.String(telemetry.AttrEvent, "dashboard_command_refused"),
+			attribute.String(telemetry.AttrOutcome, "unauthorized_author"),
+		)
+		Expect(ok).To(BeTrue(), "the metric carries the refused command's run, event and outcome")
+		Expect(point.Value).To(Equal(int64(1)))
+	})
+
+	It("fails closed on a command whose author's permission it cannot read, and records it", func() {
+		h.graphql(true)
+
+		dashboard := ready(skillGroup, pollConfig(workflow.Implementer, workflow.Reviewer))
+
+		h.gh.Status("GET /repos/o/r/collaborators/o/permission", http.StatusInternalServerError)
+
+		h.comment(dashboard.Number, "o", "promote "+skillGroup.String())
+		Expect(poll(pollConfig(workflow.Implementer, workflow.Reviewer))).Error().NotTo(HaveOccurred())
+
+		Expect(promotedIn("o/r", skillGroup)).To(BeEmpty(), "acted on an unreadable permission")
+		Expect(h.securityEvents()).To(ConsistOf(And(
+			HaveKeyWithValue("event", "dashboard_command_refused"),
+			HaveKeyWithValue("outcome", "permission_unreadable"),
+			HaveKeyWithValue("repository", "o/r"),
+			HaveKeyWithValue("issue", strconv.Itoa(dashboard.Number)),
+		)))
 	})
 
 	It("deletes a command when the App cannot minimize it", func() {
@@ -545,14 +602,14 @@ var _ = Describe("the dashboard's writer commands", func() {
 		r := &commandRun{
 			d: h.deps, cfg: pollConfig(workflow.Implementer, workflow.Reviewer),
 			c: h.deps.client("minted-token-implementer"), perms: newPermissions(),
-			repo: testRepo("o/r"), role: workflow.Implementer,
+			repo: testRepo("o/r"), role: workflow.Implementer, alerts: newAlertInstruments(h.deps),
 		}
 		comment := workflow.Item{
 			ID: 42, Author: "stranger", Body: "promote " + skillGroup.String(),
 		}
 		state := workflow.DashboardState{Handled: []int64{comment.ID}}
 
-		next, done := r.onComment(ctx, state, nil, comment)
+		next, done := r.onComment(ctx, state, nil, 1, comment)
 		Expect(done).To(BeFalse(), "settled a command it could not record")
 		Expect(next.Handled).To(ConsistOf(comment.ID))
 	})

@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -82,6 +83,47 @@ func newSandboxFiles(root string, role workflow.Role, number int) (sandboxFiles,
 	return f, nil
 }
 
+// skillsDirName is the directory opencode reads skills from, inside its config directory.
+const skillsDirName = "skills"
+
+// opencodeConfigName is the host's rendered opencode config, which defines the agent roles.
+const opencodeConfigName = "opencode.json"
+
+// seedConfig copies the host's opencode config into the run's own config directory. The real home is
+// hidden from the sandbox, and a model that cannot find its agent role falls back to opencode's default
+// agent, which has none of the role's permission limits: a missing config fails the run.
+func (f sandboxFiles) seedConfig(hostHome, skills string) error {
+	src := filepath.Join(hostHome, ".config", "opencode", opencodeConfigName)
+
+	raw, err := os.ReadFile(src) //nolint:gosec // foreman's configured home joined with a fixed name
+	if err != nil {
+		return fmt.Errorf("read the opencode config: %w", err)
+	}
+
+	dir := filepath.Join(f.home, ".config", "opencode")
+	if err := os.MkdirAll(dir, privateDirMode); err != nil {
+		return fmt.Errorf("run config directory: %w", err)
+	}
+
+	dst := filepath.Join(dir, opencodeConfigName)
+
+	if err := os.WriteFile(dst, raw, privateFileMode); err != nil { //nolint:gosec // the run directory and a fixed name
+		return fmt.Errorf("write the run's opencode config: %w", err)
+	}
+
+	// The skills sit in the hidden home, so the run's config directory links the copy the sandbox may
+	// read. A host with no skills directory has none to link.
+	if _, err := os.Stat(skills); err != nil {
+		return nil //nolint:nilerr // no skills directory means no skills, not a failed run
+	}
+
+	if err := os.Symlink(skills, filepath.Join(dir, skillsDirName)); err != nil {
+		return fmt.Errorf("link the run's skills: %w", err)
+	}
+
+	return nil
+}
+
 // remove deletes the run directory and the toolchain clone.
 func (f sandboxFiles) remove() error {
 	return errors.Join(os.RemoveAll(f.dir), os.RemoveAll(f.toolchain))
@@ -149,7 +191,19 @@ func (rc runCtx) resolveToolchain(ctx context.Context, files sandboxFiles, env r
 		return "", nil
 	}
 
-	return rc.d.toolchain(ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files)
+	spans := rc.spans()
+
+	ctx, span := spans.start(ctx, telemetry.SpanToolchain)
+	defer span.End()
+
+	path, err := rc.d.toolchain(
+		ctx, rc.j.c, rc.spec.ref.Repo, env.sec.githubToken, prep.toolchainBranch, files, spans,
+	)
+	if err != nil {
+		markFailureOf(span, err)
+	}
+
+	return path, err
 }
 
 // sandboxed puts the run's clone inside its own sandbox: the default branch's dev environment, the

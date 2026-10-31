@@ -125,7 +125,7 @@ var _ = Describe("Serve", func() {
 		Serve(newLogger(&logged), "test", server, ln)
 
 		// A request the server answers proves the serve loop is running before it is closed.
-		resp, err := http.Get("http://" + ln.Addr().String()) //nolint:noctx // a test's own loopback request
+		resp, err := http.Get("http://" + ln.Addr().String())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.Body.Close()).To(Succeed())
 

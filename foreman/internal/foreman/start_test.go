@@ -5,10 +5,14 @@ import (
 	"errors"
 	"os"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/nateinaction/factory/foreman/internal/proc"
+	"github.com/nateinaction/factory/foreman/internal/telemetry"
 	"github.com/nateinaction/factory/foreman/internal/workflow"
 )
 
@@ -63,8 +67,49 @@ var _ = Describe("Start", func() {
 					"from=factory:implementing to=factory:review sha= -->"))
 			Expect(h.gh.Summary()).To(
 				ContainElement("DELETE /repos/o/r/issues/5/labels/factory:implementing"), "did not release the claim")
-			Expect(h.runner.find("github-app-token")).To(HaveLen(2), "want a fresh token after the run")
+			Expect(h.runner.find("github-app-token")).To(HaveLen(3), "want a fresh token after the run")
 			h.expectLeakFree("minted-token")
+		})
+
+		It("passes the telemetry export environment to the factory half across sudo", func() {
+			GinkgoT().Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+			GinkgoT().Setenv("OTEL_SERVICE_NAME", "foreman")
+
+			h.acceptWrites()
+			h.sudoExit(0)
+
+			Expect(start(workflow.Implementer)).To(BeZero())
+
+			sudo := h.runner.find("sudo")
+			Expect(sudo).To(HaveLen(1), "no factory half to export its telemetry")
+			Expect(sudo[0].Env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318"),
+				"sudo drops the environment, so start must pass the endpoint explicitly")
+			Expect(sudo[0].Env).To(HaveKeyWithValue("OTEL_SERVICE_NAME", "foreman"))
+		})
+
+		It("passes its trace context to the factory half across sudo", func() {
+			tracer := sdktrace.NewTracerProvider().Tracer("test")
+			h.deps.Tracer = tracer
+
+			ctx, span := tracer.Start(context.Background(), telemetry.RootSpanName("start"))
+			defer span.End()
+
+			h.acceptWrites()
+			h.sudoExit(0)
+
+			Expect(Start(ctx, h.deps, testConfig(), workflow.Implementer, testRef(5))).To(BeZero())
+
+			sudo := h.runner.find("sudo")
+			Expect(sudo).To(HaveLen(1), "no factory half to continue the trace")
+			Expect(sudo[0].Env).To(HaveKey(telemetry.TraceParentVar),
+				"sudo drops the environment, so start must pass the trace context explicitly")
+
+			parentCtx, ok := telemetry.ContinueTrace(context.Background(), sudo[0].Env[telemetry.TraceParentVar])
+			Expect(ok).To(BeTrue(), "the trace context passed to the factory half is malformed")
+
+			parent := trace.SpanContextFromContext(parentCtx)
+			Expect(parent.TraceID()).To(Equal(span.SpanContext().TraceID()))
+			Expect(parent.SpanID()).To(Equal(span.SpanContext().SpanID()))
 		})
 
 		It("marks the issue failed when the factory half fails", func() {
@@ -232,11 +277,11 @@ var _ = Describe("Start", func() {
 			Expect(start(workflow.Planner)).Error().NotTo(HaveOccurred())
 
 			mints := h.runner.find("app-token", " token ")
-			Expect(mints).To(HaveLen(1), "a successful round needs no second transition")
+			Expect(mints).To(HaveLen(2), "a successful round needs no second transition")
 
 			for _, c := range mints {
 				Expect(appOf(c)).To(Equal(string(workflow.Planner)))
-				Expect(c.Argv[len(c.Argv)-2:]).To(Equal([]string{"--repo", "o/r"}))
+				Expect(c.Argv).To(ContainElements("--repo", "o/r"))
 			}
 
 			h.expectAuthorizedAs(workflow.Planner)
@@ -267,11 +312,11 @@ var _ = Describe("Start", func() {
 				Expect(start(role)).Error().NotTo(HaveOccurred())
 
 				mints := h.runner.find("app-token", " token ")
-				Expect(mints).To(HaveLen(2))
+				Expect(mints).To(HaveLen(3))
 
 				for _, c := range mints {
 					Expect(appOf(c)).To(Equal(string(role)))
-					Expect(c.Argv[len(c.Argv)-2:]).To(Equal([]string{"--repo", "o/r"}))
+					Expect(c.Argv).To(ContainElements("--repo", "o/r"))
 				}
 
 				h.expectAuthorizedAs(role)
