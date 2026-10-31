@@ -1,0 +1,23 @@
+---
+# Runs the github_app role's credential tasks as the current user. The Ginkgo suite beside it
+# passes dagu_user, github_app_group and github_app_dir as extra vars, since group_vars would
+# otherwise win, and github_apps with key files under test_key_dir, then asserts on owners and modes.
+- name: Install the GitHub App credentials locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  vars:
+    github_apps:
+      implementer:
+        app_id: "111"
+        private_key_file: "{{ test_key_dir }}/implementer.pem"
+      reviewer:
+        app_id: "222"
+        private_key_file: "{{ test_key_dir }}/reviewer.pem"
+  tasks:
+    - name: Install each App's credentials
+      ansible.builtin.include_role:
+        name: github_app
+        tasks_from: credentials

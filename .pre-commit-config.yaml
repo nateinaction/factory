@@ -237,3 +237,12 @@ repos:
         language: system
         files: ^(roles/|tests/|group_vars/|inventory/|site\.yml|ansible\.cfg)
         pass_filenames: false
+
+      # The Go role suites, which replace the bash drivers above one role at a time; the bash hook
+      # goes when the last driver does. Same file triggers as the drivers, plus the shared helper.
+      - id: go-role-test
+        name: go role tests (ginkgo)
+        entry: go test ./roles/... ./roletest/...
+        language: system
+        files: ^(roles/|tests/|group_vars/|inventory/|roletest/|go\.(mod|sum|work)$|site\.yml|ansible\.cfg)
+        pass_filenames: false
