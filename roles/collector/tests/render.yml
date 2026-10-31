@@ -38,3 +38,4 @@
           factory_collector_memory_limit_mib: "{{ factory_collector_memory_limit_mib | int }}"
           factory_collector_state_dir: "{{ factory_collector_state_dir }}"
           factory_dagu_logs_dir: "{{ factory_dagu_logs_dir }}"
+          factory_host_health_port: "{{ factory_host_health_port | int }}"

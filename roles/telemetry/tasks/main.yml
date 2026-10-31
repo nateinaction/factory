@@ -99,6 +99,6 @@
   loop: [prometheus, tempo, loki, grafana]
 
 # The backend is exposed to the tailnet only through tailscale serve. The tasks live in their own
-# file so tests/serve.yml can run them against a fake tailscale.
+# file so the role's tests/serve.yml can run them against a fake tailscale.
 - name: Serve the backend to the tailnet
   ansible.builtin.include_tasks: serve.yml

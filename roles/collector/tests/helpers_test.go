@@ -3,11 +3,11 @@ package tests_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -30,6 +30,7 @@ type groupVars struct {
 	MemoryLimitMib    int      `json:"factory_collector_memory_limit_mib"`
 	StateDir          string   `json:"factory_collector_state_dir"`
 	DaguLogsDir       string   `json:"factory_dagu_logs_dir"`
+	HostHealthPort    int      `json:"factory_host_health_port"`
 }
 
 // collector is one render of the role: the parsed config, the unit text and the group_vars.
@@ -70,16 +71,36 @@ func contents(path string) string {
 	return string(b)
 }
 
-// at walks a parsed config along the keys and fails the spec where a key is missing.
-func at(node any, keys ...string) any {
+// at walks a parsed config along the steps, map keys (string) and list indexes (int), and fails the
+// spec where a step is missing.
+func at(node any, steps ...any) any {
 	GinkgoHelper()
-	for i, key := range keys {
-		m, ok := node.(map[string]any)
-		Expect(ok).To(BeTrue(), "%s is not a map", strings.Join(keys[:i], "."))
-		node, ok = m[key]
-		Expect(ok).To(BeTrue(), "no %s", strings.Join(keys[:i+1], "."))
+	for i, step := range steps {
+		path := fmt.Sprint(steps[:i+1]...)
+		switch s := step.(type) {
+		case string:
+			m, ok := node.(map[string]any)
+			Expect(ok).To(BeTrue(), "no map before %s", path)
+			node, ok = m[s]
+			Expect(ok).To(BeTrue(), "no %s", path)
+		case int:
+			l, ok := node.([]any)
+			Expect(ok).To(BeTrue(), "no list before %s", path)
+			Expect(s).To(BeNumerically("<", len(l)), "no %s", path)
+			node = l[s]
+		default:
+			Fail("a step is a string or an int")
+		}
 	}
 	return node
+}
+
+// list reads a parsed list.
+func list(node any) []any {
+	GinkgoHelper()
+	l, ok := node.([]any)
+	Expect(ok).To(BeTrue(), "not a list: %v", node)
+	return l
 }
 
 // strs reads a parsed list of strings.
