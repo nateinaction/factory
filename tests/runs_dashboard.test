@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# The runs dashboard: model cost, run outcomes, claims and reaped runs by agent role, over the chosen
+# time range, so a counter that moves only when a run finishes still shows something between runs.
+# Run against the real group_vars; no host needed.
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg"
+
+failures=0
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+# dash <python>: runs the assertions with the parsed dashboard `dash` and its panels' queries `exprs`.
+dash() {
+  python3 -I -c '
+import json, sys
+dash = json.load(open(sys.argv[1]))
+exprs = {p["title"]: [t["expr"] for t in p["targets"]] for p in dash["panels"]}
+exec(sys.argv[2])
+' "$out/runs.json" "$1"
+}
+
+if ! ansible-playbook "$root/tests/runs_dashboard.yml" >"$out/.log" 2>&1; then
+  cat "$out/.log" >&2
+  echo "FAIL render playbook" >&2
+  exit 1
+fi
+
+check "the dashboard is valid JSON with its own uid" dash '
+assert dash["uid"] == "factory-runs", dash["uid"]
+assert dash["title"] == "Factory runs", dash["title"]
+'
+check "model cost is summed per role and per model over the time range" dash '
+assert exprs["Model cost by agent role"] == ["sum by (factory_agent_role) (increase(factory_run_cost_total[$__range]))"], exprs
+assert exprs["Model cost by model"] == ["sum by (gen_ai_request_model) (increase(factory_run_cost_total[$__range]))"], exprs
+'
+check "finished runs are counted by outcome and by role over the time range" dash '
+assert exprs["Runs by outcome"] == ["sum by (factory_outcome) (increase(factory_run_outcomes_total[$__range]))"], exprs
+assert exprs["Runs by agent role"] == ["sum by (factory_agent_role) (increase(factory_run_outcomes_total[$__range]))"], exprs
+'
+check "claims and reaped runs are counted by role over the time range" dash '
+assert exprs["Issues claimed by agent role"] == ["sum by (factory_agent_role) (increase(factory_poll_claims_total[$__range]))"], exprs
+assert exprs["Dead runs reaped by agent role"] == ["sum by (factory_agent_role) (increase(factory_runs_reaped_total[$__range]))"], exprs
+'
+check "no panel uses a window that empties between runs" dash '
+for title, queries in exprs.items():
+    for q in queries:
+        assert "$__rate_interval" not in q and "[5m]" not in q, (title, q)
+'
+check "every panel reads the provisioned Prometheus datasource" dash '
+assert {p["datasource"]["uid"] for p in dash["panels"]} == {"prometheus"}, dash["panels"]
+assert all(t["datasource"]["uid"] == "prometheus" for p in dash["panels"] for t in p["targets"])
+'
+check "every panel shows a count even for a series that never moved" dash '
+assert all(t.get("instant") is True for p in dash["panels"] for t in p["targets"]), dash["panels"]
+'
+check "the dashboard is installed beside the host health one" grep -Fq \
+  'dest: /etc/grafana/dashboards/runs.json' "$out/telemetry-tasks.yml"
+
+[ "$failures" -eq 0 ]

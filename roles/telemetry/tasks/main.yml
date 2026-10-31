@@ -70,6 +70,7 @@
     - { src: datasources.yaml.j2, dest: /etc/grafana/provisioning/datasources/factory.yaml, handler: grafana }
     - { src: dashboards.yaml.j2, dest: /etc/grafana/provisioning/dashboards/factory.yaml, handler: grafana }
     - { src: host-health.json.j2, dest: /etc/grafana/dashboards/host-health.json, handler: grafana }
+    - { src: runs.json.j2, dest: /etc/grafana/dashboards/runs.json, handler: grafana }
   loop_control:
     label: "{{ item.dest }}"
   notify: "Restart {{ item.handler }}"

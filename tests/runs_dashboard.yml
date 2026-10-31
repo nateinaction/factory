@@ -1,0 +1,23 @@
+---
+# Renders the runs dashboard into $RENDER_DIR with the real group_vars, so tests/runs_dashboard.test
+# can assert on it without a host.
+- name: Render the runs dashboard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/factory.yml
+  vars:
+    render_dir: "{{ lookup('env', 'RENDER_DIR') }}"
+  tasks:
+    - name: Render the runs dashboard
+      ansible.builtin.template:
+        src: ../roles/telemetry/templates/runs.json.j2
+        dest: "{{ render_dir }}/runs.json"
+        mode: "0644"
+
+    - name: Render the tasks that install the dashboards
+      ansible.builtin.copy:
+        src: ../roles/telemetry/tasks/main.yml
+        dest: "{{ render_dir }}/telemetry-tasks.yml"
+        mode: "0644"
