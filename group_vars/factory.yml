@@ -227,7 +227,7 @@ factory_agent_limits:
   implementer:
     { steps: 200, deadline_minutes: 90, retro: { steps: 20, deadline_minutes: 15 } }
   reviewer:
-    { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
+    { steps: 200, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
   curator:
     { steps: 60, deadline_minutes: 30, retro: { steps: 20, deadline_minutes: 15 } }
 # How far past an agent role's deadline its running label may age before a poll calls the run dead and
