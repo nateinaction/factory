@@ -1,0 +1,14 @@
+# Terms typos would flag that are not mistakes.
+[default]
+# Hex ids: trace and span ids in fixtures are not words.
+extend-ignore-re = ["[0-9a-f]{16,}"]
+
+[default.extend-words]
+# golangci-lint's linter name.
+importas = "importas"
+# "mis-scoped" in a skill's text.
+mis = "mis"
+
+[files]
+# Module versions and checksums are hashes, not text.
+extend-exclude = ["go.mod", "go.sum"]

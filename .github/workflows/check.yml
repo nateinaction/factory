@@ -22,6 +22,9 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The same hooks the git hook runs, from .pre-commit-config.yaml.
       - name: pre-commit
+        # no-commit-to-branch would fail every run on main.
+        env:
+          SKIP: no-commit-to-branch
         run: nix develop --command pre-commit run --all-files
       # The history, where the pre-commit hook scans only what a commit stages.
       - name: gitleaks

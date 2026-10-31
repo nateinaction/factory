@@ -66,6 +66,9 @@
             pkgs.opentelemetry-collector-contrib
             # Pinned to 4.7.0 by the locked nixpkgs revision (see flake.lock).
             pkgs.pre-commit
+            # The stock file hygiene hooks' executables, and the spelling checker, that .pre-commit-config.yaml runs.
+            pkgs.python3Packages.pre-commit-hooks
+            pkgs.typos
             # foreman's tests run the GitHub emulator for their state.
             (emulate pkgs)
           ];
