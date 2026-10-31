@@ -7,7 +7,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 
 | Ansible role | Result |
 | --- | --- |
-| `base` | hostname, `en_US.UTF-8` locale, a login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
+| `base` | hostname, `en_US.UTF-8` locale, a Go-built login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |

@@ -79,9 +79,7 @@
               # The stock file hygiene hooks' executables, and the spelling checker, that .pre-commit-config.yaml runs.
               pkgs.python3Packages.pre-commit-hooks
               pkgs.typos
-              # Linters and formatters for the shell, Nix, Markdown and workflow files.
-              pkgs.shellcheck
-              pkgs.shfmt
+              # Linters and formatters for the Nix, Markdown and workflow files.
               pkgs.actionlint
               pkgs.zizmor
               pkgs.nixfmt

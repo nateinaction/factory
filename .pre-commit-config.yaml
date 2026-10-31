@@ -62,18 +62,6 @@ repos:
         language: system
         types: [text]
 
-      - id: check-executables-have-shebangs
-        name: executables have shebangs
-        entry: check-executables-have-shebangs
-        language: system
-        types: [text, executable]
-
-      - id: check-shebang-scripts-are-executable
-        name: shebang scripts are executable
-        entry: check-shebang-scripts-are-executable
-        language: system
-        types: [text]
-
       - id: check-symlinks
         name: check symlinks
         entry: check-symlinks
@@ -93,21 +81,6 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
-
-      # Shell: lint, then format. Files are found by shebang or extension through `types`.
-      - id: shellcheck
-        name: shellcheck
-        entry: shellcheck
-        language: system
-        types: [shell]
-        # direnv's file has no shebang and is not a shell script.
-        exclude: ^\.envrc$
-
-      - id: shfmt
-        name: shfmt
-        entry: shfmt -d -i 2 -ci
-        language: system
-        types: [shell]
 
       - id: actionlint
         name: actionlint
