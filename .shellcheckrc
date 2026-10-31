@@ -1,3 +1,0 @@
-# The tests pass Python, jq and Ansible code to other programs in single quotes on purpose, so
-# SC2016 (an expression in single quotes will not expand) fires on every one and means nothing here.
-disable=SC2016
