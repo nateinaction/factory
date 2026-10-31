@@ -22,4 +22,4 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/ag
 
 ## Where tests live
 
-An Ansible role's tests live in that role's `tests` directory: Ginkgo specs beside the render playbooks they drive. Helpers shared by role suites (rendering a playbook, building a fake binary) live in the root `roletest` package. The root Go module holds the role suites and `roletest`; Foreman is its own module, and `go.work` ties them together, so `go test ./... ./foreman/...` from the repo root runs both.
+An Ansible role's tests live in that role's `tests` directory: Ginkgo specs beside the render playbooks they drive. Helpers shared by role suites (rendering a playbook, building a fake binary) live in the root `roletest` package. The workflows' permissions check is a Ginkgo spec beside them, in `.github/workflows`; Go's `./...` skips dot directories, so the `go-role-test` hook names that package. The root Go module holds the role suites and `roletest`; Foreman is its own module, and `go.work` ties them together, so `go test ./... ./foreman/...` from the repo root runs both.
