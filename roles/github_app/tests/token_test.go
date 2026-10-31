@@ -18,15 +18,12 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// helperTimeout bounds one run of the helper, which signs with openssl and makes a few requests.
+// helperTimeout bounds one run of the helper, which signs a JWT and makes a few requests.
 const helperTimeout = 2 * time.Minute
 
-// helper is the executable under test. Only this path changes when the helper is rewritten in Go.
+// helper is the executable under test: foreman, whose token and repositories verbs are the helper.
 func helper() string {
-	GinkgoHelper()
-	path, err := filepath.Abs(filepath.Join("..", "files", "github-app-token"))
-	Expect(err).NotTo(HaveOccurred())
-	return path
+	return foremanBinary
 }
 
 // result is what one run of the helper did.
@@ -77,7 +74,7 @@ func writeApps(conf string) {
 	}
 }
 
-var _ = Describe("the github-app-token helper", Ordered, func() {
+var _ = Describe("the foreman token helper", Ordered, func() {
 	var api, conf string
 
 	BeforeAll(func() {

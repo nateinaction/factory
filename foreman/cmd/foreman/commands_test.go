@@ -141,7 +141,7 @@ var _ = Describe("the foreman command", func() {
 		DescribeTable("rejects a bad invocation with the usage exit, doing nothing",
 			func(args ...string) {
 				Expect(h.execute(args...)).To(Equal(ExitUsage))
-				Expect(h.errOut.String()).To(ContainSubstring("Usage:"))
+				Expect(h.errOut.String()).To(ContainSubstring("usage:"))
 				Expect(h.logs.String()).To(ContainSubstring("bad invocation"))
 				Expect(h.runner.cmds).To(BeEmpty())
 			},

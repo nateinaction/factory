@@ -73,6 +73,8 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 			return nil
 		},
 	}
+	// The token helper's contract has always printed "usage:" in lower case.
+	root.SetUsageTemplate(strings.Replace(root.UsageTemplate(), "Usage:", "usage:", 1))
 	// The generated completion verb would widen the invocation contract the dagu DAGs rely on.
 	root.CompletionOptions.DisableDefaultCmd = true
 
@@ -84,6 +86,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 
 	root.AddCommand(
 		pollCommand(d), roleCommand(d, startVerb), roleCommand(d, runVerb), statusCommand(d), logsCommand(d),
+		helperCommand(d, tokenVerb), helperCommand(d, repositoriesVerb),
 		historyCommand(d),
 	)
 

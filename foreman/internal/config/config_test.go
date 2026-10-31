@@ -34,7 +34,7 @@ var _ = Describe("SettingsViper", func() {
 		Expect(s.TokenPath(workflow.Reviewer, "r1")).To(Equal("/run/factory/gh-token-reviewer-r1"))
 		Expect(s.API).To(Equal("https://api.github.com"))
 		Expect(s.Self).To(Equal("/usr/local/bin/foreman"))
-		Expect(s.TokenHelper).To(Equal("/usr/local/bin/github-app-token"))
+		Expect(s.TokenHelper).To(Equal("/usr/local/bin/foreman"))
 		Expect(s.Dagu).To(Equal("/usr/local/bin/dagu"))
 		Expect(s.DAGPrefix).To(Equal("factory-"))
 	})
