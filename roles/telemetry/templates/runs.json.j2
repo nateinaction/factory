@@ -45,7 +45,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (increase(factory_run_cost_total[$__range]))",
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
@@ -94,7 +94,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (gen_ai_request_model) (increase(factory_run_cost_total[$__range]))",
+          "expr": "sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__range]))",
           "instant": true,
           "range": false,
           "legendFormat": "{{ '{{gen_ai_request_model}}' }}",

@@ -39,9 +39,11 @@ check "the dashboard is valid JSON with its own uid" dash '
 assert dash["uid"] == "factory-runs", dash["uid"]
 assert dash["title"] == "Factory runs", dash["title"]
 '
+# Each run is its own process, so its cost counter restarts at zero and Prometheus holds one sample per
+# run, that run'"'"'s whole cost. increase() reads each restart as a reset and drops the first run'"'"'s share.
 check "model cost is summed per role and per model over the time range" dash '
-assert exprs["Model cost by agent role"] == ["sum by (factory_agent_role) (increase(factory_run_cost_total[$__range]))"], exprs
-assert exprs["Model cost by model"] == ["sum by (gen_ai_request_model) (increase(factory_run_cost_total[$__range]))"], exprs
+assert exprs["Model cost by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__range]))"], exprs
+assert exprs["Model cost by model"] == ["sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__range]))"], exprs
 '
 check "finished runs are counted by outcome and by role over the time range" dash '
 assert exprs["Runs by outcome"] == ["sum by (factory_outcome) (increase(factory_run_outcomes_total[$__range]))"], exprs
