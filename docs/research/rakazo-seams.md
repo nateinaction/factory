@@ -55,7 +55,7 @@ Optional capability is expressed two ways: optional methods on the interface (fo
 
 ## 5. Chat and other vendors
 
-- **`MessagingSurface`** (`interfaces.ts:517`): `platforms()`, `handleWebhook(provider, Request)`, `onInbound(sink)`, `sendToThread`, `openDirectThread`, `acknowledge`, optional `fetchThreadHistory`, `initialize`, `shutdown`. Thread ids are opaque and provider-prefixed (`"slack:C1:..."`). Platforms mount behind the Chat SDK (`chat-sdk-surface.ts` `MessagingPlatform {provider, capabilities, adapter}`); the SDK adapter verifies webhooks and translates payloads. Platforms seen in the tree: Slack, Telegram, Sendblue (iMessage/SMS), Lark, WhatsApp-style team chat.
+- **`MessagingSurface`** (`interfaces.ts:517`): `platforms()`, `handleWebhook(provider, Request)`, `onInbound(sink)`, `sendToThread`, `openDirectThread`, `acknowledge`, optional `fetchThreadHistory`, `initialize`, `shutdown`. Thread ids are opaque and provider-prefixed (`"slack:C1:..."`). Platforms mount behind the Chat SDK (`chat-sdk-surface.ts` `MessagingPlatform {provider, capabilities, adapter}`); the SDK adapter verifies webhooks and translates payloads. Platforms seen in the tree: Slack, Telegram, Sendblue (iMessage/SMS), Lark, WhatsApp.
 - Other small seams, each `describe()` plus a few verbs: `VoiceProvider` (ElevenLabs, OpenAI-compatible), `WebSearchProvider`/`WebFetchProvider`/`WebProvider` (Keenable and others), `BrowserProvider` (computer, fake, emulator), `TransactionalEmailProvider` (Resend, SMTP), `BillingProvider`, `KeyProvider` (AWS KMS), `SecretStore`, `ObjectStorage`, `MemoryStore`/`SemanticMemoryProvider` (Honcho), `JobPublisher`/`JobWorkerHost`, `RealtimeFanout`, `NotificationProvider`, `ExecutionRunner`.
 
 ## 6. Emulators and fakes
@@ -94,7 +94,7 @@ Foreman side, from the repo: `foreman/internal/ghtest` starts the vercel-labs `e
 | Chat | Seam with opaque thread ids and per-platform adapter behind a library | Foreman has no chat boundary today |
 | Versioning | `contractVersion` string present, unenforced | Supports the map's preference to version only where it buys something |
 | Fake per seam | Both kinds, plus a conformance suite across implementations | Matches the map's "emulator or fake per seam" fog. A conformance suite is a way to prove "a credible second implementation fits" without building one |
-| Enforcement | `packages/*` split plus a `describe()` convention; no import-boundary linter was found in the tree | Rakazo does not answer the go-arch-lint question |
+| Enforcement | `packages/*` split plus a `describe()` convention; no import-boundary tool (dependency-cruiser, madge, knip) is configured | Rakazo does not answer the go-arch-lint question |
 
 ## Not found
 
