@@ -1,0 +1,15 @@
+---
+# Renders the runs dashboard into render_dir with the real group_vars, so the dashboard specs
+# beside it can assert on it without a host.
+- name: Render the runs dashboard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Render the runs dashboard
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/runs.json.j2"
+        dest: "{{ render_dir }}/runs.json"
+        mode: "0644"

@@ -1,15 +1,14 @@
 ---
-# Renders the telemetry role's configs into $RENDER_DIR with the real group_vars, so
-# tests/telemetry.test can assert on them without a host. Grafana's config is rendered by the role's
-# own task, so the test also sees its password guard and the mode it installs.
+# Renders the telemetry role's configs into render_dir with the real group_vars, so the config specs
+# beside it can assert on them without a host. Grafana's config is rendered by the role's own task,
+# so the specs also see its password guard and the mode it installs. The specs pass render_owner and
+# render_group, and factory_telemetry_grafana_admin_password unless they test its absence.
 - name: Render the telemetry backend config
   hosts: localhost
   connection: local
   gather_facts: false
   vars_files:
-    - ../group_vars/factory.yml
-  vars:
-    render_dir: "{{ lookup('env', 'RENDER_DIR') }}"
+    - ../../../group_vars/factory.yml
   tasks:
     # First, so an unset admin password fails the play before anything is written. The path, owner
     # and group point into the temporary tree, as the current user; the mode stays the role's own.
@@ -19,12 +18,12 @@
         tasks_from: grafana
       vars:
         telemetry_grafana_config_path: "{{ render_dir }}/grafana.ini"
-        telemetry_grafana_config_owner: "{{ lookup('env', 'RENDER_OWNER') }}"
-        telemetry_grafana_config_group: "{{ lookup('env', 'RENDER_GROUP') }}"
+        telemetry_grafana_config_owner: "{{ render_owner }}"
+        telemetry_grafana_config_group: "{{ render_group }}"
 
     - name: Render each template
       ansible.builtin.template:
-        src: "../roles/telemetry/templates/{{ item }}.j2"
+        src: "{{ playbook_dir | dirname }}/templates/{{ item }}.j2"
         dest: "{{ render_dir }}/{{ item }}"
         mode: "0644"
       loop:
@@ -37,22 +36,12 @@
         - loki.yaml
         - datasources.yaml
 
-    - name: Read the YAML back
-      ansible.builtin.slurp:
-        src: "{{ render_dir }}/{{ item }}"
-      loop: [tempo.yaml, loki.yaml, datasources.yaml]
-      register: telemetry_rendered
-
-    # The test's python has no YAML parser; hand it JSON.
-    - name: Write the configs and the vars as JSON
+    - name: Write the vars as JSON
       ansible.builtin.copy:
-        content: "{{ {'tempo': tempo, 'loki': loki, 'datasources': datasources, 'v': v} | to_json }}"
-        dest: "{{ render_dir }}/config.json"
+        content: "{{ v | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
         mode: "0644"
       vars:
-        tempo: "{{ telemetry_rendered.results[0].content | b64decode | from_yaml }}"
-        loki: "{{ telemetry_rendered.results[1].content | b64decode | from_yaml }}"
-        datasources: "{{ telemetry_rendered.results[2].content | b64decode | from_yaml }}"
         v:
           factory_telemetry_memory_budget_mib: "{{ factory_telemetry_memory_budget_mib }}"
           factory_telemetry_memory_max_mib: "{{ factory_telemetry_memory_max_mib }}"
