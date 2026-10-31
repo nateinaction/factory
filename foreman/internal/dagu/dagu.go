@@ -5,6 +5,7 @@ package dagu
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,28 @@ const (
 	StatusWaiting = "waiting"
 	// StatusNotStarted is a run dagu has recorded but not begun.
 	StatusNotStarted = "not_started"
+	// StatusRetrying is a run dagu will start again. dagu reports such a run as running, so history
+	// never filters on it; it is active because the bash drain check counted it and a run about to
+	// restart can still change state.
+	StatusRetrying = "retrying"
+)
+
+// Statuses of a run dagu can no longer move.
+const (
+	// StatusSucceeded is a run whose steps all passed.
+	StatusSucceeded = "succeeded"
+	// StatusFailed is a run with a failed step.
+	StatusFailed = "failed"
+	// StatusCanceled is a run a person or dagu cancelled.
+	StatusCanceled = "canceled"
+	// StatusCancelled is the other spelling dagu uses for StatusCanceled.
+	StatusCancelled = "cancelled"
+	// StatusAborted is a run dagu stopped.
+	StatusAborted = "aborted"
+	// StatusPartiallySucceeded is a run in which some steps passed and the rest were allowed to fail.
+	StatusPartiallySucceeded = "partially_succeeded"
+	// StatusRejected is a run a human task turned down.
+	StatusRejected = "rejected"
 )
 
 // Streams a run writes, as `dagu status` names them.
@@ -51,12 +74,21 @@ type Run struct {
 
 // Active reports whether the run can still change state.
 func (r Run) Active() bool {
-	switch r.Status {
-	case StatusQueued, StatusRunning, StatusWaiting, StatusNotStarted:
-		return true
-	}
+	return slices.Contains(activeStatuses(), r.Status)
+}
 
-	return false
+// activeStatuses are the statuses of a run dagu can still move. It is the one definition: Active,
+// ActiveStatuses and Classify all read it.
+func activeStatuses() []string {
+	return []string{StatusQueued, StatusRunning, StatusWaiting, StatusNotStarted, StatusRetrying}
+}
+
+// finishedStatuses are the statuses of a run dagu can no longer move.
+func finishedStatuses() []string {
+	return []string{
+		StatusSucceeded, StatusFailed, StatusCanceled, StatusCancelled, StatusAborted,
+		StatusPartiallySucceeded, StatusRejected,
+	}
 }
 
 // Waiting reports whether the run is waiting for a worker: dagu has it queued but no worker has
@@ -65,9 +97,10 @@ func (r Run) Waiting() bool {
 	return r.Status == StatusQueued || r.Status == StatusNotStarted
 }
 
-// ActiveStatuses are the run statuses Active accepts, as `dagu history --status` names them.
+// ActiveStatuses are the active statuses `dagu history --status` can select: every active status
+// but retrying, which dagu reports as running.
 func ActiveStatuses() []string {
-	return []string{StatusQueued, StatusRunning, StatusWaiting, StatusNotStarted}
+	return slices.DeleteFunc(activeStatuses(), func(s string) bool { return s == StatusRetrying })
 }
 
 // Param reads one parameter from the run's params. A key is present only when it is set.

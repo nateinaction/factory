@@ -84,7 +84,7 @@ func newRootCommand(d *foreman.Deps, settings *viper.Viper) (*cobra.Command, err
 
 	root.AddCommand(
 		pollCommand(d), roleCommand(d, startVerb), roleCommand(d, runVerb), statusCommand(d), logsCommand(d),
-		historyCommand(d),
+		historyCommand(d), drainCheckCommand(d),
 	)
 
 	return root, nil
@@ -292,6 +292,21 @@ func historyCommand(d *foreman.Deps) *cobra.Command {
 			}
 
 			code, err := foreman.History(cmd.Context(), *d, cfg, repo)
+
+			return result(code, err)
+		},
+	}
+}
+
+// drainCheckCommand is `foreman drain-check`: exit 0 only when the latest run of every named DAG
+// has finished, for the deploy's cutover guard.
+func drainCheckCommand(d *foreman.Deps) *cobra.Command {
+	return &cobra.Command{
+		Use:   "drain-check <dag>...",
+		Short: "exit 0 only if the latest run of every named DAG has finished",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			code, err := foreman.DrainCheck(cmd.Context(), *d, args)
 
 			return result(code, err)
 		},
