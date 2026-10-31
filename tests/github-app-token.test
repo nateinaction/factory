@@ -25,7 +25,8 @@ for _ in $(seq 1 50); do
   [ -s "$work/port" ] && break
   sleep 0.1
 done
-export GITHUB_API_URL="http://127.0.0.1:$(cat "$work/port")" GITHUB_APP_DIR="$work/conf"
+port="$(cat "$work/port")"
+export GITHUB_API_URL="http://127.0.0.1:$port" GITHUB_APP_DIR="$work/conf"
 
 failures=0
 # expect <name> <want-exit> <want-stdout> <args...>

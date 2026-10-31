@@ -19,7 +19,7 @@ foreman maps its guarantees to opencode v1.19.3 in `foreman/internal/opencode` (
 | Contacted domains | the run's egress proxy records each host for the usage line's `domains` |
 | No private destination | the run's egress proxy refuses any address that is not publicly routable, even when the agent role's allowlist is open; see `foreman/docs/sandbox.md` and ADR 0001 |
 
-### Where the Reviewer's state lives
+## Where the Reviewer's state lives
 
 Every agent role, the Reviewer included, keeps its opencode state in an on-disk database in the
 run's own state directory (`OPENCODE_DB`). The run's retro shares that database so it can resume the
@@ -50,7 +50,6 @@ time before forwarding, so another local process or run cannot spend the key. Th
 the header with the real OpenRouter key, which never enters the model's config. The token stays in
 memory and the run's environment, never in a file that outlives the run or in a log. The acceptance
 test in `foreman/internal/foreman/acceptance_test.go` exercises this under srt.
-
 
 ## How foreman enforces the step cap and the deadline
 
@@ -100,7 +99,6 @@ anything else. Their `gh` rule denies the whole command and re-allows the inspec
 (`view`, `list`, `diff`, `checks`, `status`, and `api` with a GET method), so `gh pr comment`,
 `gh pr review` and the `gh api -f`/`-F`/`--input` forms that POST are denied. The read-only roles may
 run a fixed list of inspection commands; their bash is denied by default.
-
 
 ## Does opencode still read AGENTS.md with project config disabled?
 

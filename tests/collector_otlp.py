@@ -143,7 +143,10 @@ def metric_payloads(now):
                                             "attributes": [
                                                 attr("factory.repo", "o/r"),
                                                 attr("factory.state", "factory:review"),
-                                                attr("not.allowed.metric", "secret-metric-value"),
+                                                attr(
+                                                    "not.allowed.metric",
+                                                    "secret-metric-value",
+                                                ),
                                             ],
                                         }
                                     ],
@@ -248,6 +251,7 @@ def main():
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
     if rendered.returncode != 0:
         sys.stderr.write(rendered.stdout + rendered.stderr)
@@ -300,8 +304,16 @@ service:
     # collector's CAP_DAC_READ_SEARCH can read the target, so the receiver has to drop it.
     root_only = os.path.join(work, "root-only")
     with open(root_only, "w") as f:
-        f.write(json.dumps({"time": "2026-01-01T00:00:00.123456789Z", "level": "INFO",
-                            "msg": "root-only secret"}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "time": "2026-01-01T00:00:00.123456789Z",
+                    "level": "INFO",
+                    "msg": "root-only secret",
+                }
+            )
+            + "\n"
+        )
     os.chmod(root_only, 0o600)
     os.symlink(root_only, os.path.join(run_dir, "leak.stderr.log"))
 
@@ -316,15 +328,19 @@ service:
     sibling_run = os.path.join(work, "dagu-logs-outside")
     os.makedirs(os.path.join(sibling_run, "a1b2c3"))
     sibling_err = os.path.join(sibling_run, "a1b2c3", "sneak.stderr.log")
-    open(sibling_err, "w").close()
+    with open(sibling_err, "w"):
+        pass
     os.makedirs(os.path.join(logs_dir, "factory-sibling"))
     os.symlink(sibling_run, os.path.join(logs_dir, "factory-sibling", "run-sibling"))
 
-    sink_log = open(os.path.join(work, "sink.log"), "w")
-    front_log = open(os.path.join(work, "front.log"), "w")
+    # Held open for the collectors' lifetime and closed in the cleanup below.
+    sink_log = open(os.path.join(work, "sink.log"), "w")  # noqa: SIM115
+    front_log = open(os.path.join(work, "front.log"), "w")  # noqa: SIM115
 
     sink = subprocess.Popen(
-        ["otelcol-contrib", "--config", sink_config], stdout=sink_log, stderr=subprocess.STDOUT
+        ["otelcol-contrib", "--config", sink_config],
+        stdout=sink_log,
+        stderr=subprocess.STDOUT,
     )
     front = subprocess.Popen(
         ["otelcol-contrib", "--config", os.path.join(render_dir, "config.yaml")],
@@ -346,33 +362,43 @@ service:
         # A run's stderr as dagu writes it, appended after the receiver started (start_at: end).
         time.sleep(1)
         with open(run_err, "a") as f:
-            for event in SECURITY_EVENTS:
-                f.write(
-                    json.dumps(
-                        {
-                            "time": "2026-01-01T00:00:00.123456789Z",
-                            "level": "WARN",
-                            "msg": "security event",
-                            **event,
-                            "trace_id": TRACE_ID,
-                            "span_id": SPAN_ID,
-                            "not.allowed.filelog": "secret-filelog-value",
-                        }
-                    )
-                    + "\n"
+            f.writelines(
+                json.dumps(
+                    {
+                        "time": "2026-01-01T00:00:00.123456789Z",
+                        "level": "WARN",
+                        "msg": "security event",
+                        **event,
+                        "trace_id": TRACE_ID,
+                        "span_id": SPAN_ID,
+                        "not.allowed.filelog": "secret-filelog-value",
+                    }
                 )
+                + "\n"
+                for event in SECURITY_EVENTS
+            )
             # A line that is not a JSON record, as a tool writing to fd 2 could leave behind: it must
             # be dropped rather than shipped as raw text to Loki.
             f.write("private raw tool output\n")
 
         # The symlink targets, written after the receiver started. A record that came back through a
         # symlink must never reach Loki, even though the collector can read the target.
-        for path, message in ((root_only, "root-only secret"),
-                              (outside_err, "symlinked directory secret"),
-                              (sibling_err, "similarly named directory secret")):
+        for path, message in (
+            (root_only, "root-only secret"),
+            (outside_err, "symlinked directory secret"),
+            (sibling_err, "similarly named directory secret"),
+        ):
             with open(path, "a") as f:
-                f.write(json.dumps({"time": "2026-01-01T00:00:00.223456789Z", "level": "INFO",
-                                    "msg": message}) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "time": "2026-01-01T00:00:00.223456789Z",
+                            "level": "INFO",
+                            "msg": message,
+                        }
+                    )
+                    + "\n"
+                )
 
         # The role's batch timeout is 5s, so give the exports well over one batch interval.
         wanted = [
@@ -430,7 +456,11 @@ service:
     ]
     leaked = [marker for marker in dropped if marker in out]
     if leaked:
-        sys.stderr.write("the collector let a non-allowlisted attribute through: " + repr(leaked) + "\n")
+        sys.stderr.write(
+            "the collector let a non-allowlisted attribute through: "
+            + repr(leaked)
+            + "\n"
+        )
         sys.stderr.write(out)
         return 1
 
@@ -439,10 +469,21 @@ service:
         sys.stderr.write(out)
         return 1
 
-    smuggled = [m for m in ("root-only secret", "symlinked directory secret",
-                            "similarly named directory secret") if m in out]
+    smuggled = [
+        m
+        for m in (
+            "root-only secret",
+            "symlinked directory secret",
+            "similarly named directory secret",
+        )
+        if m in out
+    ]
     if smuggled:
-        sys.stderr.write("the collector shipped a file reached through a symlink: " + repr(smuggled) + "\n")
+        sys.stderr.write(
+            "the collector shipped a file reached through a symlink: "
+            + repr(smuggled)
+            + "\n"
+        )
         sys.stderr.write(out)
         return 1
 
@@ -470,7 +511,9 @@ service:
         if "event: Str(" + event["event"] + ")" in record
     }
     if set(shipped) != {event["event"] for event in SECURITY_EVENTS}:
-        sys.stderr.write("not every security event reached the sink: " + repr(sorted(shipped)) + "\n")
+        sys.stderr.write(
+            "not every security event reached the sink: " + repr(sorted(shipped)) + "\n"
+        )
         sys.stderr.write(out)
         return 1
 

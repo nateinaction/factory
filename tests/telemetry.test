@@ -7,13 +7,18 @@ set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
-export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg" RENDER_OWNER="$(id -un)" RENDER_GROUP="$(id -gn)"
+RENDER_OWNER="$(id -un)"
+RENDER_GROUP="$(id -gn)"
+export RENDER_DIR="$out" ANSIBLE_CONFIG="$root/ansible.cfg" RENDER_OWNER RENDER_GROUP
 
 failures=0
 check() {
   local name="$1"
   shift
-  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
 }
 
 # mode <path> <expected>: the octal permission bits.

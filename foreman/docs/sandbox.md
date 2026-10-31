@@ -181,7 +181,6 @@ deadline) is dropped instead: the run has already settled, so it emits no event,
 is the `retro failed` diagnostic. The event carries only these fields: never the run
 token, the key, a request header, or the model's file text.
 
-
 ## Fail closed
 
 There is no unsandboxed fallback and no flag that disables the sandbox:

@@ -88,7 +88,7 @@ live in this repo.
    (or a ruleset) with a human in `CODEOWNERS`, so no factory App's approval can
    merge a pull request alone. No App can satisfy code-owner review. For example:
 
-   ```
+   ```text
    # .github/CODEOWNERS
    * @your-github-login
    ```

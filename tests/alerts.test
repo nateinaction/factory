@@ -15,7 +15,10 @@ failures=0
 check() {
   local name="$1"
   shift
-  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
 }
 
 # rules <python>: runs the assertions with the rendered rules `rules` and the group_vars `v` in scope.

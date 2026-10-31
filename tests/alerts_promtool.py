@@ -19,27 +19,33 @@ import sys
 SAMPLES = {
     "ForemanEgressNotRoutable": {
         "series": [
-            'factory_security_events_total{factory_event="egress_refused",'
-            'factory_outcome="refused_not_routable",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5"}',
+            (
+                'factory_security_events_total{factory_event="egress_refused",'
+                'factory_outcome="refused_not_routable",factory_agent_role="implementer",'
+                'factory_repo="o/r",factory_issue="5"}'
+            ),
         ],
         "values": "0+1x10",
         "eval": "5m",
     },
     "ForemanProxyBadToken": {
         "series": [
-            'factory_security_events_total{factory_event="key_proxy_refused",'
-            'factory_outcome="refused_bad_token",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5"}',
+            (
+                'factory_security_events_total{factory_event="key_proxy_refused",'
+                'factory_outcome="refused_bad_token",factory_agent_role="implementer",'
+                'factory_repo="o/r",factory_issue="5"}'
+            ),
         ],
         "values": "0+1x10",
         "eval": "5m",
     },
     "ForemanOutputFactoryMarker": {
         "series": [
-            'factory_security_events_total{factory_event="output_rejected",'
-            'factory_outcome="factory_marker",factory_agent_role="implementer",'
-            'factory_repo="o/r",factory_issue="5"}',
+            (
+                'factory_security_events_total{factory_event="output_rejected",'
+                'factory_outcome="factory_marker",factory_agent_role="implementer",'
+                'factory_repo="o/r",factory_issue="5"}'
+            ),
         ],
         "values": "0+1x10",
         "eval": "5m",
@@ -126,7 +132,8 @@ def expand(text):
 
 def main():
     source, dest = sys.argv[1], sys.argv[2]
-    rendered = json.load(open(source))
+    with open(source) as f:
+        rendered = json.load(f)
 
     tests = []
     seen = set()
@@ -139,7 +146,8 @@ def main():
             test = {
                 "interval": "1m",
                 "input_series": [
-                    {"series": series, "values": sample["values"]} for series in sample["series"]
+                    {"series": series, "values": sample["values"]}
+                    for series in sample["series"]
                 ],
                 "alert_rule_test": [
                     {
@@ -150,7 +158,9 @@ def main():
                                 "exp_labels": EXPECTED_LABELS[name],
                                 "exp_annotations": {
                                     key: expand(value)
-                                    for key, value in rule.get("annotations", {}).items()
+                                    for key, value in rule.get(
+                                        "annotations", {}
+                                    ).items()
                                 },
                             }
                         ],
@@ -162,11 +172,17 @@ def main():
     for expected, actual in ((SAMPLES, seen), (EXPECTED_LABELS, seen)):
         missing = set(expected) - actual
         if missing:
-            raise SystemExit(f"alerts without a synthetic event or expected labels: {sorted(missing)}")
+            raise SystemExit(
+                f"alerts without a synthetic event or expected labels: {sorted(missing)}"
+            )
 
     with open(dest, "w") as out:
         json.dump(
-            {"rule_files": ["alerts.yaml"], "evaluation_interval": "1m", "tests": tests},
+            {
+                "rule_files": ["alerts.yaml"],
+                "evaluation_interval": "1m",
+                "tests": tests,
+            },
             out,
             indent=2,
         )

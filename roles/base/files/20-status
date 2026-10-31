@@ -2,21 +2,25 @@
 # Login status banner: load, memory, disk, temperature, dagu.
 # Runs as root via pam_motd on every login; must be fast and never fail the login.
 
-bold=$(printf '\033[1m'); dim=$(printf '\033[2m'); grn=$(printf '\033[32m')
-red=$(printf '\033[31m'); ylw=$(printf '\033[33m'); rst=$(printf '\033[0m')
+bold=$(printf '\033[1m')
+dim=$(printf '\033[2m')
+grn=$(printf '\033[32m')
+red=$(printf '\033[31m')
+ylw=$(printf '\033[33m')
+rst=$(printf '\033[0m')
 
 # bar PCT -> 20-cell bar, coloured by threshold
 bar() {
-	pct=$1
-	filled=$((pct * 20 / 100))
-	if [ "$pct" -ge 90 ]; then c=$red; elif [ "$pct" -ge 70 ]; then c=$ylw; else c=$grn; fi
-	printf '%s' "$c"
-	i=0
-	while [ $i -lt 20 ]; do
-		if [ $i -lt $filled ]; then printf '#'; else printf '.'; fi
-		i=$((i + 1))
-	done
-	printf '%s %3d%%' "$rst" "$pct"
+  pct=$1
+  filled=$((pct * 20 / 100))
+  if [ "$pct" -ge 90 ]; then c=$red; elif [ "$pct" -ge 70 ]; then c=$ylw; else c=$grn; fi
+  printf '%s' "$c"
+  i=0
+  while [ $i -lt 20 ]; do
+    if [ $i -lt $filled ]; then printf '#'; else printf '.'; fi
+    i=$((i + 1))
+  done
+  printf '%s %3d%%' "$rst" "$pct"
 }
 
 host=$(hostname)
@@ -41,25 +45,25 @@ printf '  %-7s %s  %s MiB / %s MiB\n' "memory" "$(bar "$mem_pct")" "$((mem_used 
 printf '  %-7s %s  %s\n' "disk /" "$(bar "$disk_pct")" "$disk_sz"
 
 if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
-	t=$(($(cat /sys/class/thermal/thermal_zone0/temp) / 1000))
-	printf '  %-7s %s C\n' "temp" "$t"
+  t=$(($(cat /sys/class/thermal/thermal_zone0/temp) / 1000))
+  printf '  %-7s %s C\n' "temp" "$t"
 fi
 
 dagu_state=$(systemctl is-active dagu 2>/dev/null)
 case "$dagu_state" in
-active) dagu_col=$grn ;;
-*) dagu_col=$red ;;
+  active) dagu_col=$grn ;;
+  *) dagu_col=$red ;;
 esac
 printf '  %-7s %s%s%s' "dagu" "$dagu_col" "${dagu_state:-unknown}" "$rst"
 if [ "$dagu_state" = active ]; then
-	since=$(systemctl show dagu -p ActiveEnterTimestamp --value 2>/dev/null)
-	printf '  %ssince %s%s' "$dim" "$since" "$rst"
+  since=$(systemctl show dagu -p ActiveEnterTimestamp --value 2>/dev/null)
+  printf '  %ssince %s%s' "$dim" "$since" "$rst"
 fi
 printf '\n'
 
 failed=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
 if [ "$failed" -gt 0 ]; then
-	printf '  %-7s %s%s failed unit(s)%s\n' "systemd" "$red" "$failed" "$rst"
+  printf '  %-7s %s%s failed unit(s)%s\n' "systemd" "$red" "$failed" "$rst"
 fi
 printf '\n'
 exit 0

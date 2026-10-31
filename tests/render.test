@@ -19,7 +19,10 @@ failures=0
 check() {
   local name="$1"
   shift
-  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name" >&2; failures=$((failures + 1)); fi
+  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else
+    echo "FAIL $name" >&2
+    failures=$((failures + 1))
+  fi
 }
 
 for role in planner researcher implementer reviewer curator; do
