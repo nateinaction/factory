@@ -362,7 +362,7 @@ var _ = Describe("the opencode adapter", func() {
 			Expect(proxy.key).To(Equal("or-key"), "the proxy never got the key")
 			Expect(proxy.closed).To(BeTrue(), "the proxy outlived the run")
 			Expect(egress.closed).To(BeTrue(), "the egress proxy outlived the run")
-			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(egress.url))
+			Expect(baseURL(h.opencodeCalls()[0])).To(Equal(modelURL(egress.url)))
 			Expect(h.opencodeCalls()[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"))
 			Expect(lines[0]).To(HaveKeyWithValue("domains", []any{"api.example.com"}))
 			Expect(lines[0]).To(HaveKeyWithValue("refused_domains", []any{"blocked.example"}),

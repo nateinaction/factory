@@ -58,7 +58,6 @@
           factory_telemetry_memory_max_mib: "{{ factory_telemetry_memory_max_mib }}"
           factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port }}"
           factory_telemetry_grafana_admin_user: "{{ factory_telemetry_grafana_admin_user }}"
-          factory_telemetry_grafana_admin_password: "{{ factory_telemetry_grafana_admin_password }}"
 
     # The role notifies a Grafana restart from its config task, and this test has no systemd to
     # restart. Ending the play here leaves the handler unrun; every assertion is already done.

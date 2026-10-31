@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -975,6 +977,25 @@ func baseURL(c proc.Cmd) string {
 	Expect(json.Unmarshal([]byte(c.Env["OPENCODE_CONFIG_CONTENT"]), &cfg)).To(Succeed())
 
 	return cfg.Provider.Openrouter.Options.BaseURL
+}
+
+// modelURL is the base URL the model is given for an egress proxy at hostURL: the proxy's own
+// address, or srt's bridge on Linux.
+func modelURL(hostURL string) string {
+	u, err := modelBaseURL(runtime.GOOS, hostURL)
+	Expect(err).NotTo(HaveOccurred())
+
+	return u
+}
+
+// modelURLPattern matches the base URL the model is given for a real egress proxy, whose port the
+// spec cannot know: the proxy's loopback address, or srt's bridge on Linux.
+func modelURLPattern() string {
+	if runtime.GOOS == "linux" {
+		return `^` + regexp.QuoteMeta("http://"+srtProxyBridge) + `/api/v1$`
+	}
+
+	return `^http://127\.0\.0\.1:\d+/api/v1$`
 }
 
 // fakeProxy is a stand-in for the run's OpenRouter proxy.

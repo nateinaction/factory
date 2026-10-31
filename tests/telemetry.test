@@ -61,13 +61,15 @@ check "prometheus listens on loopback only" \
 check "prometheus loads its alert rules from a template" bash -c "
   grep -Fq -- 'rule_files:' '$out/prometheus.yaml' &&
   grep -Fq -- '/etc/prometheus/alerts.yaml' '$out/prometheus.yaml'"
+# The password is the one the test passed in, not read back from config.json: the play's vars file is
+# world-readable, so it never carries the password.
 check "grafana's admin login is the one the play is given" python3 -I -c '
 import json, sys
 v = json.load(open(sys.argv[1]))["v"]
 text = open(sys.argv[2]).read()
 assert "admin_user = " + v["factory_telemetry_grafana_admin_user"] in text, text
-assert "admin_password = " + v["factory_telemetry_grafana_admin_password"] in text, text
-' "$out/config.json" "$out/grafana.ini"
+assert "admin_password = " + sys.argv[3] in text, text
+' "$out/config.json" "$out/grafana.ini" "$admin_password"
 # The nix package's homepath is read-only, and Grafana installs the Loki, Prometheus and Tempo datasource
 # plugins at start; without a writable plugin directory every install fails and the datasources never load.
 check "grafana installs its plugins into its writable state directory" \

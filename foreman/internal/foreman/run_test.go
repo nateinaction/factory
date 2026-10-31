@@ -53,7 +53,7 @@ var _ = Describe("Run", func() {
 			Expect(oc).To(HaveLen(1))
 			Expect(oc[0].Dir).To(Equal(work))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
-			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			Expect(baseURL(oc[0])).To(MatchRegexp(modelURLPattern()), "the model calls the proxy")
 			Expect(joined(oc[0])).To(ContainSubstring("Write the JSON to " + h.rolePaths(workflow.Implementer, 5).out))
 			h.expectNoSecretInFiles(work, "or-key")
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
@@ -513,7 +513,7 @@ var _ = Describe("Run", func() {
 			Expect(oc[0].Timeout).To(beNear(testAgent().Deadline()))
 			Expect(oc[0].Env).NotTo(HaveKey("OPENROUTER_API_KEY"), "the key reached the model")
 			Expect(oc[0].Env).To(HaveKeyWithValue("GH_TOKEN", "read-only-token-reviewer"))
-			Expect(baseURL(oc[0])).To(MatchRegexp(`^http://127\.0\.0\.1:\d+/api/v1$`), "the model calls the proxy")
+			Expect(baseURL(oc[0])).To(MatchRegexp(modelURLPattern()), "the model calls the proxy")
 			h.expectNoSecretInFiles(work, "or-key")
 
 			Expect(string(spec)).To(Equal("# Add x\n\nDo x\n"))

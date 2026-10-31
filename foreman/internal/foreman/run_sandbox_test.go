@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/nateinaction/factory/foreman/internal/egress"
 	"github.com/nateinaction/factory/foreman/internal/proc"
 	"github.com/nateinaction/factory/foreman/internal/sandbox"
 	"github.com/nateinaction/factory/foreman/internal/security"
@@ -76,6 +75,20 @@ var _ = Describe("the sandbox", func() {
 		var settings []srtSettings
 
 		settingsOn(&settings)
+
+		// The model's URL names srt's bridge on Linux, not the proxy, so the proxy's own port is read
+		// from the proxy the run started.
+		var started EgressProxy
+
+		h.deps.Egress = func(
+			ctx context.Context, policy sandbox.Network, apiURL, token string, refusals *security.Tally,
+		) (EgressProxy, error) {
+			px, err := egress.StartWithLogger(ctx, policy, apiURL, token, egress.Loopback, h.deps.log(), refusals)
+			started = px
+
+			return px, err
+		}
+
 		Expect(Run(GinkgoT().Context(), h.deps, workflow.Implementer, testRef(5), testAgent(), testRetro(), 3)).To(BeZero())
 
 		calls := h.runner.find("srt --settings")
@@ -135,7 +148,9 @@ var _ = Describe("the sandbox", func() {
 			Expect(config.Permission.ExternalDirectory).NotTo(HaveKey(otherScratch))
 		}
 
-		port := proxyPortOf(h.opencodeCalls()[0])
+		Expect(started).NotTo(BeNil(), "the run never started an egress proxy")
+
+		port := proxyPort(started.Address())
 
 		for _, s := range settings {
 			Expect(s.Network.HTTPProxyPort).To(Equal(port), "egress must cross foreman's proxy")
@@ -431,14 +446,3 @@ var _ = Describe("the sandbox", func() {
 		Expect(h.opencodeCalls()).To(HaveLen(2))
 	})
 })
-
-// proxyPortOf is the egress proxy port an opencode command's base URL names.
-func proxyPortOf(c proc.Cmd) int {
-	parsed, err := url.Parse(baseURL(c))
-	Expect(err).NotTo(HaveOccurred())
-
-	port, err := strconv.Atoi(parsed.Port())
-	Expect(err).NotTo(HaveOccurred())
-
-	return port
-}
