@@ -39,31 +39,44 @@ check "the dashboard is valid JSON with its own uid" dash '
 assert dash["uid"] == "factory-runs", dash["uid"]
 assert dash["title"] == "Factory runs", dash["title"]
 '
-# Each run is its own process, so its cost counter restarts at zero and Prometheus holds one sample per
-# run, that run'"'"'s whole cost. increase() reads each restart as a reset and drops the first run'"'"'s share.
-check "model cost is summed per role and per model over the time range" dash '
-assert exprs["Model cost by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__range]))"], exprs
-assert exprs["Model cost by model"] == ["sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__range]))"], exprs
+# Each run is its own process, so its counters restart at zero and Prometheus holds one sample per run,
+# that run'"'"'s whole count. increase() reads each restart as a reset and drops the first run'"'"'s share;
+# summing the samples in each graph step counts every run exactly once.
+check "model cost is a point per run, summed in each step by role and by model" dash '
+assert exprs["Model cost by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__interval]))"], exprs
+assert exprs["Model cost by model"] == ["sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__interval]))"], exprs
+for p in dash["panels"][:2]:
+    assert p["type"] == "timeseries", p["title"]
+    assert p["fieldConfig"]["defaults"]["custom"]["drawStyle"] == "points", p["title"]
 '
-check "finished runs are counted by outcome and by role over the time range" dash '
-assert exprs["Runs by outcome"] == ["sum by (factory_outcome) (increase(factory_run_outcomes_total[$__range]))"], exprs
-assert exprs["Runs by agent role"] == ["sum by (factory_agent_role) (increase(factory_run_outcomes_total[$__range]))"], exprs
+check "finished runs are state timelines of outcome and of role" dash '
+assert exprs["Runs by outcome"] == ["sum by (factory_agent_role, factory_outcome) (sum_over_time(factory_run_outcomes_total[$__interval]))"], exprs
+assert exprs["Runs by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_run_outcomes_total[$__interval]))"], exprs
 '
-check "claims and reaped runs are counted by role over the time range" dash '
-assert exprs["Issues claimed by agent role"] == ["sum by (factory_agent_role) (increase(factory_poll_claims_total[$__range]))"], exprs
-assert exprs["Dead runs reaped by agent role"] == ["sum by (factory_agent_role) (increase(factory_runs_reaped_total[$__range]))"], exprs
+check "claims and reaped runs are state timelines by role" dash '
+assert exprs["Issues claimed by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_poll_claims_total[$__interval]))"], exprs
+assert exprs["Dead runs reaped by agent role"] == ["sum by (factory_agent_role) (sum_over_time(factory_runs_reaped_total[$__interval]))"], exprs
+'
+check "the four count panels are state timelines" dash '
+types = {p["title"]: p["type"] for p in dash["panels"]}
+assert [types[t] for t in exprs if not t.startswith("Model cost")] == ["state-timeline"] * 4, types
+'
+check "a failed outcome is drawn red" dash '
+panel = next(p for p in dash["panels"] if p["title"] == "Runs by outcome")
+override = next(o for o in panel["fieldConfig"]["overrides"] if "failed" in o["matcher"]["options"])
+assert {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}} in override["properties"], override
 '
 check "no panel uses a window that empties between runs" dash '
 for title, queries in exprs.items():
     for q in queries:
-        assert "$__rate_interval" not in q and "[5m]" not in q, (title, q)
+        assert "$__rate_interval" not in q and "$__range" not in q and "[5m]" not in q, (title, q)
 '
 check "every panel reads the provisioned Prometheus datasource" dash '
 assert {p["datasource"]["uid"] for p in dash["panels"]} == {"prometheus"}, dash["panels"]
 assert all(t["datasource"]["uid"] == "prometheus" for p in dash["panels"] for t in p["targets"])
 '
-check "every panel shows a count even for a series that never moved" dash '
-assert all(t.get("instant") is True for p in dash["panels"] for t in p["targets"]), dash["panels"]
+check "every panel queries a range, so each run is a point at its own time" dash '
+assert all(t.get("range") is True and not t.get("instant") for p in dash["panels"] for t in p["targets"]), dash["panels"]
 '
 check "the dashboard is installed beside the host health one" grep -Fq \
   'dest: /etc/grafana/dashboards/runs.json' "$out/telemetry-tasks.yml"

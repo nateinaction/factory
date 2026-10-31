@@ -14,28 +14,36 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "decimals": 2,
-          "min": 0
+          "decimals": 3,
+          "min": 0,
+          "custom": {
+            "drawStyle": "points",
+            "pointSize": 9,
+            "lineWidth": 0,
+            "fillOpacity": 0,
+            "spanNulls": false
+          }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 0,
         "y": 0
       },
       "id": 1,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
           "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       },
       "targets": [
@@ -45,15 +53,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__range]))",
-          "instant": true,
-          "range": false,
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__interval]))",
+          "instant": false,
+          "range": true,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
           "refId": "A"
         }
       ],
       "title": "Model cost by agent role",
-      "type": "bargauge"
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -63,28 +71,36 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "decimals": 2,
-          "min": 0
+          "decimals": 3,
+          "min": 0,
+          "custom": {
+            "drawStyle": "points",
+            "pointSize": 9,
+            "lineWidth": 0,
+            "fillOpacity": 0,
+            "spanNulls": false
+          }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 12,
         "y": 0
       },
       "id": 2,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
           "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
         }
       },
       "targets": [
@@ -94,15 +110,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__range]))",
-          "instant": true,
-          "range": false,
+          "expr": "sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__interval]))",
+          "instant": false,
+          "range": true,
           "legendFormat": "{{ '{{gen_ai_request_model}}' }}",
           "refId": "A"
         }
       ],
       "title": "Model cost by model",
-      "type": "bargauge"
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -113,27 +129,50 @@
         "defaults": {
           "unit": "none",
           "decimals": 0,
-          "min": 0
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*failed.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 9
       },
       "id": 3,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "showValue": "always",
+        "mergeValues": false,
+        "rowHeight": 0.8,
+        "alignValue": "center",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
         }
       },
       "targets": [
@@ -143,15 +182,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_outcome) (increase(factory_run_outcomes_total[$__range]))",
-          "instant": true,
-          "range": false,
-          "legendFormat": "{{ '{{factory_outcome}}' }}",
+          "expr": "sum by (factory_agent_role, factory_outcome) (sum_over_time(factory_run_outcomes_total[$__interval]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{ '{{factory_agent_role}} {{factory_outcome}}' }}",
           "refId": "A"
         }
       ],
       "title": "Runs by outcome",
-      "type": "bargauge"
+      "type": "state-timeline"
     },
     {
       "datasource": {
@@ -162,7 +201,14 @@
         "defaults": {
           "unit": "none",
           "decimals": 0,
-          "min": 0
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
         },
         "overrides": []
       },
@@ -170,19 +216,19 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 9
       },
       "id": 4,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "showValue": "always",
+        "mergeValues": false,
+        "rowHeight": 0.8,
+        "alignValue": "center",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
         }
       },
       "targets": [
@@ -192,15 +238,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (increase(factory_run_outcomes_total[$__range]))",
-          "instant": true,
-          "range": false,
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_outcomes_total[$__interval]))",
+          "instant": false,
+          "range": true,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
           "refId": "A"
         }
       ],
       "title": "Runs by agent role",
-      "type": "bargauge"
+      "type": "state-timeline"
     },
     {
       "datasource": {
@@ -211,7 +257,14 @@
         "defaults": {
           "unit": "none",
           "decimals": 0,
-          "min": 0
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
         },
         "overrides": []
       },
@@ -219,19 +272,19 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 17
       },
       "id": 5,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "showValue": "always",
+        "mergeValues": false,
+        "rowHeight": 0.8,
+        "alignValue": "center",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
         }
       },
       "targets": [
@@ -241,15 +294,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (increase(factory_poll_claims_total[$__range]))",
-          "instant": true,
-          "range": false,
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_poll_claims_total[$__interval]))",
+          "instant": false,
+          "range": true,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
           "refId": "A"
         }
       ],
       "title": "Issues claimed by agent role",
-      "type": "bargauge"
+      "type": "state-timeline"
     },
     {
       "datasource": {
@@ -260,7 +313,14 @@
         "defaults": {
           "unit": "none",
           "decimals": 0,
-          "min": 0
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
         },
         "overrides": []
       },
@@ -268,19 +328,19 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 17
       },
       "id": 6,
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "showValue": "always",
+        "mergeValues": false,
+        "rowHeight": 0.8,
+        "alignValue": "center",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
         }
       },
       "targets": [
@@ -290,15 +350,15 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (increase(factory_runs_reaped_total[$__range]))",
-          "instant": true,
-          "range": false,
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_runs_reaped_total[$__interval]))",
+          "instant": false,
+          "range": true,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
           "refId": "A"
         }
       ],
       "title": "Dead runs reaped by agent role",
-      "type": "bargauge"
+      "type": "state-timeline"
     }
   ],
   "schemaVersion": 39,
