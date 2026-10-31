@@ -52,6 +52,11 @@ for p in dash["panels"][:2]:
     custom = p["fieldConfig"]["defaults"]["custom"]
     assert custom["drawStyle"] == "line" and custom["lineInterpolation"] == "stepAfter", custom
 '
+# A running total's legend figure is its latest value. Summing the points adds the total up once per step.
+check "the cost legends show each line's latest value, not a sum of its points" dash '
+for p in dash["panels"][:2]:
+    assert p["options"]["legend"]["calcs"] == ["lastNotNull"], p["options"]["legend"]
+'
 check "the cost window is a dashboard variable, defaulting to 30 days" dash '
 variable = next(t for t in dash["templating"]["list"] if t["name"] == "cost_window")
 assert variable["query"] == "30d" and variable["current"]["value"] == "30d", variable
