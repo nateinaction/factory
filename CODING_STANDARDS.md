@@ -4,7 +4,19 @@ What language to write code in when this repo needs code.
 
 ## Default to Go
 
-If a task needs code, write it in Go. Put it where the rest of the Go lives (`foreman/`) and test it with the Ginkgo/Gomega specs beside it.
+If a task needs code, write it in Go and test it with the Ginkgo/Gomega.
+
+## Write Go tests with Ginkgo
+
+Write every Go test as a Ginkgo spec with Gomega matchers, not as a plain `func TestX(t *testing.T)`.
+
+- Each package has one `_suite_test.go` that calls `RunSpecs`; the specs live in the package's other `_test.go` files.
+- Name each `Describe`, `Context` and `It` for the behaviour it checks, so a failure reads as a sentence.
+- Fuzz targets are the exception: `go test -fuzz` needs a plain `func FuzzX(f *testing.F)`.
+
+## Put tests beside what they test
+
+A test lives next to the thing it tests, never in a top-level `tests/` directory. A test that checks a contract between two components belongs to the side whose output it checks.
 
 ## Avoid shell scripts
 
