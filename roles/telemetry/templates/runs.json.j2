@@ -17,10 +17,10 @@
           "decimals": 3,
           "min": 0,
           "custom": {
-            "drawStyle": "points",
-            "pointSize": 9,
-            "lineWidth": 0,
-            "fillOpacity": 0,
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
             "spanNulls": false
           }
         },
@@ -53,7 +53,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$__interval]))",
+          "expr": "sum by (factory_agent_role) (sum_over_time(factory_run_cost_total[$cost_window]))",
           "instant": false,
           "range": true,
           "legendFormat": "{{ '{{factory_agent_role}}' }}",
@@ -74,10 +74,10 @@
           "decimals": 3,
           "min": 0,
           "custom": {
-            "drawStyle": "points",
-            "pointSize": 9,
-            "lineWidth": 0,
-            "fillOpacity": 0,
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
             "spanNulls": false
           }
         },
@@ -110,7 +110,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$__interval]))",
+          "expr": "sum by (gen_ai_request_model) (sum_over_time(factory_run_cost_total[$cost_window]))",
           "instant": false,
           "range": true,
           "legendFormat": "{{ '{{gen_ai_request_model}}' }}",
@@ -367,7 +367,21 @@
     "runs"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "30d",
+          "value": "30d"
+        },
+        "hide": 0,
+        "label": "Cost window",
+        "name": "cost_window",
+        "options": [],
+        "query": "30d",
+        "type": "textbox"
+      }
+    ]
   },
   "time": {
     "from": "now-7d",
