@@ -12,6 +12,10 @@ Issues are tracked in GitHub Issues on nateinaction/factory, via the `gh` CLI. S
 
 Uses the default label names: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
+### Code standards
+
+See `CODING_STANDARDS.md`.
+
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
