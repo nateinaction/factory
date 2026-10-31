@@ -8,11 +8,6 @@
 - name: Install each App's credentials
   ansible.builtin.include_tasks: credentials.yml
 
-- name: Remove the Python token helper foreman token replaces
-  ansible.builtin.file:
-    path: /usr/local/bin/github-app-token
-    state: absent
-
 - name: Remove the git credential helper for the single App
   # The helper had one App's token for every git call. foreman now hands each run the token of its own agent role.
   ansible.builtin.file:

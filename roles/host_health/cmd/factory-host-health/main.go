@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,12 +88,13 @@ func readMillidegrees(path string) (uint64, error) {
 	}
 	defer f.Close() // read-only; a close failure loses nothing
 
-	buf := make([]byte, maxThermalBytes)
-	n, err := f.Read(buf)
+	// One Read may return part of a file; ReadAll reads to the end, within the bound.
+	raw, err := io.ReadAll(io.LimitReader(f, maxThermalBytes))
 	if err != nil {
 		return 0, fmt.Errorf("cannot read %s: %w", path, err)
 	}
-	return parseMillidegrees(path, string(buf[:n]))
+	// An empty file parses as an error below, not as a failed read.
+	return parseMillidegrees(path, string(raw))
 }
 
 // parseMillidegrees parses the thermal zone's contents, which are non-negative millidegrees Celsius.
@@ -164,6 +166,11 @@ func publish(path, content string) (err error) {
 	if err = tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close() // already failing
 		return fmt.Errorf("cannot make %s readable: %w", tmp.Name(), err)
+	}
+	// Flush to disk before the rename, so a crash cannot leave the new name pointing at empty data.
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close() // already failing
+		return fmt.Errorf("cannot sync %s: %w", tmp.Name(), err)
 	}
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("cannot close %s: %w", tmp.Name(), err)

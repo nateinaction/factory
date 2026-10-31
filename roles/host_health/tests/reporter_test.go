@@ -143,6 +143,13 @@ var _ = Describe("the host health reporter", Ordered, func() {
 			Expect(b).To(Equal(lastGood))
 		})
 
+		It("an empty temperature file fails as a parse error, since it holds no millidegrees", func() {
+			Expect(os.WriteFile(thermal, nil, 0o600)).To(Succeed())
+			code, out := report("FAKE_THROTTLED=0x0")
+			Expect(code).NotTo(BeZero())
+			Expect(out).To(ContainSubstring("does not hold millidegrees"))
+		})
+
 		It("a failed read leaves no partial file behind", func() {
 			entries, err := os.ReadDir(textfile)
 			Expect(err).NotTo(HaveOccurred())

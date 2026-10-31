@@ -1,31 +1,13 @@
 ---
 # Every host: foreman (poll runs on the server, start and run on the worker) and its config.
-# Built on the controller, which has the flake's Go toolchain; the binary is static, so the host needs no Go.
-# -trimpath and -buildvcs=false keep the build reproducible, so an unchanged tree copies as unchanged.
-- name: Map the CPU architecture to Go's naming
-  ansible.builtin.set_fact:
-    agent_foreman_goarch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+- name: Build and install foreman
+  ansible.builtin.include_tasks: foreman.yml
 
-- name: Build foreman for the host
-  ansible.builtin.command:
-    argv: [go, build, -trimpath, -buildvcs=false, -o, "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}", ./cmd/foreman]
-    chdir: "{{ playbook_dir }}/foreman"
-  environment:
-    GOOS: linux
-    GOARCH: "{{ agent_foreman_goarch }}"
-    CGO_ENABLED: "0"
-  delegate_to: localhost
-  become: false
-  changed_when: false # the copy below reports the change
-  check_mode: false # the build is local, and the copy needs its output
-
-- name: Install foreman
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/.build/foreman-linux-{{ agent_foreman_goarch }}"
-    dest: /usr/local/bin/foreman
-    owner: root
-    group: root
-    mode: "0755"
+# Removed here, not in the github_app role, which runs first: the helper must stay until foreman is installed.
+- name: Remove the Python token helper foreman token replaces
+  ansible.builtin.file:
+    path: /usr/local/bin/github-app-token
+    state: absent
 
 - name: Create the agent config directory
   ansible.builtin.file:

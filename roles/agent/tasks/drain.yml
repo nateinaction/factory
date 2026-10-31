@@ -2,12 +2,8 @@
 # Cutover guard, run on the dagu server before anything else changes. It asks
 # dagu whether a finances-agent-* run is active and fails the play if one is.
 # Drain by suspending finances-agent-poll in the dagu UI, wait for the run to
-# finish, then apply again. Nothing here changes a host.
-- name: Look for the installed foreman
-  ansible.builtin.stat:
-    path: /usr/local/bin/foreman
-  register: agent_drain_foreman
-
+# finish, then apply again. The only thing it changes is installing foreman, which
+# it needs to ask the question and which no running DAG uses.
 - name: Look for the dagu binary
   ansible.builtin.stat:
     path: /usr/local/bin/dagu
@@ -19,8 +15,17 @@
   loop: "{{ agent_old_dags }}"
   register: agent_drain_old_dags
 
-# No installed foreman means no foreman has run here, so there is nothing to drain and the first
-# deploy to a new host is not blocked. No old DAG on disk means no old run can start.
+# No dagu means nothing runs DAGs here, and no old DAG on disk means no old run can start, so the
+# first deploy to a new host is not blocked. Otherwise an old run may be live and the check must run:
+# a host that has the old DAGs but not yet foreman gets foreman first, never a skipped check.
+- name: Install foreman where an old run could be live, so the check can run
+  ansible.builtin.include_tasks: foreman.yml
+  when:
+    - agent_drain_dagu.stat.exists
+    - agent_drain_present | length > 0
+  vars:
+    agent_drain_present: "{{ agent_drain_old_dags.results | selectattr('stat.exists') | map(attribute='item') | list }}"
+
 - name: Fail closed while a finances-agent-* run is active
   ansible.builtin.command:
     argv: "{{ ['/usr/local/bin/foreman', 'drain-check', '--dagu', '/usr/local/bin/dagu'] + agent_drain_present }}"
@@ -33,6 +38,5 @@
   vars:
     agent_drain_present: "{{ agent_drain_old_dags.results | selectattr('stat.exists') | map(attribute='item') | list }}"
   when:
-    - agent_drain_foreman.stat.exists
     - agent_drain_dagu.stat.exists
     - agent_drain_present | length > 0

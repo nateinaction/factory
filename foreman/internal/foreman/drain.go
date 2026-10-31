@@ -20,20 +20,25 @@ func DrainCheck(ctx context.Context, d Deps, dags []string) (int, error) {
 		out, err := d.run(ctx, proc.Cmd{
 			Argv: []string{d.Settings.Dagu, "status", dag}, Capture: true, Timeout: DaguTimeout,
 		})
-
-		switch {
-		case err != nil:
+		if err != nil {
 			d.log().ErrorContext(ctx, "drain-check: dagu could not report on the DAG", "dag", dag, "error", err)
 
 			blocked++
-		case dagu.Classify(out) == dagu.PhaseActive:
+
+			continue
+		}
+
+		switch dagu.Classify(out) {
+		case dagu.PhaseActive:
 			d.log().ErrorContext(ctx, "drain-check: the DAG has an active run", "dag", dag)
 
 			blocked++
-		case dagu.Classify(out) == dagu.PhaseUnknown:
+		case dagu.PhaseUnknown:
 			d.log().ErrorContext(ctx, "drain-check: unrecognised status", "dag", dag, "status", out)
 
 			blocked++
+		case dagu.PhaseFinished:
+			// Drained: nothing to block on.
 		}
 	}
 

@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The ceilings on a listing. A listing that reaches one is a failure, never a partial answer.
@@ -136,20 +137,9 @@ func (c Client) Repositories(ctx context.Context, role string) ([]string, error)
 		return nil, err
 	}
 
-	installations, err := listing(ctx, c, "/app/installations", jwt, func(raw []byte) ([]installation, error) {
-		var out []installation
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("decode installations: %w", err)
-		}
-
-		return out, nil
-	})
+	installations, err := listing(ctx, c, "/app/installations", jwt, MaxInstallations, decodeInstallations)
 	if err != nil {
 		return nil, err
-	}
-
-	if len(installations) > MaxInstallations {
-		return nil, fmt.Errorf("%d installations are over the %d listed", len(installations), MaxInstallations)
 	}
 
 	var names []string
@@ -160,7 +150,7 @@ func (c Client) Repositories(ctx context.Context, role string) ([]string, error)
 			return nil, err
 		}
 
-		repos, err := listing(ctx, c, "/installation/repositories", token, decodeRepositories)
+		repos, err := listing(ctx, c, "/installation/repositories", token, MaxPages*PageSize, decodeRepositories)
 		if err != nil {
 			return nil, err
 		}
@@ -169,6 +159,16 @@ func (c Client) Repositories(ctx context.Context, role string) ([]string, error)
 	}
 
 	return names, nil
+}
+
+// decodeInstallations is the installations on one page of an App's listing.
+func decodeInstallations(raw []byte) ([]installation, error) {
+	var out []installation
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode installations: %w", err)
+	}
+
+	return out, nil
 }
 
 // decodeRepositories is the full names on one page of an installation's repositories.
@@ -192,7 +192,9 @@ func decodeRepositories(raw []byte) ([]string, error) {
 
 // listing is every item of a paged listing. A short page ends it; a full last allowed page means the
 // listing is longer than this reads, so it fails instead of answering with part.
-func listing[T any](ctx context.Context, c Client, path, bearer string, decode func([]byte) ([]T, error)) ([]T, error) {
+func listing[T any](
+	ctx context.Context, c Client, path, bearer string, limit int, decode func([]byte) ([]T, error),
+) ([]T, error) {
 	var items []T
 
 	for page := 1; page <= MaxPages; page++ {
@@ -207,6 +209,10 @@ func listing[T any](ctx context.Context, c Client, path, bearer string, decode f
 		}
 
 		items = append(items, batch...)
+
+		if len(items) > limit {
+			return nil, fmt.Errorf("%s is over the %d allowed", path, limit)
+		}
 
 		if len(batch) < PageSize {
 			return items, nil
@@ -414,11 +420,15 @@ func (c Client) do(ctx context.Context, method, path, bearer string, payload []b
 	return raw, nil
 }
 
-// truncate is s cut to at most n bytes.
+// truncate is s cut to at most n bytes, backed up to a rune boundary so the cut never splits a rune.
 func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
 	}
 
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+
+	return s[:n]
 }

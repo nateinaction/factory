@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -132,17 +133,24 @@ var _ = Describe("the cutover guard task", func() {
 		Expect(ok).To(BeTrue(), "drain.yml is not a task list")
 	})
 
-	It("calls the installed foreman and skips a host that has none", func() {
+	It("installs foreman before it asks, and never skips the check for want of foreman", func() {
 		var guard tree
-		for _, t := range tasks {
+		install, ask := -1, -1
+		for i, t := range tasks {
 			task, ok := t.(tree)
 			Expect(ok).To(BeTrue())
 			if has(task, "ansible.builtin.command") {
-				guard = task
+				guard, ask = task, i
+			}
+			if has(task, "ansible.builtin.include_tasks") {
+				install = i
 			}
 		}
 		Expect(guard).NotTo(BeNil(), "no task runs foreman")
 		Expect(at(guard, "ansible.builtin.command", "argv")).To(ContainSubstring("/usr/local/bin/foreman', 'drain-check'"))
-		Expect(strs(listAt(guard, "when"))).To(ContainElement("agent_drain_foreman.stat.exists"))
+		Expect(install).To(BeNumerically(">=", 0), "foreman is not installed before the check")
+		Expect(install).To(BeNumerically("<", ask))
+		Expect(strings.Join(strs(listAt(guard, "when")), " ")).NotTo(ContainSubstring("foreman"),
+			"a host without foreman would skip the check, which fails open")
 	})
 })

@@ -153,7 +153,8 @@ var _ = Describe("the foreman token helper", Ordered, func() {
 			"token", "--app", "implementer", "--repo", "o/r", "--read-only=x"),
 		Entry("a flag with no value is refused", "--repo", "token", "--app", "implementer", "--repo"),
 		// A listing that reaches its ceiling is a failure, never a truncated answer.
-		Entry("an App whose installation listing is full on its last page lists nothing", "longer than 10 pages",
+		// A full page of installations is already over the installation cap, so it stops on page one.
+		Entry("an App whose installation listing is full on its last page lists nothing", "over the 50",
 			"repositories", "--app", "paged"),
 		Entry("an App whose repository listing is full on its last page lists nothing", "longer than 10 pages",
 			"repositories", "--app", "wide"),
