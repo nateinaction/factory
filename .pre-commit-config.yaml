@@ -1,10 +1,19 @@
 # One definition of the repo's checks, shared by the git hook, CI and manual
-# runs (`pre-commit run --all-files`). The tools come from the Nix dev shell,
-# so every hook is `language: system`; pre-commit manages no environments.
+# runs (`pre-commit run --all-files`). The repo's own checks use the tools from the Nix dev shell,
+# so those hooks are `language: system`; the stock hooks below are fetched and pinned by pre-commit.
 #
 # A hook that changes a file fails the run, which keeps the old "go fix and
 # go mod tidy must leave the tree alone" behavior.
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+
   - repo: local
     hooks:
       # Scans what is staged for a commit, so a secret is stopped before it reaches history; CI scans
