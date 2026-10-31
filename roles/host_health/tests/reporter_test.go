@@ -18,13 +18,14 @@ import (
 // reporterTimeout bounds one run of the reporter.
 const reporterTimeout = time.Minute
 
-const reporter = "../files/factory-host-health"
+// reporterSource is the reporter's main package, built for the machine running the specs.
+const reporterSource = "../cmd/factory-host-health"
 
 // The reporter is run as a black box: its inputs are the textfile directory, the thermal zone and
 // the vcgencmd path, and its outputs are its exit code and the metric file, so only the executable
 // path changes if it is rewritten.
 var _ = Describe("the host health reporter", Ordered, func() {
-	var textfile, thermal, vcgencmd, metrics string
+	var reporter, textfile, thermal, vcgencmd, metrics string
 
 	// report runs the reporter with the fake inputs plus extra environment, returning its exit
 	// code and combined output.
@@ -68,7 +69,9 @@ var _ = Describe("the host health reporter", Ordered, func() {
 		Expect(os.WriteFile(thermal, []byte("54321\n"), 0o600)).To(Succeed())
 		bin := filepath.Join(dir, "bin")
 		Expect(os.Mkdir(bin, 0o755)).To(Succeed())
-		var err error
+		reporter = filepath.Join(bin, "factory-host-health")
+		built, err := exec.Command("go", "build", "-o", reporter, reporterSource).CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(built))
 		vcgencmd, err = roletest.BuildFake(bin, "vcgencmd")
 		Expect(err).NotTo(HaveOccurred())
 		metrics = filepath.Join(textfile, "factory_host.prom")

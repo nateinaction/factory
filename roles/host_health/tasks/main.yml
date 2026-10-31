@@ -24,9 +24,35 @@
     group: root
     mode: "0755"
 
+# Built on the controller, which has the flake's Go toolchain; the binary is static, so the host needs no Go.
+# -trimpath and -buildvcs=false keep the build reproducible, so an unchanged tree copies as unchanged.
+- name: Map the CPU architecture to Go's naming
+  ansible.builtin.set_fact:
+    host_health_goarch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+- name: Build the health reporter for the host
+  ansible.builtin.command:
+    argv:
+      - go
+      - build
+      - -trimpath
+      - -buildvcs=false
+      - -o
+      - "{{ playbook_dir }}/.build/factory-host-health-linux-{{ host_health_goarch }}"
+      - ./roles/host_health/cmd/factory-host-health
+    chdir: "{{ playbook_dir }}"
+  environment:
+    GOOS: linux
+    GOARCH: "{{ host_health_goarch }}"
+    CGO_ENABLED: "0"
+  delegate_to: localhost
+  become: false
+  changed_when: false # the copy below reports the change
+  check_mode: false # the build is local, and the copy needs its output
+
 - name: Install the health reporter
   ansible.builtin.copy:
-    src: factory-host-health
+    src: "{{ playbook_dir }}/.build/factory-host-health-linux-{{ host_health_goarch }}"
     dest: /usr/local/bin/factory-host-health
     owner: root
     group: root
