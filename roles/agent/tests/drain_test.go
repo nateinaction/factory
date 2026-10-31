@@ -10,12 +10,16 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/nateinaction/factory/roletest"
 )
 
-// drainCheck is the executable under test. Run as a black box, so a rewrite changes only this path.
-const drainCheck = "../files/drain-check"
+// foremanPkg is the package that builds the executable under test, which the suite runs as a black box.
+const foremanPkg = "github.com/nateinaction/factory/foreman/cmd/foreman"
+
+// drainCheck is the built foreman the specs run; BeforeSuite sets it.
+var drainCheck string
 
 const drainTimeout = 30 * time.Second
 
@@ -26,7 +30,7 @@ func runDrainCheck(dir string, args ...string) int {
 	Expect(err).NotTo(HaveOccurred())
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, script, args...)
+	cmd := exec.CommandContext(ctx, script, drainArgs(args)...)
 	cmd.Env = append(os.Environ(), "FAKE="+dir)
 	cmd.WaitDelay = 5 * time.Second
 	err = cmd.Run()
@@ -37,6 +41,26 @@ func runDrainCheck(dir string, args ...string) int {
 	Expect(errors.As(err, &exit)).To(BeTrue(), "drain-check did not run: %v", err)
 	return exit.ExitCode()
 }
+
+// drainArgs turns the specs' arguments, the dagu binary and then the DAG names, into foreman's command
+// line. With no arguments at all it is the bare verb, a usage error.
+func drainArgs(args []string) []string {
+	if len(args) == 0 {
+		return []string{"drain-check"}
+	}
+	return append([]string{"drain-check", "--dagu", args[0]}, args[1:]...)
+}
+
+var _ = BeforeSuite(func() {
+	dir, err := os.MkdirTemp("", "foreman-")
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(os.RemoveAll, dir)
+	drainCheck = filepath.Join(dir, "foreman")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "go", "build", "-o", drainCheck, foremanPkg).CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), string(out))
+})
 
 var _ = Describe("the drain check", func() {
 	var (
@@ -64,6 +88,7 @@ var _ = Describe("the drain check", func() {
 		state("d", "Status: Queued\n", "")
 		state("e", "something unrecognised\n", "")
 		state("f", "no runs found\n", "1\n")
+		state("g", "Status: retrying\n", "")
 	})
 
 	It("idle runs pass", func() {
@@ -74,6 +99,10 @@ var _ = Describe("the drain check", func() {
 	})
 	It("queued run blocks (case-insensitive)", func() {
 		Expect(runDrainCheck(dir, dagu, "d")).To(Equal(1))
+	})
+	// Decided in the run model (dagu.StatusRetrying): a run about to restart can still change state.
+	It("retrying run blocks", func() {
+		Expect(runDrainCheck(dir, dagu, "g")).To(Equal(1))
 	})
 	It("unrecognised status fails closed", func() {
 		Expect(runDrainCheck(dir, dagu, "e")).To(Equal(1))
@@ -89,5 +118,31 @@ var _ = Describe("the drain check", func() {
 	})
 	It("no arguments is a usage error", func() {
 		Expect(runDrainCheck(dir)).To(Equal(2))
+	})
+})
+
+var _ = Describe("the cutover guard task", func() {
+	var tasks []any
+
+	BeforeEach(func() {
+		var doc any
+		Expect(yaml.Unmarshal([]byte(readText("../tasks/drain.yml")), &doc)).To(Succeed())
+		var ok bool
+		tasks, ok = doc.([]any)
+		Expect(ok).To(BeTrue(), "drain.yml is not a task list")
+	})
+
+	It("calls the installed foreman and skips a host that has none", func() {
+		var guard tree
+		for _, t := range tasks {
+			task, ok := t.(tree)
+			Expect(ok).To(BeTrue())
+			if has(task, "ansible.builtin.command") {
+				guard = task
+			}
+		}
+		Expect(guard).NotTo(BeNil(), "no task runs foreman")
+		Expect(at(guard, "ansible.builtin.command", "argv")).To(ContainSubstring("/usr/local/bin/foreman', 'drain-check'"))
+		Expect(strs(listAt(guard, "when"))).To(ContainElement("agent_drain_foreman.stat.exists"))
 	})
 })
