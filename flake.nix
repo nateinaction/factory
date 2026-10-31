@@ -62,7 +62,7 @@
               pkgs.ansible
               pkgs.ansible-lint
               pkgs.yamllint
-              # promtool checks and unit-tests the Prometheus alert rules tests/alerts.test renders. It is
+              # promtool checks and unit-tests the Prometheus alert rules the telemetry role's alerts specs render. It is
               # the package's `cli` output; `out` carries the server binary the host installs.
               pkgs.prometheus.cli
               pkgs.go_1_27
@@ -79,12 +79,11 @@
               # The stock file hygiene hooks' executables, and the spelling checker, that .pre-commit-config.yaml runs.
               pkgs.python3Packages.pre-commit-hooks
               pkgs.typos
-              # Linters and formatters for the shell, Python, Nix, Markdown and workflow files.
+              # Linters and formatters for the shell, Nix, Markdown and workflow files.
               pkgs.shellcheck
               pkgs.shfmt
               pkgs.actionlint
               pkgs.zizmor
-              pkgs.ruff
               pkgs.nixfmt
               pkgs.statix
               pkgs.deadnix

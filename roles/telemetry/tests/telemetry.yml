@@ -1,0 +1,54 @@
+---
+# Renders the telemetry role's configs into render_dir with the real group_vars, so the config specs
+# beside it can assert on them without a host. Grafana's config is rendered by the role's own task,
+# so the specs also see its password guard and the mode it installs. The specs pass render_owner and
+# render_group, and factory_telemetry_grafana_admin_password unless they test its absence.
+- name: Render the telemetry backend config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    # First, so an unset admin password fails the play before anything is written. The path, owner
+    # and group point into the temporary tree, as the current user; the mode stays the role's own.
+    - name: Render Grafana's config through the role's task
+      ansible.builtin.include_role:
+        name: telemetry
+        tasks_from: grafana
+      vars:
+        telemetry_grafana_config_path: "{{ render_dir }}/grafana.ini"
+        telemetry_grafana_config_owner: "{{ render_owner }}"
+        telemetry_grafana_config_group: "{{ render_group }}"
+
+    - name: Render each template
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - prometheus.service
+        - prometheus.yaml
+        - tempo.service
+        - loki.service
+        - grafana.service
+        - tempo.yaml
+        - loki.yaml
+        - datasources.yaml
+
+    - name: Write the vars as JSON
+      ansible.builtin.copy:
+        content: "{{ v | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
+        mode: "0644"
+      vars:
+        v:
+          factory_telemetry_memory_budget_mib: "{{ factory_telemetry_memory_budget_mib }}"
+          factory_telemetry_memory_max_mib: "{{ factory_telemetry_memory_max_mib }}"
+          factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port }}"
+          factory_telemetry_grafana_admin_user: "{{ factory_telemetry_grafana_admin_user }}"
+
+    # The role notifies a Grafana restart from its config task, and this test has no systemd to
+    # restart. Ending the play here leaves the handler unrun; every assertion is already done.
+    - name: End the play before handlers
+      ansible.builtin.meta: end_play

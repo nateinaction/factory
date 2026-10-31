@@ -1,0 +1,32 @@
+---
+# Renders the alert rules into render_dir with the real group_vars, so the alerts specs beside it can
+# check them and fire each one from a synthetic event without a host.
+- name: Render the alert rules
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Render the Prometheus alert rules
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/alerts.yaml.j2"
+        dest: "{{ render_dir }}/alerts.yaml"
+        mode: "0644"
+
+    # The specs read the thresholds as JSON, so they need no Ansible to know them.
+    - name: Write the thresholds as JSON
+      ansible.builtin.copy:
+        content: "{{ v | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
+        mode: "0644"
+      vars:
+        v:
+          factory_alerts_security_window: "{{ factory_alerts_security_window }}"
+          factory_alerts_dead_run_window: "{{ factory_alerts_dead_run_window }}"
+          factory_alerts_failure_rate_window: "{{ factory_alerts_failure_rate_window }}"
+          factory_alerts_failure_rate_threshold: "{{ factory_alerts_failure_rate_threshold }}"
+          factory_alerts_failure_rate_min_runs: "{{ factory_alerts_failure_rate_min_runs }}"
+          factory_alerts_cost_window: "{{ factory_alerts_cost_window }}"
+          factory_alerts_daily_cost_budget_usd: "{{ factory_alerts_daily_cost_budget_usd }}"
+          factory_alerts_grafana_url: "{{ factory_alerts_grafana_url }}"

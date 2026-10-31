@@ -38,7 +38,8 @@ type Settings struct {
 	Self string `mapstructure:"self"`
 	// ConfigFile is the JSON config the Ansible role writes.
 	ConfigFile string `mapstructure:"config"`
-	// TokenHelper mints GitHub App tokens.
+	// TokenHelper is the executable that mints GitHub App tokens: foreman itself, whose `token` and
+	// `repositories` verbs it runs.
 	TokenHelper string `mapstructure:"token-helper"`
 	// Dagu is the dagu binary.
 	Dagu string `mapstructure:"dagu"`
@@ -76,7 +77,7 @@ func SettingsViper(home string) *viper.Viper {
 	v.SetDefault("skills", filepath.Join(home, ".config/opencode/skills"))
 	v.SetDefault("self", "/usr/local/bin/foreman")
 	v.SetDefault("config", "/etc/factory-agent/config.json")
-	v.SetDefault("token-helper", "/usr/local/bin/github-app-token")
+	v.SetDefault("token-helper", "/usr/local/bin/foreman")
 	v.SetDefault("dagu", "/usr/local/bin/dagu")
 	v.SetDefault("dag-prefix", "factory-")
 

@@ -8,14 +8,6 @@
 - name: Install each App's credentials
   ansible.builtin.include_tasks: credentials.yml
 
-- name: Install the token minting script
-  ansible.builtin.copy:
-    src: github-app-token
-    dest: /usr/local/bin/github-app-token
-    owner: root
-    group: root
-    mode: "0755"
-
 - name: Remove the git credential helper for the single App
   # The helper had one App's token for every git call. foreman now hands each run the token of its own agent role.
   ansible.builtin.file:

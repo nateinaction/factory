@@ -1,0 +1,19 @@
+---
+# Renders the host health units into render_dir with the real group_vars, so the Ginkgo specs
+# beside it can assert on them without a host.
+- name: Render the host health units
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Render each unit
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - node_exporter.service
+        - factory-host-health.service
+        - factory-host-health.timer

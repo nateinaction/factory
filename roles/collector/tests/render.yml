@@ -1,0 +1,41 @@
+---
+# Renders the collector role's config and unit into render_dir with the real group_vars, so the
+# Ginkgo suite beside it can assert on them without a host. The suite passes
+# factory_collector_backend_host (the backend the collector forwards to) and, for the real-binary
+# spec, the listener ports and the state and log directories as extra vars, which win over
+# group_vars. vars.json carries the values the suite compares the config against.
+- name: Render the collector config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Render the collector config
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/config.yaml.j2"
+        dest: "{{ render_dir }}/config.yaml"
+        mode: "0644"
+
+    - name: Render the collector unit
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname }}/templates/otelcol.service.j2"
+        dest: "{{ render_dir }}/otelcol.service"
+        mode: "0644"
+
+    - name: Write the values the config is checked against as JSON
+      ansible.builtin.copy:
+        content: "{{ vars_asserted | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
+        mode: "0644"
+      vars:
+        vars_asserted:
+          factory_collector_allowed_attributes: "{{ factory_collector_allowed_attributes }}"
+          factory_collector_queue_size: "{{ factory_collector_queue_size | int }}"
+          factory_telemetry_tempo_otlp_port: "{{ factory_telemetry_tempo_otlp_port | int }}"
+          factory_telemetry_prometheus_port: "{{ factory_telemetry_prometheus_port | int }}"
+          factory_telemetry_loki_port: "{{ factory_telemetry_loki_port | int }}"
+          factory_collector_memory_limit_mib: "{{ factory_collector_memory_limit_mib | int }}"
+          factory_collector_state_dir: "{{ factory_collector_state_dir }}"
+          factory_dagu_logs_dir: "{{ factory_dagu_logs_dir }}"
+          factory_host_health_port: "{{ factory_host_health_port | int }}"

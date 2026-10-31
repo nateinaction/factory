@@ -2,3 +2,6 @@
 # What foreman replaces. Removed with state: absent, and kept here for one release.
 agent_old_dags: [finances-agent-poll, finances-agent-work]
 agent_old_binary: /usr/local/bin/finances-agent
+
+# The CPU architectures foreman is built for, by the name ansible reports, to the name Go uses.
+agent_foreman_goarch_by_arch: {aarch64: arm64, x86_64: amd64}

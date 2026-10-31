@@ -1,0 +1,14 @@
+---
+# Runs the telemetry role's serve tasks. The serve specs put a fake tailscale first on PATH, so they
+# can check which `tailscale serve` calls the role makes for a given `tailscale serve status` output.
+- name: Decide whether the backend's serves are already set up
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Run the role's serve tasks
+      ansible.builtin.include_role:
+        name: telemetry
+        tasks_from: serve

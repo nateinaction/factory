@@ -39,7 +39,7 @@ To add a host, add it under `factory.hosts` in `inventory/hosts.yml`.
 The dev shell installs the `pre-commit` git hook. It runs the hooks in
 `.pre-commit-config.yaml` — `gitleaks`, `go fix`, `go mod tidy`, `golangci-lint`
 and the Go tests in `foreman/`, then the Ansible syntax check, `ansible-lint`,
-`yamllint` and `tests/*.test` — and CI runs the same set. Run them all yourself
+`yamllint` and the role Ginkgo suites — and CI runs the same set. Run them all yourself
 with:
 
 ```sh
@@ -98,9 +98,9 @@ secrets file is missing, the play fails rather than skipping.
 
 Each App's files go in `/etc/github-app/<agent role>/` (`app-id`,
 `private-key.pem`), owned by dagu, directories 0700 and files 0600. On a host,
-`github-app-token token --app <agent role> --repo <owner/name>` prints a fresh
+`foreman token --app <agent role> --repo <owner/name>` prints a fresh
 one-hour token of that App scoped to the repository, and
-`github-app-token repositories --app <agent role>` lists where it is installed.
+`foreman repositories --app <agent role>` lists where it is installed.
 No App ever uses another App's token. A token that can't be minted makes the
 repository unassigned for that agent role.
 
@@ -197,7 +197,7 @@ no code path that merges.
 2. `factory-<agent role>` runs on a worker host that takes that agent role,
    up to the host's run cap (`factory_agent_run_cap`, one at a time by default).
    It mints a one-hour token of that agent role's App scoped to the repo
-   (`github-app-token token --app <agent role> --repo`), writes it to
+   (`foreman token --app <agent role> --repo`), writes it to
    `/run/factory/gh-token-<agent role>-<run id>` (one file per run, written
    atomically), and runs
    `foreman run <agent role> <owner/repo> <issue>` as `factory` through a
