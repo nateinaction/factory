@@ -231,15 +231,7 @@ repos:
         files: \.ya?ml$|^\.yamllint$
         pass_filenames: false
 
-      - id: ansible-test
-        name: ansible tests
-        entry: bash -c 'set -euo pipefail; for t in tests/*.test; do echo "== $t"; "$t"; done'
-        language: system
-        files: ^(roles/|tests/|group_vars/|inventory/|site\.yml|ansible\.cfg)
-        pass_filenames: false
-
-      # The Go role suites, which replace the bash drivers above one role at a time; the bash hook
-      # goes when the last driver does. Same file triggers as the drivers, plus the shared helper.
+      # The Go role suites: each role's Ginkgo specs beside its render playbooks, plus the shared helper.
       - id: go-role-test
         name: go role tests (ginkgo)
         entry: go test ./roles/... ./roletest/... ./.github/workflows/
