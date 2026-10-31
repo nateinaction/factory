@@ -1,0 +1,39 @@
+---
+# Renders the host health dashboard, the dashboard provider and Prometheus's config into
+# render_dir with the real group_vars, so the host health specs beside it can assert on them without
+# a host. The collector's config is rendered too, because the dashboard's queries are checked against
+# the labels it produces. The collector's host.name is the inventory name here, which is what base.yml
+# sets the OS hostname to on a host. vars.json carries the values the specs compare against.
+- name: Render the host health dashboard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  vars:
+    # The test inventory has no dagu_server group; the collector renders against a named backend.
+    factory_collector_backend_host: telemetry.example
+  tasks:
+    - name: Render each template
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ render_dir }}/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - src: "{{ playbook_dir | dirname }}/../collector/templates/config.yaml.j2"
+          dest: collector.yaml
+        - src: "{{ playbook_dir | dirname }}/templates/dashboards.yaml.j2"
+          dest: dashboards.yaml
+        - src: "{{ playbook_dir | dirname }}/templates/host-health.json.j2"
+          dest: host-health.json
+        - src: "{{ playbook_dir | dirname }}/templates/prometheus.yaml.j2"
+          dest: prometheus.yaml
+
+    - name: Write the values the dashboard is checked against as JSON
+      ansible.builtin.copy:
+        content: "{{ v | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
+        mode: "0644"
+      vars:
+        v:
+          factory_telemetry_run_span: "{{ factory_telemetry_run_span }}"

@@ -3,6 +3,11 @@
 # dagu whether a finances-agent-* run is active and fails the play if one is.
 # Drain by suspending finances-agent-poll in the dagu UI, wait for the run to
 # finish, then apply again. Nothing here changes a host.
+- name: Look for the installed foreman
+  ansible.builtin.stat:
+    path: /usr/local/bin/foreman
+  register: agent_drain_foreman
+
 - name: Look for the dagu binary
   ansible.builtin.stat:
     path: /usr/local/bin/dagu
@@ -14,9 +19,11 @@
   loop: "{{ agent_old_dags }}"
   register: agent_drain_old_dags
 
-# No old DAG on disk means no old run can start, so there is nothing to drain.
+# No installed foreman means no foreman has run here, so there is nothing to drain and the first
+# deploy to a new host is not blocked. No old DAG on disk means no old run can start.
 - name: Fail closed while a finances-agent-* run is active
-  ansible.builtin.script: "drain-check /usr/local/bin/dagu {{ agent_drain_present | join(' ') }}"
+  ansible.builtin.command:
+    argv: "{{ ['/usr/local/bin/foreman', 'drain-check', '--dagu', '/usr/local/bin/dagu'] + agent_drain_present }}"
   become: true
   become_user: "{{ dagu_user }}"
   environment:
@@ -26,5 +33,6 @@
   vars:
     agent_drain_present: "{{ agent_drain_old_dags.results | selectattr('stat.exists') | map(attribute='item') | list }}"
   when:
+    - agent_drain_foreman.stat.exists
     - agent_drain_dagu.stat.exists
     - agent_drain_present | length > 0

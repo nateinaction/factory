@@ -121,18 +121,6 @@ repos:
         language: system
         files: ^\.github/workflows/.*\.ya?ml$
 
-      - id: ruff-check
-        name: ruff check
-        entry: ruff check
-        language: system
-        types: [python]
-
-      - id: ruff-format
-        name: ruff format
-        entry: ruff format --check
-        language: system
-        types: [python]
-
       - id: nixfmt
         name: nixfmt
         entry: nixfmt --check
@@ -214,14 +202,14 @@ repos:
         name: ansible syntax check
         entry: ansible-playbook --syntax-check site.yml
         language: system
-        files: ^(site\.yml|ansible\.cfg|(roles|group_vars|inventory|tests)/.*\.ya?ml)$
+        files: ^(site\.yml|ansible\.cfg|(roles|group_vars|inventory)/.*\.ya?ml)$
         pass_filenames: false
 
       - id: ansible-lint
         name: ansible-lint
         entry: ansible-lint
         language: system
-        files: ^(site\.yml|ansible\.cfg|\.ansible-lint|\.yamllint|(roles|group_vars|inventory|tests)/.*\.ya?ml)$
+        files: ^(site\.yml|ansible\.cfg|\.ansible-lint|\.yamllint|(roles|group_vars|inventory)/.*\.ya?ml)$
         pass_filenames: false
 
       - id: yamllint
@@ -231,18 +219,10 @@ repos:
         files: \.ya?ml$|^\.yamllint$
         pass_filenames: false
 
-      - id: ansible-test
-        name: ansible tests
-        entry: bash -c 'set -euo pipefail; for t in tests/*.test; do echo "== $t"; "$t"; done'
-        language: system
-        files: ^(roles/|tests/|group_vars/|inventory/|site\.yml|ansible\.cfg)
-        pass_filenames: false
-
-      # The Go role suites, which replace the bash drivers above one role at a time; the bash hook
-      # goes when the last driver does. Same file triggers as the drivers, plus the shared helper.
+      # The Go role suites: each role's Ginkgo specs beside its render playbooks, plus the shared helper.
       - id: go-role-test
         name: go role tests (ginkgo)
         entry: go test ./roles/... ./roletest/... ./.github/workflows/
         language: system
-        files: ^(\.github/workflows/|roles/|tests/|group_vars/|inventory/|roletest/|go\.(mod|sum|work)$|site\.yml|ansible\.cfg)
+        files: ^(\.github/workflows/|roles/|group_vars/|inventory/|roletest/|go\.(mod|sum|work)$|site\.yml|ansible\.cfg)
         pass_filenames: false

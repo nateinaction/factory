@@ -1,31 +1,24 @@
 ---
-# Renders the alert rules into $RENDER_DIR with the real group_vars, so tests/alerts.test can check
-# them and fire each one from a synthetic event without a host.
+# Renders the alert rules into render_dir with the real group_vars, so the alerts specs beside it can
+# check them and fire each one from a synthetic event without a host.
 - name: Render the alert rules
   hosts: localhost
   connection: local
   gather_facts: false
   vars_files:
-    - ../group_vars/factory.yml
-  vars:
-    render_dir: "{{ lookup('env', 'RENDER_DIR') }}"
+    - ../../../group_vars/factory.yml
   tasks:
     - name: Render the Prometheus alert rules
       ansible.builtin.template:
-        src: ../roles/telemetry/templates/alerts.yaml.j2
+        src: "{{ playbook_dir | dirname }}/templates/alerts.yaml.j2"
         dest: "{{ render_dir }}/alerts.yaml"
         mode: "0644"
 
-    - name: Read the rules back
-      ansible.builtin.slurp:
-        src: "{{ render_dir }}/alerts.yaml"
-      register: alerts_rendered
-
-    # The test's python has no YAML parser; hand it JSON.
-    - name: Write the rules and the thresholds as JSON
+    # The specs read the thresholds as JSON, so they need no Ansible to know them.
+    - name: Write the thresholds as JSON
       ansible.builtin.copy:
-        content: "{{ {'groups': (alerts_rendered.content | b64decode | from_yaml).groups, 'v': v} | to_json }}"
-        dest: "{{ render_dir }}/rules.json"
+        content: "{{ v | to_json }}"
+        dest: "{{ render_dir }}/vars.json"
         mode: "0644"
       vars:
         v:
