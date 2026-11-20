@@ -1,0 +1,22 @@
+---
+# Runs the wifi role's check, profile and netplan tasks as the current user into render_dir. The Ginkgo suite
+# beside it passes wifi_psk (or not) and the profile location as extra vars, and asserts on the result.
+- name: Install the Wi-Fi profile locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../group_vars/factory.yml
+  tasks:
+    - name: Check the settings
+      ansible.builtin.include_role:
+        name: wifi
+        tasks_from: check
+    - name: Write the profile
+      ansible.builtin.include_role:
+        name: wifi
+        tasks_from: profile
+    - name: Remove the netplan Wi-Fi definitions
+      ansible.builtin.include_role:
+        name: wifi
+        tasks_from: netplan

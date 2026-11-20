@@ -1,0 +1,24 @@
+---
+# The image or Pi Imager may leave a netplan Wi-Fi definition that NetworkManager loads as a second
+# profile for the same network. This role owns the Wi-Fi, so any netplan file that defines a `wifis:`
+# section is removed; Ethernet and other sections live in other files and are left alone. Safe to
+# repeat: a host with no such file changes nothing.
+- name: Find netplan files that define Wi-Fi
+  ansible.builtin.find:
+    paths: "{{ wifi_netplan_dir | default('/etc/netplan') }}"
+    patterns: "*.yaml"
+    contains: '^\s*wifis:'
+    use_regex: false
+  register: wifi_netplan_files
+
+- name: Remove the netplan Wi-Fi definitions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ wifi_netplan_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify:
+    - Regenerate netplan
+    - Reload NetworkManager connections
+    - Activate the Wi-Fi profile

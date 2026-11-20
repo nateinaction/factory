@@ -2,9 +2,12 @@
   description = "factory: provision Raspberry Pi hosts that run dagu";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # Only the Go toolchain comes from here: nixos-unstable still ships go 1.27.3, whose net/http
+  # govulncheck flags (fixed in 1.27.4). Drop this input, and use nixpkgs for Go, once unstable has 1.27.4.
+  inputs.nixpkgs-go.url = "github:NixOS/nixpkgs/staging-next";
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, nixpkgs-go, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -12,7 +15,8 @@
         "aarch64-linux"
         "x86_64-linux"
       ];
-      forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
+      forAll =
+        f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s} nixpkgs-go.legacyPackages.${s});
 
       # The sandbox backend: @anthropic-ai/sandbox-runtime. Pinned to the exact version the worker
       # hosts install (factory_srt_version in group_vars), so the dev shell and a host agree.
@@ -38,22 +42,24 @@
     in
     {
       # foreman is a static Go binary, so hosts need no Go toolchain.
-      packages = forAll (pkgs: rec {
-        foreman = pkgs.buildGo127Module {
-          pname = "foreman";
-          version = "0.1.0";
-          src = ./foreman;
-          # Update after any go.mod change: set lib.fakeHash, build, and copy the "got" hash.
-          vendorHash = "sha256-73YYFecBS2Y/8vu7vR00cf4kgZlFj9S2Z9kNPUx0Ugk=";
-          env.CGO_ENABLED = "0";
-          subPackages = [ "cmd/foreman" ];
-          meta.mainProgram = "foreman";
-        };
-        default = foreman;
-      });
+      packages = forAll (
+        _: goPkgs: rec {
+          foreman = goPkgs.buildGo127Module {
+            pname = "foreman";
+            version = "0.1.0";
+            src = ./foreman;
+            # Update after any go.mod change: set lib.fakeHash, build, and copy the "got" hash.
+            vendorHash = "sha256-qNCJ1q+q0qY/0aKhm++0y1ILbLifYiDZVgiKVOb5Ujk=";
+            env.CGO_ENABLED = "0";
+            subPackages = [ "cmd/foreman" ];
+            meta.mainProgram = "foreman";
+          };
+          default = foreman;
+        }
+      );
 
       devShells = forAll (
-        pkgs:
+        pkgs: goPkgs:
         assert pkgs.lib.assertMsg (pkgs.sandbox-runtime.version == srtVersion)
           "nixpkgs provides sandbox-runtime ${pkgs.sandbox-runtime.version}, but the factory pins ${srtVersion}";
         {
@@ -65,7 +71,7 @@
               # promtool checks and unit-tests the Prometheus alert rules the telemetry role's alerts specs render. It is
               # the package's `cli` output; `out` carries the server binary the host installs.
               pkgs.prometheus.cli
-              pkgs.go_1_27
+              goPkgs.go_1_27
               pkgs.gitleaks
               pkgs.golangci-lint
               pkgs.govulncheck

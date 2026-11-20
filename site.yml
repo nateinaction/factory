@@ -16,6 +16,8 @@
   become: true
   roles:
     - base
+    - role: wifi
+      when: factory_wifi | bool
     - nix
     - users
     - dagu

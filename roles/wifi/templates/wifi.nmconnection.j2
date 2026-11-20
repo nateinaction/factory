@@ -1,0 +1,21 @@
+[connection]
+id={{ wifi_connection_name }}
+type=wifi
+autoconnect=true
+# Below the wired link, so a PoE host keeps its Ethernet address when both are up.
+autoconnect-priority=-10
+
+[wifi]
+mode=infrastructure
+ssid={{ wifi_ssid }}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk={{ wifi_psk }}
+
+[ipv4]
+method=auto
+route-metric=600
+
+[ipv6]
+method=auto

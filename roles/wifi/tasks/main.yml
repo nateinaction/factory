@@ -1,0 +1,20 @@
+---
+# Joins each host to a WPA2 network through a NetworkManager keyfile. The passphrase is read from the
+# controller's extra vars (secrets/wifi.yml) and lands only in a root-owned 0600 file, never on a
+# command line. Takes wifi_ssid, wifi_psk and wifi_country
+# (the first two from secrets/wifi.yml); the play fails closed when any is unset.
+- name: Check the settings
+  ansible.builtin.include_tasks: check.yml
+
+- name: Set the Wi-Fi regulatory country, since the radio stays blocked until one is set
+  ansible.builtin.command:
+    cmd: raspi-config nonint do_wifi_country {{ wifi_country | quote }}
+  register: wifi_country_set
+  changed_when: false # raspi-config reports no change; the call is safe to repeat
+  when: wifi_apply_country | bool
+
+- name: Install the connection profile
+  ansible.builtin.include_tasks: profile.yml
+
+- name: Remove the netplan Wi-Fi definition the profile replaces
+  ansible.builtin.include_tasks: netplan.yml
