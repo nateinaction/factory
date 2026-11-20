@@ -1,0 +1,12 @@
+---
+# Fails closed when the settings are incomplete; split out so the role's test can run it alone.
+- name: Fail closed when the Wi-Fi settings are incomplete
+  ansible.builtin.assert:
+    that:
+      - wifi_ssid | default('') | length > 0
+      - wifi_psk | default('') | length >= 8
+      - wifi_country | length == 2
+    fail_msg: >-
+      wifi_ssid, wifi_country and wifi_psk (8 or more characters) must all be set;
+      pass the passphrase with -e @secrets/wifi.yml
+  no_log: true

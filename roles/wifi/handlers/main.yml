@@ -1,0 +1,17 @@
+---
+# Order matters: netplan regenerates NetworkManager's profiles, NetworkManager reloads them, then the
+# role's profile is brought up in place of the netplan one that was just removed.
+- name: Regenerate netplan
+  ansible.builtin.command:
+    cmd: netplan generate
+  changed_when: true
+
+- name: Reload NetworkManager connections
+  ansible.builtin.command:
+    cmd: nmcli connection reload
+  changed_when: true
+
+- name: Activate the Wi-Fi profile
+  ansible.builtin.command:
+    cmd: nmcli --wait 30 connection up {{ wifi_connection_name | quote }}
+  changed_when: true

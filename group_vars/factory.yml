@@ -61,6 +61,15 @@ factory_github_app: true
 github_app_dir: /etc/github-app # one directory per agent role below this
 github_app_group: "{{ dagu_user }}"
 
+# Join the hosts to Wi-Fi through NetworkManager. The passphrase has no default so it is never in the
+# repository: set wifi_ssid and wifi_psk in secrets/wifi.yml and pass -e @secrets/wifi.yml. The play
+# fails closed when either is unset. wifi_country is the two-letter regulatory domain; a Pi's radio
+# stays blocked until one is set.
+factory_wifi: true
+wifi_country: US
+wifi_connection_name: factory-wifi # fixed: the SSID is untrusted input and must never reach a file path
+wifi_apply_country: true
+
 # PoE HAT fan trip points in millidegrees C (stock is 40000-55000). High values
 # keep the fan off in normal use; the CPU throttles at 80000.
 factory_poe_fan: true

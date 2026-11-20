@@ -1,0 +1,12 @@
+---
+# The profile itself, split out so the role's test renders it without root or raspi-config.
+# wifi_profile_dir defaults to NetworkManager's; wifi_profile_owner/group to root.
+- name: Install the connection profile
+  ansible.builtin.template:
+    src: wifi.nmconnection.j2
+    dest: "{{ wifi_profile_dir | default('/etc/NetworkManager/system-connections') }}/{{ wifi_connection_name }}.nmconnection"
+    owner: "{{ wifi_profile_owner | default('root') }}"
+    group: "{{ wifi_profile_group | default('root') }}"
+    mode: "0600"
+  no_log: true
+  notify: Reload NetworkManager connections

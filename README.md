@@ -8,6 +8,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 | Ansible role | Result |
 | --- | --- |
 | `base` | hostname, `en_US.UTF-8` locale, a login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
+| `wifi` | joins a Wi-Fi network through a NetworkManager profile at a lower priority than Ethernet; the network name and passphrase come from `secrets/wifi.yml` (see below) |
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |
 | `dagu` | pinned, checksum-verified dagu binary and a systemd unit that runs it as `dagu`. The server (`dagu_server` group) runs the UI, scheduler and coordinator on localhost; workers (`dagu_worker` group) run `dagu worker` only |
@@ -49,6 +50,15 @@ pre-commit run --all-files
 The dev shell also provides `emulate`, the GitHub emulator foreman's Go tests run against; see
 [`foreman/docs/emulate.md`](foreman/docs/emulate.md) for how the suites use it and the GitHub
 behaviour it does not model.
+
+## Wi-Fi
+
+The network name and passphrase have no default and are never in the repo: `cp secrets/wifi.example.yml
+secrets/wifi.yml`, set `wifi_ssid` and `wifi_psk` (`secrets/*` is gitignored; `ansible-vault encrypt` it if you
+like), and pass it with `-e @secrets/wifi.yml`. The play fails closed when it is unset. The role
+writes it into a root-only `0600` NetworkManager profile and sets the regulatory country
+(`wifi_country`, default `US`; change it in `group_vars/factory.yml`). It also removes any netplan file that defines Wi-Fi (the image's own copy of the same network), so
+the repo's profile is the only one; Ethernet's netplan file is left alone. Skip with `-e factory_wifi=false`.
 
 ## GitHub App credentials
 
