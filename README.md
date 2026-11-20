@@ -7,7 +7,7 @@ Ansible that provisions Raspberry Pi hosts (Debian) to run
 
 | Ansible role | Result |
 | --- | --- |
-| `base` | hostname, `en_US.UTF-8` locale, a login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
+| `base` | hostname, `en_US.UTF-8` locale, a Go-built login banner (load, memory, disk, temp, dagu status), emptied `/etc/motd` |
 | `wifi` | joins a Wi-Fi network through a NetworkManager profile at a lower priority than Ethernet; the network name and passphrase come from `secrets/wifi.yml` (see below) |
 | `nix` | [Determinate Nix](https://github.com/DeterminateSystems/nix-installer), system-wide `git`, and `direnv` + `nix-direnv` for the admin user |
 | `users` | `dagu` (system account, `nologin`) and `factory` (regular account, locked password). Neither has sudo. |

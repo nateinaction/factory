@@ -29,7 +29,7 @@ var limitsFor = map[string][2]int{
 	"planner":     {40, 20},
 	"researcher":  {80, 45},
 	"implementer": {200, 90},
-	"reviewer":    {60, 30},
+	"reviewer":    {200, 30},
 	"curator":     {60, 30},
 }
 
