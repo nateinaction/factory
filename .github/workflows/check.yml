@@ -16,7 +16,7 @@ jobs:
           persist-credentials: false
           # gitleaks reads the whole history.
           fetch-depth: 0
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+      - uses: cachix/install-nix-action@382a9ed9481c7c1f94f68b72ef105b3417c73877 # v32
       # The sandbox acceptance specs run the real srt (bubblewrap). Ubuntu 24.04 runners restrict
       # unprivileged user namespaces, which makes bwrap fail setting up loopback.
       - name: allow unprivileged user namespaces
